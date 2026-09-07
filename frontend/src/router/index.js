@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import PublicLayout from '@/layouts/PublicLayout.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import HomeView from '@/views/public/HomeView.vue'
+import SearchView from '@/views/public/SearchView.vue'
 import RouteListView from '@/views/public/RouteListView.vue'
 import RouteDetailView from '@/views/public/RouteDetailView.vue'
 import LoginView from '@/views/public/LoginView.vue'
@@ -32,6 +33,7 @@ const routes = [
     component: PublicLayout,
     children: [
       { path: '', name: 'home', component: HomeView },
+      { path: 'search', name: 'search', component: SearchView },
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
       { path: 'articles', name: 'articles', component: ArticlesView },

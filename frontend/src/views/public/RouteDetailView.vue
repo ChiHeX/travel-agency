@@ -1,52 +1,940 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
+import AppIcon from '@/components/AppIcon.vue'
 import MapPreview from '@/components/MapPreview.vue'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const closeDrawer = inject('closeDrawer', () => {})
 const data = ref(null)
 const loading = ref(true)
+const errorMessage = ref('')
 const favorite = ref(false)
-const selectedDeparture = ref(null)
+const selectedDepartureId = ref(null)
+
 const departures = computed(() => data.value?.departures || [])
+const selectedDeparture = computed(
+  () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
+)
+const reviews = computed(() => data.value?.reviews || [])
 
 async function load() {
   loading.value = true
-  try { data.value = await routeApi.detail(route.params.id) } finally { loading.value = false }
+  errorMessage.value = ''
+  try {
+    data.value = await routeApi.detail(route.params.id)
+    favorite.value = Boolean(data.value?.favorite || data.value?.route?.favorited)
+    if (departures.value.length > 0) {
+      selectedDepartureId.value = departures.value[0].id
+    }
+  } catch (error) {
+    data.value = null
+    errorMessage.value = error.message || '线路详情加载失败，请稍后重试'
+  } finally {
+    loading.value = false
+  }
 }
+
 async function toggleFavorite() {
   if (!auth.isLoggedIn) return router.push({ name: 'login', query: { redirect: route.fullPath } })
-  if (favorite.value) await accountApi.removeFavorite(route.params.id)
-  else await accountApi.addFavorite(route.params.id)
-  favorite.value = !favorite.value
-  ElMessage.success(favorite.value ? '已收藏线路' : '已取消收藏')
+  try {
+    if (favorite.value) {
+      await accountApi.removeFavorite(route.params.id)
+      favorite.value = false
+      ElMessage.success('已取消收藏')
+    } else {
+      await accountApi.addFavorite(route.params.id)
+      favorite.value = true
+      ElMessage.success('已加入收藏')
+    }
+  } catch (_) {
+    favorite.value = !favorite.value
+  }
 }
+
 function book(departure) {
   if (!auth.isLoggedIn) return router.push({ name: 'login', query: { redirect: route.fullPath } })
-  router.push({ name: 'order-create', query: { departureId: departure.id, routeId: data.value.route.id } })
+  router.push({
+    name: 'order-create',
+    query: { departureId: departure.id, routeId: data.value.route.id }
+  })
 }
+
+function getAvailableSeats(item) {
+  if (item?.availableSeats != null) return Number(item.availableSeats)
+  if (item?.maxPeople == null) return null
+  return Number(item.maxPeople) - Number(item.confirmedPeople || 0) - Number(item.reservedPeople || 0)
+}
+
+function isDepartureBookable(item) {
+  if (!item || (item.status && item.status !== 'OPEN')) return false
+  const seats = getAvailableSeats(item)
+  return seats != null && seats > 0
+}
+
+function selectDeparture(item) {
+  if (isDepartureBookable(item)) selectedDepartureId.value = item.id
+}
+
+function itineraryType(type) {
+  const labels = {
+    ATTRACTION: '景点',
+    HOTEL: '酒店',
+    MEAL: '餐食',
+    TRANSPORT: '交通'
+  }
+  return labels[type] || type || '行程'
+}
+
+function shareRoute() {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(window.location.href)
+    ElMessage.success('线路链接已复制')
+  }
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <section v-if="loading" class="page-section container"><el-skeleton :rows="10" animated /></section>
-  <section v-else-if="data" class="route-detail-page">
-    <div class="detail-hero"><div class="container detail-hero-inner"><div><span class="eyebrow">{{ data.route.departureCity }} → {{ data.route.destination }}</span><h1>{{ data.route.name }}</h1><p>{{ data.route.description }}</p><div class="detail-meta"><span>{{ data.route.durationDays }} 日行程</span><span v-if="data.route.ratingCount">★ {{ data.route.ratingAvg }}（{{ data.route.ratingCount }} 条评价）</span><span v-else>暂无评分</span></div></div><button class="favorite-button" :class="{ active: favorite }" @click="toggleFavorite">{{ favorite ? '♥ 已收藏' : '♡ 收藏线路' }}</button></div></div>
-    <div class="container detail-layout"><main>
-      <section class="detail-block"><div class="section-head compact"><div><span class="eyebrow">AVAILABLE DEPARTURES</span><h2>选择团期</h2></div><span class="muted-text">价格为创建订单时的快照</span></div><div v-if="departures.length" class="departure-list"><div v-for="item in departures" :key="item.id" class="departure-row"><div><strong>{{ item.startDate }}</strong><span>至 {{ item.endDate }}</span></div><div><span class="departure-label">成人</span><strong class="departure-price">¥{{ item.adultPrice }}</strong><span class="departure-label">儿童</span><strong class="departure-price">¥{{ item.childPrice }}</strong></div><div class="remaining">剩余 {{ (item.maxPeople || 0) - (item.confirmedPeople || 0) - (item.reservedPeople || 0) }} 人</div><button class="primary-button" :disabled="(item.maxPeople || 0) - (item.confirmedPeople || 0) - (item.reservedPeople || 0) <= 0" @click="book(item)">{{ (item.maxPeople || 0) - (item.confirmedPeople || 0) - (item.reservedPeople || 0) > 0 ? '立即报名' : '已满' }}</button></div></div><div v-else class="empty-box">暂无相关数据，当前没有可报名团期。</div></section>
-      <section class="detail-block"><div class="section-head compact"><div><span class="eyebrow">DAY BY DAY</span><h2>详细行程</h2></div></div><div v-if="data.itinerary?.length" class="itinerary-list"><article v-for="item in data.itinerary" :key="item.day.id" class="itinerary-day"><div class="day-number">DAY<br /><strong>{{ String(item.day.dayNumber).padStart(2, '0') }}</strong></div><div><h3>{{ item.day.title }}</h3><p>{{ item.day.description }}</p><div class="itinerary-items"><span v-for="point in item.items" :key="point.id">{{ point.name }}</span></div><small>交通：{{ item.day.transportation || '以出团通知为准' }} · 餐食：{{ item.day.meals || '请查看团期说明' }}</small></div></article></div><div v-else class="empty-box">暂无相关数据，行程正在整理中。</div></section>
-      <section class="detail-block"><div class="section-head compact"><div><span class="eyebrow">MAP &amp; SOURCES</span><h2>行程地图</h2></div></div><MapPreview :itinerary="data.itinerary" /></section>
-      <section class="detail-block two-columns"><div><h3>费用包含</h3><p class="detail-copy">{{ data.route.included || '暂无相关数据' }}</p></div><div><h3>费用不包含</h3><p class="detail-copy">{{ data.route.excluded || '暂无相关数据' }}</p></div><div class="wide"><h3>预订须知</h3><p class="detail-copy">{{ data.route.bookingNotice || '暂无相关数据' }}</p></div></section>
-    </main><aside class="detail-aside"><div class="sticky-card"><span class="eyebrow">ROUTE SNAPSHOT</span><h3>{{ data.route.departureCity }} · {{ data.route.destination }}</h3><div class="aside-line"><span>行程天数</span><strong>{{ data.route.durationDays }} 天</strong></div><div class="aside-line"><span>可选团期</span><strong>{{ departures.length }} 个</strong></div><div class="aside-line"><span>线路评分</span><strong>{{ data.route.ratingCount ? data.route.ratingAvg : '暂无' }}</strong></div><p>登录后可收藏线路、选择团期并填写实名出行人信息。</p></div></aside></div>
-  </section>
-  <section v-else class="page-section container"><div class="empty-box">线路不存在或暂未上架。</div></section>
+  <div class="place-sheet-drawer">
+    <div v-if="loading" class="loading-wrap">
+      <el-skeleton :rows="10" animated />
+    </div>
+
+    <div v-else-if="errorMessage" class="detail-error-state">
+      <AppIcon name="pin" size="24" color="#ff3b30" />
+      <strong>线路详情暂时无法加载</strong>
+      <p>{{ errorMessage }}</p>
+      <button type="button" class="secondary-button" @click="load">重新加载</button>
+    </div>
+
+    <template v-else-if="data && data.route">
+      <!-- Sheet Top Bar (Screenshot 3: 路线 📤 ✕) -->
+      <div class="sheet-top-bar">
+        <button type="button" class="back-link-btn" @click="router.back()">
+          <AppIcon name="chevron-left" size="14" />
+          <span>返回</span>
+        </button>
+        <div class="sheet-actions">
+          <button type="button" class="sheet-action-btn" :class="{ favorited: favorite }" @click="toggleFavorite">
+            <AppIcon v-if="favorite" name="heart-filled" size="13" color="#ff3b30" />
+            <AppIcon v-else name="heart" size="13" />
+            <span>{{ favorite ? '已收藏' : '收藏' }}</span>
+          </button>
+          <button type="button" class="sheet-icon-circle" title="分享" @click="shareRoute">
+            <AppIcon name="share" size="13" />
+          </button>
+          <button type="button" class="sheet-icon-circle" title="关闭面板" @click="closeDrawer">
+            <AppIcon name="close" size="13" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Sheet Scroll Body -->
+      <div class="sheet-scroll-body">
+        <!-- Hero Media Banner -->
+        <div class="sheet-hero-media">
+          <img v-if="data.route.coverUrl" :src="data.route.coverUrl" :alt="data.route.name" />
+          <div v-else class="hero-fallback"></div>
+          <div class="hero-gradient"></div>
+          <div class="hero-content">
+            <span class="eyebrow-tag">{{ data.route.departureCity }} → {{ data.route.destination }}</span>
+            <h3>{{ data.route.name }}</h3>
+          </div>
+        </div>
+
+        <!-- Waypoints Stop List (Screenshot 3) -->
+          <div class="sheet-waypoints-box">
+          <div class="waypoint-node">
+            <span class="dot blue">
+              <AppIcon name="circle" size="13" color="#0071e3" />
+            </span>
+            <div class="node-info">
+              <span class="sub-label">起点 / 出发城市</span>
+              <strong>{{ data.route.departureCity }}</strong>
+            </div>
+            <span class="drag-icon">
+              <AppIcon name="drag" size="14" color="#8e8e93" />
+            </span>
+          </div>
+
+          <div class="connector-line"></div>
+
+          <div class="waypoint-node">
+            <span class="dot blue">
+              <AppIcon name="pin" size="13" color="#0071e3" />
+            </span>
+            <div class="node-info">
+              <span class="sub-label">终点 / 目的地</span>
+              <strong>{{ data.route.destination }}</strong>
+            </div>
+            <span class="drag-icon">
+              <AppIcon name="drag" size="14" color="#8e8e93" />
+            </span>
+          </div>
+          </div>
+
+        <div class="sheet-section route-overview-section">
+          <div class="route-overview-head">
+            <div>
+              <span class="sub-hint">线路简介</span>
+              <p class="route-description">{{ data.route.description || '暂无线路简介。' }}</p>
+            </div>
+            <div class="route-rating-summary">
+              <template v-if="data.route.ratingCount">
+                <strong>{{ data.route.ratingAvg }}</strong>
+                <span>/ 5</span>
+                <small>{{ data.route.ratingCount }} 条评价</small>
+              </template>
+              <span v-else class="muted-rating">暂无评分</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Departures Section -->
+        <div class="sheet-section">
+          <div class="section-title-row">
+            <h4>可选出发团期</h4>
+            <span class="sub-hint">点击选中</span>
+          </div>
+
+          <div v-if="departures.length" class="departures-sheet-list">
+            <div
+              v-for="item in departures"
+              :key="item.id"
+              class="departure-card-item"
+              :class="{
+                selected: selectedDepartureId === item.id,
+                soldout: getAvailableSeats(item) != null && getAvailableSeats(item) <= 0
+              }"
+              :aria-disabled="!isDepartureBookable(item)"
+              @click="selectDeparture(item)"
+            >
+              <div class="dep-dates">
+                <strong>{{ item.startDate }}</strong>
+                <span>至 {{ item.endDate }}</span>
+              </div>
+              <div class="dep-prices">
+                <span class="adult">¥{{ item.adultPrice }}<small>/成人</small></span>
+                <span class="child">¥{{ item.childPrice }}<small>/儿童</small></span>
+              </div>
+              <div class="dep-seats">
+                <span v-if="getAvailableSeats(item) != null && getAvailableSeats(item) > 0" class="tag success">余 {{ getAvailableSeats(item) }}</span>
+                <span v-else-if="getAvailableSeats(item) === 0" class="tag danger">已满</span>
+                <span v-else class="tag">余量待同步</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-box">暂无排期。</div>
+        </div>
+
+        <!-- Day by Day Itinerary -->
+        <div class="sheet-section">
+          <div class="section-title-row">
+            <h4>每日行程安排</h4>
+            <span class="sub-hint">{{ data.route.durationDays }} 天全程</span>
+          </div>
+
+          <div v-if="data.itinerary && data.itinerary.length" class="day-itinerary-list">
+            <div v-for="item in data.itinerary" :key="item.day.id" class="day-row-card">
+              <div class="day-badge">D{{ item.day.dayNumber }}</div>
+              <div class="day-content">
+                <h5>{{ item.day.title }}</h5>
+                <p>{{ item.day.description }}</p>
+                <div v-if="item.items && item.items.length" class="itinerary-items-list">
+                  <div v-for="entry in item.items" :key="entry.id" class="itinerary-item-row">
+                    <span class="itinerary-item-type">{{ itineraryType(entry.itemType) }}</span>
+                    <div class="itinerary-item-copy">
+                      <strong>{{ entry.name }}</strong>
+                      <span v-if="entry.description">{{ entry.description }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="day-meta-tags">
+                  <span class="meta-tag-item">
+                    <AppIcon name="bus" size="12" color="#0071e3" />
+                    <span>交通：{{ item.day.transportation || '暂无安排' }}</span>
+                  </span>
+                  <span>·</span>
+                  <span class="meta-tag-item">
+                    <AppIcon name="food" size="12" color="#ff9500" />
+                    <span>餐食：{{ item.day.meals || '暂无安排' }}</span>
+                  </span>
+                  <template v-if="item.day.hotelName || item.day.hotel?.name">
+                    <span>·</span>
+                    <span class="meta-tag-item">
+                      <AppIcon name="hotel" size="12" color="#5856d6" />
+                      <span>住宿：{{ item.day.hotelName || item.day.hotel.name }}</span>
+                    </span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-box">暂无已发布的每日行程。</div>
+        </div>
+
+        <div class="sheet-section map-section">
+          <div class="section-title-row">
+            <h4>行程地图</h4>
+            <span class="sub-hint">按行程顺序展示</span>
+          </div>
+          <MapPreview :itinerary="data.itinerary || []" />
+        </div>
+
+        <div class="sheet-section route-notes-section">
+          <div class="detail-notes-grid">
+            <div class="detail-note-card">
+              <span class="sub-hint">费用包含</span>
+              <p>{{ data.route.included || '暂无说明。' }}</p>
+            </div>
+            <div class="detail-note-card">
+              <span class="sub-hint">费用不包含</span>
+              <p>{{ data.route.excluded || '暂无说明。' }}</p>
+            </div>
+          </div>
+          <div class="detail-note-card booking-notice-card">
+            <span class="sub-hint">预订须知</span>
+            <p>{{ data.route.bookingNotice || '暂无说明。' }}</p>
+          </div>
+        </div>
+
+        <div class="sheet-section reviews-section">
+          <div class="section-title-row">
+            <h4>用户评价</h4>
+            <span class="sub-hint">{{ data.route.ratingCount || 0 }} 条</span>
+          </div>
+          <div v-if="reviews.length" class="reviews-list">
+            <article v-for="review in reviews" :key="review.id" class="review-row">
+              <div class="review-row-head">
+                <el-rate :model-value="Number(review.rating) || 0" disabled size="small" />
+                <span>{{ review.createdAt || '评价时间待同步' }}</span>
+              </div>
+              <p>{{ review.content || '用户未填写文字评价。' }}</p>
+            </article>
+          </div>
+          <div v-else class="empty-box">暂无用户评价。</div>
+        </div>
+      </div>
+
+      <!-- Bottom Sticky Booking Footer (Frosted Glass) -->
+      <div class="sheet-sticky-footer">
+        <div class="footer-price-col">
+          <span class="label">已选团期成人价</span>
+          <div class="price">
+            <template v-if="selectedDeparture && selectedDeparture.adultPrice != null">
+              <strong>¥{{ selectedDeparture.adultPrice }}</strong>
+              <small>起/人</small>
+            </template>
+            <small v-else>价格待发布</small>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          class="primary-button booking-cta-btn"
+          :disabled="!selectedDeparture || getAvailableSeats(selectedDeparture) == null || getAvailableSeats(selectedDeparture) <= 0"
+          @click="selectedDeparture && book(selectedDeparture)"
+        >
+          {{ selectedDeparture && getAvailableSeats(selectedDeparture) > 0 ? '立即报名' : getAvailableSeats(selectedDeparture) === 0 ? '团期已满' : '余量待同步' }}
+        </button>
+      </div>
+    </template>
+  </div>
 </template>
 
 <style scoped>
-.detail-hero { background: var(--teal-dark); color: white; padding: 64px 0 58px; }.detail-hero-inner { display: flex; justify-content: space-between; gap: 30px; align-items: end; }.detail-hero h1 { font: 500 clamp(34px, 5vw, 56px) Georgia, serif; margin: 14px 0; max-width: 780px; }.detail-hero p { color: #b9d4ce; max-width: 700px; line-height: 1.8; font-size: 14px; }.detail-meta { display: flex; gap: 20px; color: #cce4dd; font-size: 12px; }.favorite-button { white-space: nowrap; background: transparent; border: 1px solid #76b7a6; color: #d7eee8; border-radius: 9px; min-height: 40px; padding: 0 15px; cursor: pointer; }.favorite-button.active { background: #e77d61; border-color: #e77d61; color: #fff; }.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 32px; padding-top: 40px; padding-bottom: 70px; }.detail-block { margin-bottom: 40px; }.section-head.compact { margin-bottom: 18px; }.section-head.compact h2 { font-size: 27px; }.muted-text { color: var(--muted); font-size: 12px; }.departure-list { display: grid; gap: 9px; }.departure-row { display: grid; grid-template-columns: 1.25fr 1.4fr .7fr auto; gap: 15px; align-items: center; border: 1px solid var(--line); border-radius: 12px; background: white; padding: 14px 16px; font-size: 13px; }.departure-row > div:first-child span { color: var(--muted); margin-left: 7px; }.departure-price { color: var(--coral); margin-right: 15px; }.departure-label { color: var(--muted); font-size: 11px; margin-right: 4px; }.remaining { color: var(--teal); font-size: 12px; }.itinerary-list { display: grid; gap: 16px; }.itinerary-day { display: grid; grid-template-columns: 62px 1fr; gap: 18px; background: white; border: 1px solid var(--line); border-radius: 14px; padding: 20px; }.day-number { color: var(--coral); font-size: 10px; letter-spacing: 1px; line-height: 1.35; }.day-number strong { font-size: 25px; letter-spacing: 0; }.itinerary-day h3 { margin: 0 0 7px; font-size: 17px; }.itinerary-day p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }.itinerary-items { display: flex; flex-wrap: wrap; gap: 7px; margin: 13px 0; }.itinerary-items span { background: var(--mint); border-radius: 13px; padding: 5px 9px; color: var(--teal-dark); font-size: 11px; }.itinerary-day small { color: #93a39f; }.map-preview { min-height: 330px; border-radius: 15px; overflow: hidden; background: #dceee8; position: relative; border: 1px solid var(--line); }.map-canvas { height: 330px; }.map-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; color: var(--teal-dark); padding: 20px; }.map-empty p { margin: 8px 0; color: var(--muted); font-size: 12px; }.map-empty small { color: #77928a; font-size: 10px; }.map-pin { font-size: 46px; color: var(--teal); }.sticky-card { position: sticky; top: 105px; background: white; border: 1px solid var(--line); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); }.sticky-card h3 { font: 500 22px Georgia, serif; margin: 15px 0 23px; }.aside-line { display: flex; justify-content: space-between; padding: 11px 0; border-top: 1px solid #edf3f0; color: var(--muted); font-size: 12px; }.aside-line strong { color: var(--ink); }.sticky-card p { color: var(--muted); line-height: 1.7; font-size: 12px; margin: 22px 0 0; }.two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; background: white; border: 1px solid var(--line); padding: 22px; border-radius: 15px; }.two-columns h3 { margin: 0 0 9px; font-size: 15px; }.detail-copy { color: var(--muted); font-size: 13px; line-height: 1.8; margin: 0; }.wide { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 20px; }@media(max-width:800px){.detail-layout{grid-template-columns:1fr}.detail-aside{order:-1}.sticky-card{position:static}.departure-row{grid-template-columns:1fr 1fr}.departure-row .primary-button{grid-column:2;justify-self:end}.detail-hero-inner{display:block}.favorite-button{margin-top:20px}.two-columns{grid-template-columns:1fr}.wide{grid-column:auto}}
+.place-sheet-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: transparent;
+}
+
+.loading-wrap {
+  padding: 24px;
+}
+
+.detail-error-state {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 80px 24px;
+  text-align: center;
+}
+
+.detail-error-state strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.detail-error-state p {
+  max-width: 280px;
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Sheet Top Bar (Screenshot 3) */
+.sheet-top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.back-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--theme-blue);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sheet-action-btn {
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sheet-action-btn.favorited {
+  color: var(--status-red);
+  background: var(--status-red-bg);
+  border-color: transparent;
+}
+
+.sheet-icon-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.05);
+  border: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+/* Sheet Scroll Body */
+.sheet-scroll-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Hero Media */
+.sheet-hero-media {
+  position: relative;
+  height: 160px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.sheet-hero-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hero-fallback {
+  width: 100%;
+  height: 100%;
+  background: var(--theme-blue);
+}
+
+.hero-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 60%);
+}
+
+.hero-content {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  color: white;
+}
+
+.eyebrow-tag {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.9;
+  letter-spacing: 0.05em;
+  display: block;
+}
+
+.hero-content h3 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 2px 0 0;
+  line-height: 1.3;
+}
+
+/* Transport Mode Switcher (Screenshot 3) */
+.transport-mode-switch {
+  display: flex;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  gap: 2px;
+}
+
+.mode-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 0;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #1d1d1f;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.mode-btn.active {
+  background: var(--theme-blue);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* Waypoints Box (Screenshot 3) */
+.sheet-waypoints-box {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.waypoint-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dot {
+  display: flex;
+  align-items: center;
+}
+
+.node-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.sub-label {
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+.node-info strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.drag-icon {
+  display: flex;
+  align-items: center;
+}
+
+.connector-line {
+  width: 2px;
+  height: 16px;
+  background: rgba(0, 0, 0, 0.08);
+  margin-left: 5px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.route-overview-section {
+  padding: 2px 2px 0;
+}
+
+.route-overview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+
+.route-description {
+  max-width: 260px;
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.route-rating-summary {
+  display: grid;
+  min-width: 78px;
+  justify-items: end;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.route-rating-summary strong {
+  color: #b45309;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.route-rating-summary small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.muted-rating {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* Section Common */
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.section-title-row h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.sub-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* Departures List */
+.departures-sheet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.departure-card-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.departure-card-item[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.departure-card-item:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.departure-card-item.selected {
+  border-color: var(--theme-blue);
+  background: var(--theme-blue-tint);
+}
+
+.dep-dates strong {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.dep-dates span {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.dep-prices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.dep-prices .adult {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--theme-blue);
+}
+
+.dep-prices .child {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.dep-prices small {
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+
+/* Day Itinerary */
+.day-itinerary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.day-row-card {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.day-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--theme-blue-tint);
+  color: var(--theme-blue);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.day-content h5 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 4px;
+}
+
+.day-content p {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+
+.itinerary-items-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 8px 0 2px 10px;
+  border-left: 2px solid rgba(0, 113, 227, 0.14);
+}
+
+.itinerary-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.itinerary-item-type {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--theme-blue);
+  background: var(--theme-blue-tint);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.itinerary-item-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itinerary-item-copy strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.itinerary-item-copy span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.day-meta-tags {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-tag-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.map-section :deep(.map-preview-card) {
+  height: 260px;
+  border-radius: var(--radius-md);
+  box-shadow: none;
+}
+
+.detail-notes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.detail-note-card {
+  padding: 11px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.detail-note-card p {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.booking-notice-card {
+  margin-top: 8px;
+}
+
+.reviews-list {
+  display: grid;
+  gap: 8px;
+}
+
+.review-row {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.review-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-row-head span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.review-row p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Bottom Sticky Footer */
+.sheet-sticky-footer {
+  padding: 12px 18px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 10;
+}
+
+.footer-price-col .label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  display: block;
+}
+
+.footer-price-col .price {
+  display: flex;
+  align-items: baseline;
+  color: var(--price-color);
+}
+
+.footer-price-col .price strong {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.footer-price-col .price small {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-left: 2px;
+}
+
+.booking-cta-btn {
+  min-width: 110px;
+  height: 36px;
+}
+
+@media (max-width: 420px) {
+  .route-overview-head {
+    display: grid;
+  }
+
+  .route-rating-summary {
+    justify-items: start;
+  }
+
+  .detail-notes-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

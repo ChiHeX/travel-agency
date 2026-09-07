@@ -11,19 +11,419 @@ const refundOpen = ref(false)
 const reviewOpen = ref(false)
 const refund = reactive({ reason: '' })
 const review = reactive({ rating: 5, content: '' })
-const labels = { WAIT_PAY: '待支付', PAID_WAIT_CONFIRM: '待确认', CONFIRMED: '已确认', TRAVELLING: '行程中', COMPLETED: '已完成', CANCELLED: '已取消', REFUND_APPLYING: '退款审核中', REFUND_PROCESSING: '退款处理中', REFUNDED: '已退款', REFUND_REJECTED: '退款未通过' }
-async function load() { try { detail.value = await orderApi.detail(currentRoute.params.orderNo) } finally { loading.value = false } }
-async function submitRefund() { await orderApi.refund(currentRoute.params.orderNo, refund); refundOpen.value = false; ElMessage.success('退款申请已提交'); load() }
-async function submitReview() { await orderApi.review(currentRoute.params.orderNo, review); reviewOpen.value = false; ElMessage.success('感谢你的评价'); load() }
+
+const labels = {
+  WAIT_PAY: '待支付',
+  PAID_WAIT_CONFIRM: '待确认',
+  CONFIRMED: '已确认',
+  TRAVELLING: '行程中',
+  COMPLETED: '已完成',
+  CANCELLED: '已取消',
+  REFUND_APPLYING: '退款审核中',
+  REFUND_PROCESSING: '退款处理中',
+  REFUNDED: '已退款',
+  REFUND_REJECTED: '退款未通过'
+}
+
+const statusTags = {
+  WAIT_PAY: 'warning',
+  PAID_WAIT_CONFIRM: 'warning',
+  REFUND_APPLYING: 'warning',
+  REFUND_PROCESSING: 'warning',
+  CONFIRMED: 'success',
+  TRAVELLING: 'success',
+  COMPLETED: 'success',
+  CANCELLED: 'danger',
+  REFUNDED: 'danger',
+  REFUND_REJECTED: 'danger'
+}
+
+async function load() {
+  try {
+    detail.value = await orderApi.detail(currentRoute.params.orderNo)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function submitRefund() {
+  if (!refund.reason.trim()) return ElMessage.warning('请填写退款原因')
+  await orderApi.refund(currentRoute.params.orderNo, refund)
+  refundOpen.value = false
+  ElMessage.success('退款申请已提交，请等待审核')
+  load()
+}
+
+async function submitReview() {
+  await orderApi.review(currentRoute.params.orderNo, review)
+  reviewOpen.value = false
+  ElMessage.success('感谢您的真实评价')
+  load()
+}
+
 onMounted(load)
 </script>
 
 <template>
-  <section class="page-section account-page"><div class="container narrow-container"><div v-if="loading" class="admin-panel"><el-skeleton :rows="9" animated /></div><template v-else-if="detail"><div class="detail-title-row"><div><span class="eyebrow">ORDER DETAIL</span><h2>{{ detail.route?.name || `线路 #${detail.order.routeId}` }}</h2><p>{{ detail.order.orderNo }} · 创建于 {{ detail.order.createdAt }}</p></div><span class="tag status-large">{{ labels[detail.order.status] || detail.order.status }}</span></div><div class="detail-summary-grid"><div><span>团期</span><strong>{{ detail.departure?.startDate }} 至 {{ detail.departure?.endDate }}</strong></div><div><span>联系人</span><strong>{{ detail.order.contactName }} · {{ detail.order.contactPhone }}</strong></div><div><span>出行人数</span><strong>{{ Number(detail.order.adultCount || 0) + Number(detail.order.childCount || 0) }} 人</strong></div><div><span>订单金额</span><strong class="accent">¥{{ detail.order.totalAmount }}</strong></div></div><div class="admin-panel detail-panel"><div class="section-title-row"><h3>出行人资料</h3><span>证件号码已脱敏</span></div><table class="data-table"><thead><tr><th>姓名</th><th>性别</th><th>证件</th><th>手机号</th><th>紧急联系人</th></tr></thead><tbody><tr v-for="traveler in detail.travelers" :key="traveler.id"><td>{{ traveler.name }}</td><td>{{ traveler.gender }}</td><td>{{ traveler.idType }} {{ traveler.idNoMasked }}</td><td>{{ traveler.phone || '—' }}</td><td>{{ traveler.emergencyName }} {{ traveler.emergencyPhone || '' }}</td></tr></tbody></table></div><div class="admin-panel detail-panel"><div class="section-title-row"><h3>订单状态</h3><span>支付：{{ detail.order.paymentStatus }}</span></div><div class="timeline"><div :class="{done: ['PAID_WAIT_CONFIRM','CONFIRMED','TRAVELLING','COMPLETED'].includes(detail.order.status)}"><i></i><span>订单创建</span></div><div :class="{done: ['PAID_WAIT_CONFIRM','CONFIRMED','TRAVELLING','COMPLETED'].includes(detail.order.status)}"><i></i><span>支付成功</span></div><div :class="{done: ['CONFIRMED','TRAVELLING','COMPLETED'].includes(detail.order.status)}"><i></i><span>旅行社确认</span></div><div :class="{done: ['TRAVELLING','COMPLETED'].includes(detail.order.status)}"><i></i><span>行程执行</span></div><div :class="{done: detail.order.status==='COMPLETED'}"><i></i><span>行程完成</span></div></div></div><div class="detail-actions"><button v-if="['PAID_WAIT_CONFIRM','CONFIRMED'].includes(detail.order.status)" class="secondary-button" @click="refundOpen=true">申请退款</button><button v-if="detail.order.status==='COMPLETED'" class="primary-button" @click="reviewOpen=true">评价线路</button></div></template><div v-else class="empty-box">订单不存在。</div></div></section>
-  <el-dialog v-model="refundOpen" title="申请退款" width="420px"><div class="form-field"><label>退款原因</label><textarea v-model="refund.reason" rows="5" placeholder="请说明退款原因"></textarea></div><template #footer><button class="secondary-button" @click="refundOpen=false">取消</button><button class="primary-button" @click="submitRefund">提交申请</button></template></el-dialog>
-  <el-dialog v-model="reviewOpen" title="评价线路" width="420px"><div class="form-field"><label>评分</label><el-rate v-model="review.rating" /></div><div class="form-field"><label>评价内容</label><textarea v-model="review.content" rows="5" placeholder="分享这次旅程"></textarea></div><template #footer><button class="secondary-button" @click="reviewOpen=false">取消</button><button class="primary-button" @click="submitReview">提交评价</button></template></el-dialog>
+  <div class="order-detail-page">
+    <div class="container narrow-container page-section">
+      <div v-if="loading" class="admin-panel">
+        <el-skeleton :rows="9" animated />
+      </div>
+
+      <template v-else-if="detail">
+        <!-- Back Navigation -->
+        <RouterLink to="/account/orders" class="back-orders-btn">
+          ← 返回订单列表
+        </RouterLink>
+
+        <!-- Order Hero Card -->
+        <div class="order-hero-card">
+          <div class="order-hero-top">
+            <div>
+              <span class="eyebrow">ORDER DETAILS</span>
+              <h1>{{ detail.route?.name || `跟团线路 #${detail.order.routeId}` }}</h1>
+              <div class="order-id-meta">
+                <span>订单号：{{ detail.order.orderNo }}</span>
+                <span>·</span>
+                <span>下单时间：{{ detail.order.createdAt }}</span>
+              </div>
+            </div>
+
+            <span class="tag status-pill-lg" :class="statusTags[detail.order.status]">
+              {{ labels[detail.order.status] || detail.order.status }}
+            </span>
+          </div>
+
+          <!-- Summary Metric Cards Grid -->
+          <div class="summary-tiles-grid">
+            <div class="tile">
+              <span class="tile-label">出行团期</span>
+              <strong>{{ detail.departure?.startDate }} 至 {{ detail.departure?.endDate }}</strong>
+            </div>
+            <div class="tile">
+              <span class="tile-label">联系人信息</span>
+              <strong>{{ detail.order.contactName }} · {{ detail.order.contactPhone }}</strong>
+            </div>
+            <div class="tile">
+              <span class="tile-label">出行人数</span>
+              <strong>{{ Number(detail.order.adultCount || 0) + Number(detail.order.childCount || 0) }} 位实名出行人</strong>
+            </div>
+            <div class="tile highlight">
+              <span class="tile-label">订单实付金额</span>
+              <strong class="price-val">¥{{ detail.order.totalAmount }}</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Progress Timeline Card -->
+        <div class="detail-card">
+          <div class="card-head">
+            <h3>履约时间线</h3>
+            <span class="sub-label">支付状态：{{ detail.order.paymentStatus === 'PAID' ? '已支付' : '未支付' }}</span>
+          </div>
+
+          <div class="timeline-stepper">
+            <div class="step" :class="{ completed: ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.order.status) }">
+              <div class="step-icon">1</div>
+              <span class="step-text">订单创建</span>
+            </div>
+            <div class="step-line" :class="{ active: ['PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.order.status) }"></div>
+
+            <div class="step" :class="{ completed: ['PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.order.status) }">
+              <div class="step-icon">2</div>
+              <span class="step-text">支付成功</span>
+            </div>
+            <div class="step-line" :class="{ active: ['CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.order.status) }"></div>
+
+            <div class="step" :class="{ completed: ['CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.order.status) }">
+              <div class="step-icon">3</div>
+              <span class="step-text">旅行社确认</span>
+            </div>
+            <div class="step-line" :class="{ active: ['TRAVELLING', 'COMPLETED'].includes(detail.order.status) }"></div>
+
+            <div class="step" :class="{ completed: ['TRAVELLING', 'COMPLETED'].includes(detail.order.status) }">
+              <div class="step-icon">4</div>
+              <span class="step-text">行程中</span>
+            </div>
+            <div class="step-line" :class="{ active: detail.order.status === 'COMPLETED' }"></div>
+
+            <div class="step" :class="{ completed: detail.order.status === 'COMPLETED' }">
+              <div class="step-icon">5</div>
+              <span class="step-text">行程完成</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Traveler Snapshot Card -->
+        <div class="detail-card">
+          <div class="card-head">
+            <h3>出行人实名资料（快照保存）</h3>
+            <span class="sub-label">历史订单不受后续修改影响 · 证件号已脱敏保护</span>
+          </div>
+
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>出行人姓名</th>
+                <th>性别</th>
+                <th>证件类型与号码</th>
+                <th>联系电话</th>
+                <th>紧急联系人</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="traveler in detail.travelers" :key="traveler.id">
+                <td><strong>{{ traveler.name }}</strong></td>
+                <td>{{ traveler.gender }}</td>
+                <td>{{ traveler.idType }} {{ traveler.idNoMasked }}</td>
+                <td>{{ traveler.phone || '—' }}</td>
+                <td>{{ traveler.emergencyName }} ({{ traveler.emergencyPhone || '—' }})</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Bottom Actions -->
+        <div class="bottom-actions-row">
+          <button
+            v-if="['PAID_WAIT_CONFIRM', 'CONFIRMED'].includes(detail.order.status)"
+            type="button"
+            class="secondary-button danger-button"
+            @click="refundOpen = true"
+          >
+            申请退款
+          </button>
+          <button
+            v-if="detail.order.status === 'COMPLETED'"
+            type="button"
+            class="primary-button"
+            @click="reviewOpen = true"
+          >
+            评价本次行程
+          </button>
+        </div>
+      </template>
+
+      <div v-else class="empty-box">
+        订单记录不存在或无权访问。
+      </div>
+    </div>
+
+    <!-- Refund Dialog -->
+    <el-dialog v-model="refundOpen" title="申请订单退款" width="460px">
+      <div class="form-field">
+        <label>请填写详细退款原因</label>
+        <textarea v-model="refund.reason" rows="4" placeholder="例如：时间冲突无法按期出行，申请办理退款手续..."></textarea>
+      </div>
+      <template #footer>
+        <button class="secondary-button" @click="refundOpen = false">取消</button>
+        <button class="primary-button" @click="submitRefund">提交退款申请</button>
+      </template>
+    </el-dialog>
+
+    <!-- Review Dialog -->
+    <el-dialog v-model="reviewOpen" title="评价跟团游体验" width="460px">
+      <div class="form-field">
+        <label>整体评分</label>
+        <el-rate v-model="review.rating" />
+      </div>
+      <div class="form-field">
+        <label>行程体验与导游服务评价</label>
+        <textarea v-model="review.content" rows="4" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
+      </div>
+      <template #footer>
+        <button class="secondary-button" @click="reviewOpen = false">取消</button>
+        <button class="primary-button" @click="submitReview">发布评价</button>
+      </template>
+    </el-dialog>
+  </div>
 </template>
 
 <style scoped>
-.narrow-container{max-width:980px}.detail-title-row{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:25px}.detail-title-row h2{font:500 32px Georgia,serif;margin:10px 0}.detail-title-row p{margin:0;color:var(--muted);font-size:12px}.status-large{padding:7px 12px}.detail-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:20px}.detail-summary-grid>div{background:white;padding:17px}.detail-summary-grid span,.detail-summary-grid strong{display:block}.detail-summary-grid span{color:var(--muted);font-size:11px;margin-bottom:8px}.detail-summary-grid strong{font-size:13px}.detail-summary-grid .accent{color:var(--coral);font-size:20px}.detail-panel{margin-bottom:18px}.detail-panel h3{margin:0}.section-title-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px}.section-title-row span{color:var(--muted);font-size:11px}.timeline{display:flex;justify-content:space-between;position:relative;padding:12px 0 4px}.timeline:before{content:'';position:absolute;top:22px;left:4%;right:4%;height:2px;background:#dfe9e5}.timeline>div{position:relative;z-index:1;display:grid;justify-items:center;gap:8px;color:#9baaa6;font-size:11px}.timeline i{width:18px;height:18px;border-radius:50%;background:#dfe9e5;border:5px solid white;box-shadow:0 0 0 1px #dfe9e5}.timeline .done{color:var(--teal)}.timeline .done i{background:var(--teal);box-shadow:0 0 0 1px var(--teal)}.detail-actions{text-align:right;display:flex;justify-content:end;gap:10px}@media(max-width:650px){.detail-summary-grid{grid-template-columns:1fr 1fr}.data-table{min-width:700px}.detail-title-row{align-items:start;flex-direction:column}}
+.order-detail-page {
+  background: var(--bg-canvas);
+  min-height: calc(100vh - 64px);
+}
+
+.back-orders-btn {
+  display: inline-block;
+  color: var(--brand-blue);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.order-hero-card {
+  background: white;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-xl);
+  padding: 28px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px;
+}
+
+.order-hero-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.order-hero-top h1 {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 4px 0 6px;
+}
+
+.order-id-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.status-pill-lg {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.summary-tiles-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.tile {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.tile-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.tile strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.tile.highlight .price-val {
+  color: var(--price-orange);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.detail-card {
+  background: white;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.card-head h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.sub-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* Timeline Stepper */
+.timeline-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 10px;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 2;
+}
+
+.step-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-subtle);
+  border: 2px solid var(--border-line);
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.step.completed .step-icon {
+  background: var(--brand-blue);
+  border-color: var(--brand-blue);
+  color: white;
+  box-shadow: 0 0 0 3px var(--brand-blue-tint);
+}
+
+.step-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+
+.step.completed .step-text {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.step-line {
+  flex: 1;
+  height: 2px;
+  background: var(--border-line);
+  margin: 0 10px 24px;
+}
+
+.step-line.active {
+  background: var(--brand-blue);
+}
+
+.bottom-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .summary-tiles-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .timeline-stepper {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .step-line {
+    display: none;
+  }
+}
 </style>

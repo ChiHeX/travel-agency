@@ -16,7 +16,7 @@ travel-agency/
 ├─ frontend/                Vue 3 用户端 + 管理后台 SPA
 ├─ sql/                     schema.sql / test-data.sql
 ├─ deploy/                  Docker Compose、容器配置
-└─ docs/                    PRD、架构和接口说明
+└─ docs/                    PRD、架构、API 规范和 OpenAPI 契约
 ```
 
 ## 本地启动
@@ -84,6 +84,23 @@ npm run dev
 
 演示管理员账号（执行 `test-data.sql` 后）：`admin / password`。该账号和所有 SQL 测试数据仅用于软件测试、课程演示，不代表真实旅行社经营数据。
 
+### 前端独立开发（后端尚未实现时）
+
+项目可以根据 `docs/openapi.yaml` 启动无状态的契约 Mock。分别打开两个终端：
+
+```powershell
+cd frontend
+npm install
+npm run mock:api
+```
+
+```powershell
+cd frontend
+npm run dev:mock
+```
+
+此时前端仍访问 `/api`，但请求会转发到 `http://localhost:4010`。Mock 只用于验证接口形状和开发页面，不保存修改、不执行业务规则，也不表示后端功能已经完成。需要真实联调时使用普通的 `npm run dev`。
+
 ## 项目范围
 
 本项目面向跟团游预订与运营场景，服务游客、旅行社工作人员、导游和系统管理员。业务范围包括旅游线路与团期管理、出行人和订单处理、支付与退款、评价与咨询，以及相应的权限管理和运营协作。
@@ -99,7 +116,7 @@ AMAP_ENABLED / AMAP_WEB_KEY
 ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_CALLBACK_SECRET
 ```
 
-支付宝回调入口为 `POST /api/payments/alipay/callback`。当前代码使用 HMAC 沙箱验签适配点验证 `orderNo|tradeNo|result`；接入真实支付宝沙箱 SDK 时，应在适配器层替换为官方签名校验，业务层只接受验签后的结果。浏览器跳转不能作为支付成功依据。
+目标支付宝异步通知入口为 `POST /api/payments/alipay/notify`。后端正式实现时必须接入支付宝沙箱官方签名校验，并核对商户、订单号和金额，业务层只接受验签后的结果；浏览器跳转不能作为支付成功依据。
 
 ## 验证命令
 
@@ -114,4 +131,4 @@ npm install
 npm run build
 ```
 
-架构、状态机和 API 分组见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。

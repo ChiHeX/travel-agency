@@ -13,9 +13,9 @@ export const useAuthStore = defineStore('auth', () => {
   const roles = computed(() => user.value?.roles || [])
 
   function saveSession(data) {
-    token.value = data.token
+    token.value = data.accessToken
     user.value = data.user
-    localStorage.setItem(TOKEN_KEY, data.token)
+    localStorage.setItem(TOKEN_KEY, data.accessToken)
     localStorage.setItem(USER_KEY, JSON.stringify(data.user))
   }
 

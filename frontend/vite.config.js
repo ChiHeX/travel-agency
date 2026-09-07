@@ -4,6 +4,14 @@ import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const apiProxy = {
+    target: env.VITE_API_PROXY || 'http://localhost:8080',
+    changeOrigin: true
+  }
+  if (env.VITE_API_PROXY_STRIP_PREFIX === 'true') {
+    apiProxy.rewrite = (path) => path.replace(/^\/api/, '')
+  }
+
   return {
     plugins: [vue()],
     resolve: {
@@ -15,10 +23,7 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: Number(env.VITE_PORT || 5173),
       proxy: {
-        '/api': {
-          target: env.VITE_API_PROXY || 'http://localhost:8080',
-          changeOrigin: true
-        }
+        '/api': apiProxy
       }
     }
   }

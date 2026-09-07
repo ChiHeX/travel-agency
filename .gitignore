@@ -26,3 +26,8 @@ Thumbs.db
 
 # AGENTS
 AGENTS.md
+
+# Tmp
+*.tmp
+*.temp
+*.cache

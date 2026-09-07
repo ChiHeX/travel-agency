@@ -11,7 +11,7 @@ const loading = ref(true)
 const submitting = ref(false)
 
 const form = reactive({
-  departureId: Number(currentRoute.query.departureId),
+  departureId: String(currentRoute.query.departureId || ''),
   adultCount: 1,
   childCount: 0,
   contactName: '',
@@ -32,9 +32,9 @@ const totalAmount = computed(
 function emptyTraveler() {
   return {
     name: '',
-    gender: '男',
+    gender: 'MALE',
     birthDate: '',
-    idType: '身份证',
+    idType: 'CHINESE_ID_CARD',
     idNo: '',
     phone: '',
     emergencyName: '',
@@ -63,7 +63,9 @@ async function submit() {
   if (!departure.value) return ElMessage.warning('团期信息加载失败，请返回线路详情重新选择')
   if (
     participantCount.value <= 0 ||
-    form.travelers.some((item) => !item.name || !item.idNo || !item.emergencyName)
+    form.travelers.some(
+      (item) => !item.name || !item.birthDate || !item.idNo || !item.emergencyName || !item.emergencyPhone
+    )
   ) {
     return ElMessage.warning('请完整填写每位出行人的实名姓名、证件号码与紧急联系人')
   }
@@ -71,8 +73,14 @@ async function submit() {
   try {
     const order = await orderApi.create({
       ...form,
+      contactEmail: form.contactEmail || null,
       adultCount: Number(form.adultCount),
-      childCount: Number(form.childCount)
+      childCount: Number(form.childCount),
+      travelers: form.travelers.map((traveler, index) => ({
+        ...traveler,
+        phone: traveler.phone || null,
+        travelerType: index < Number(form.adultCount) ? 'ADULT' : 'CHILD'
+      }))
     })
     ElMessage.success('订单已创建，请尽快完成支付')
     router.replace({ name: 'order-detail', params: { orderNo: order.orderNo } })
@@ -198,8 +206,9 @@ async function submit() {
                 <div class="form-field">
                   <label>性别</label>
                   <select v-model="traveler.gender">
-                    <option>男</option>
-                    <option>女</option>
+                    <option value="MALE">男</option>
+                    <option value="FEMALE">女</option>
+                    <option value="OTHER">其他</option>
                   </select>
                 </div>
 
@@ -211,9 +220,9 @@ async function submit() {
                 <div class="form-field">
                   <label>证件类型</label>
                   <select v-model="traveler.idType">
-                    <option>身份证</option>
-                    <option>护照</option>
-                    <option>港澳通行证</option>
+                    <option value="CHINESE_ID_CARD">身份证</option>
+                    <option value="PASSPORT">护照</option>
+                    <option value="OTHER">其他证件</option>
                   </select>
                 </div>
 

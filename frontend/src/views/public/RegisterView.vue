@@ -12,7 +12,13 @@ const form = reactive({ username: '', password: '', nickname: '', phone: '', ema
 async function submit() {
   loading.value = true
   try {
-    await auth.register(form)
+    await auth.register({
+      username: form.username,
+      password: form.password,
+      nickname: form.nickname,
+      ...(form.phone ? { phone: form.phone } : {}),
+      ...(form.email ? { email: form.email } : {})
+    })
     ElMessage.success('注册成功，欢迎加入行迹旅行')
     router.replace('/')
   } catch (error) {

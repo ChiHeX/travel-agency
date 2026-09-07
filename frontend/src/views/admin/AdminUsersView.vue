@@ -13,7 +13,7 @@ async function load() {
       props.mode === 'staff'
         ? await adminApi.staff({ page: 1, size: 20 })
         : await adminApi.users({ page: 1, size: 20 })
-    rows.value = data?.records || []
+    rows.value = data?.items || []
   } finally {
     loading.value = false
   }
@@ -71,8 +71,8 @@ onMounted(load)
               <td>{{ row.phone || '—' }}</td>
               <td>{{ row.email || '—' }}</td>
               <td>
-                <span class="tag" :class="row.status === 1 ? 'success' : 'danger'">
-                  {{ row.status === 1 ? '正常使用' : '已冻结' }}
+                <span class="tag" :class="row.status === 'ACTIVE' ? 'success' : 'danger'">
+                  {{ row.status === 'ACTIVE' ? '正常使用' : '已冻结' }}
                 </span>
               </td>
               <td>{{ row.createdAt }}</td>

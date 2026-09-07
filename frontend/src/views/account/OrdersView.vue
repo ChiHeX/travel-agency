@@ -38,7 +38,7 @@ const statusTags = {
 async function load() {
   loading.value = true
   try {
-    orders.value = (await orderApi.list(activeStatus.value ? { status: activeStatus.value } : {})) || []
+    orders.value = (await orderApi.list(activeStatus.value ? { status: activeStatus.value } : {}))?.items || []
   } finally {
     loading.value = false
   }
@@ -57,7 +57,11 @@ async function cancel(order) {
 
 async function pay(order) {
   const data = await orderApi.pay(order.orderNo)
-  ElMessage.info(`${data.notice}，等待支付回调确认。`)
+  if (import.meta.env.MODE === 'mock') {
+    ElMessage.info('模拟支付请求已创建；真实环境将跳转至支付宝沙箱。')
+    return
+  }
+  window.location.assign(data.paymentUrl)
 }
 
 function viewDetail(order) {

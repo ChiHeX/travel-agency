@@ -6,14 +6,29 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const loading = ref(false)
-const form = reactive({ nickname: '', realName: '', phone: '', email: '', avatar: '' })
+const form = reactive({ nickname: '', realName: '', phone: '', email: '', avatarUrl: '' })
 
-onMounted(() => Object.assign(form, auth.user || {}))
+onMounted(() => {
+  const user = auth.user || {}
+  Object.assign(form, {
+    nickname: user.nickname || '',
+    realName: user.realName || '',
+    phone: user.phone || '',
+    email: user.email || '',
+    avatarUrl: user.avatarUrl || ''
+  })
+})
 
 async function submit() {
   loading.value = true
   try {
-    const user = await authApi.updateProfile(form)
+    const user = await authApi.updateProfile({
+      nickname: form.nickname,
+      realName: form.realName || null,
+      phone: form.phone || null,
+      email: form.email || null,
+      avatarUrl: form.avatarUrl || null
+    })
     auth.user = user
     localStorage.setItem('travel_agency_user', JSON.stringify(user))
     ElMessage.success('个人资料已成功更新')

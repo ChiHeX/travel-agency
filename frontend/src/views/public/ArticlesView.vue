@@ -21,7 +21,7 @@ const remainingArticles = computed(() => filteredArticles.value.slice(1))
 async function load() {
   loading.value = true
   try {
-    articles.value = (await contentApi.articles()) || []
+    articles.value = (await contentApi.articles())?.items || []
   } finally {
     loading.value = false
   }

@@ -9,16 +9,16 @@ const loading = ref(false)
 async function load() {
   loading.value = true
   try {
-    messages.value = (await accountApi.messages()) || []
+    messages.value = (await accountApi.messages())?.items || []
   } finally {
     loading.value = false
   }
 }
 
 async function read(item) {
-  if (item.readFlag) return
+  if (item.read) return
   await accountApi.readMessage(item.id)
-  item.readFlag = 1
+  item.read = true
   ElMessage.success('已标记为已读')
 }
 
@@ -45,16 +45,16 @@ onMounted(load)
           v-for="item in messages"
           :key="item.id"
           class="message-card-item"
-          :class="{ unread: !item.readFlag }"
+          :class="{ unread: !item.read }"
           @click="read(item)"
         >
           <div class="msg-status-indicator">
-            <span class="dot-dot" :class="{ unread: !item.readFlag }"></span>
+            <span class="dot-dot" :class="{ unread: !item.read }"></span>
           </div>
 
           <div class="msg-content-wrap">
             <div class="msg-head-row">
-              <h3 :class="{ unread: !item.readFlag }">{{ item.title }}</h3>
+              <h3 :class="{ unread: !item.read }">{{ item.title }}</h3>
               <span class="msg-time">{{ item.createdAt }}</span>
             </div>
             <p class="msg-body-text">{{ item.content }}</p>

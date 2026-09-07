@@ -34,47 +34,13 @@ provide('isDrawerOpen', isDrawerOpen)
 const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF') || auth.hasRole('GUIDE'))
 const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail'].includes(route.name))
 
-// Shared Global City Pin Markers
-const mapPins = [
-  // Europe
-  { name: '伦敦', price: '¥6,200', x: 1030, y: 440, dest: '欧洲' },
-  { name: '巴黎', price: '¥5,880', x: 1060, y: 480, dest: '欧洲' },
-  { name: '罗马', price: '¥5,450', x: 1150, y: 560, dest: '欧洲' },
-  { name: '赫尔辛基', price: '¥4,980', x: 1190, y: 310, dest: '北欧' },
-  { name: '斯德哥尔摩', price: '¥5,280', x: 1160, y: 340, dest: '北欧' },
-  { name: '雅典', price: '¥4,680', x: 1210, y: 590, dest: '欧洲' },
-  // Asia
-  { name: '北京', price: '¥1,260', x: 1780, y: 530, dest: '北京' },
-  { name: '上海', price: '¥1,580', x: 1840, y: 600, dest: '华东' },
-  { name: '成都', price: '¥1,880', x: 1690, y: 620, dest: '成都' },
-  { name: '三亚', price: '¥1,999', x: 1730, y: 730, dest: '三亚' },
-  { name: '云南', price: '¥2,180', x: 1670, y: 700, dest: '云南' },
-  { name: '京都', price: '¥3,720', x: 1960, y: 560, dest: '京都' },
-  { name: '首尔', price: '¥2,860', x: 1890, y: 550, dest: '首尔' },
-  { name: '曼谷', price: '¥3,280', x: 1730, y: 790, dest: '曼谷' },
-  { name: '新加坡', price: '¥4,520', x: 1740, y: 920, dest: '新加坡' },
-  { name: '迪拜', price: '¥4,120', x: 1370, y: 680, dest: '中东' },
-  // Americas
-  { name: '纽约', price: '¥6,800', x: 670, y: 540, dest: '北美' },
-  { name: '旧金山', price: '¥5,980', x: 390, y: 560, dest: '北美' },
-  { name: '夏威夷', price: '¥5,600', x: 220, y: 740, dest: '海岛' },
-  // Oceania & Africa
-  { name: '悉尼', price: '¥5,900', x: 2210, y: 1220, dest: '澳洲' },
-  { name: '开罗', price: '¥4,200', x: 1250, y: 650, dest: '埃及' }
-]
-
 onMounted(async () => {
   if (auth.isLoggedIn) {
     try {
-      unreadCount.value = await accountApi.unreadCount()
+      unreadCount.value = (await accountApi.unreadCount())?.count || 0
     } catch (_) {}
   }
 })
-
-function onPinClick(pin) {
-  isDrawerOpen.value = true
-  router.push({ name: 'routes', query: { keyword: pin.dest } })
-}
 
 function handleTabClick(routeName) {
   if (!isDrawerOpen.value) {
@@ -126,8 +92,7 @@ function logout() {
          ========================================================================== -->
     <WorldMapCanvas
       v-if="isMapActiveView"
-      :pins="mapPins"
-      @pin-click="onPinClick"
+      :pins="[]"
     />
 
     <!-- ==========================================================================

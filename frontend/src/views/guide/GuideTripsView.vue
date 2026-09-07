@@ -14,9 +14,13 @@ async function load() {
   loading.value = true
   try {
     if (props.detail) {
-      data.value = await guideApi.detail(currentRoute.params.id)
+      const [detail, passengers] = await Promise.all([
+        guideApi.detail(currentRoute.params.id),
+        guideApi.passengers(currentRoute.params.id)
+      ])
+      data.value = { ...detail, passengers }
     } else {
-      rows.value = (await guideApi.departures()) || []
+      rows.value = (await guideApi.departures())?.items || []
     }
   } finally {
     loading.value = false
@@ -24,7 +28,7 @@ async function load() {
 }
 
 async function markFinished() {
-  await guideApi.status(data.value.departure.id, 'FINISHED')
+  await guideApi.complete(data.value.departure.id)
   ElMessage.success('团期已顺利标记为完成')
   load()
 }

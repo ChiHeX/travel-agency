@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
+import MapPreview from '@/components/MapPreview.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -12,6 +13,7 @@ const auth = useAuthStore()
 const closeDrawer = inject('closeDrawer', () => {})
 const data = ref(null)
 const loading = ref(true)
+const errorMessage = ref('')
 const favorite = ref(false)
 const selectedDepartureId = ref(null)
 
@@ -19,14 +21,20 @@ const departures = computed(() => data.value?.departures || [])
 const selectedDeparture = computed(
   () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
 )
+const reviews = computed(() => data.value?.reviews || [])
 
 async function load() {
   loading.value = true
+  errorMessage.value = ''
   try {
     data.value = await routeApi.detail(route.params.id)
+    favorite.value = Boolean(data.value?.favorite || data.value?.route?.favorited)
     if (departures.value.length > 0) {
       selectedDepartureId.value = departures.value[0].id
     }
+  } catch (error) {
+    data.value = null
+    errorMessage.value = error.message || '线路详情加载失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -58,8 +66,29 @@ function book(departure) {
 }
 
 function getAvailableSeats(item) {
+  if (item?.availableSeats != null) return Number(item.availableSeats)
   if (item?.maxPeople == null) return null
   return Number(item.maxPeople) - Number(item.confirmedPeople || 0) - Number(item.reservedPeople || 0)
+}
+
+function isDepartureBookable(item) {
+  if (!item || (item.status && item.status !== 'OPEN')) return false
+  const seats = getAvailableSeats(item)
+  return seats != null && seats > 0
+}
+
+function selectDeparture(item) {
+  if (isDepartureBookable(item)) selectedDepartureId.value = item.id
+}
+
+function itineraryType(type) {
+  const labels = {
+    ATTRACTION: '景点',
+    HOTEL: '酒店',
+    MEAL: '餐食',
+    TRANSPORT: '交通'
+  }
+  return labels[type] || type || '行程'
 }
 
 function shareRoute() {
@@ -76,6 +105,13 @@ onMounted(load)
   <div class="place-sheet-drawer">
     <div v-if="loading" class="loading-wrap">
       <el-skeleton :rows="10" animated />
+    </div>
+
+    <div v-else-if="errorMessage" class="detail-error-state">
+      <AppIcon name="pin" size="24" color="#ff3b30" />
+      <strong>线路详情暂时无法加载</strong>
+      <p>{{ errorMessage }}</p>
+      <button type="button" class="secondary-button" @click="load">重新加载</button>
     </div>
 
     <template v-else-if="data && data.route">
@@ -114,7 +150,7 @@ onMounted(load)
         </div>
 
         <!-- Waypoints Stop List (Screenshot 3) -->
-        <div class="sheet-waypoints-box">
+          <div class="sheet-waypoints-box">
           <div class="waypoint-node">
             <span class="dot blue">
               <AppIcon name="circle" size="13" color="#0071e3" />
@@ -142,6 +178,23 @@ onMounted(load)
               <AppIcon name="drag" size="14" color="#8e8e93" />
             </span>
           </div>
+          </div>
+
+        <div class="sheet-section route-overview-section">
+          <div class="route-overview-head">
+            <div>
+              <span class="sub-hint">线路简介</span>
+              <p class="route-description">{{ data.route.description || '暂无线路简介。' }}</p>
+            </div>
+            <div class="route-rating-summary">
+              <template v-if="data.route.ratingCount">
+                <strong>{{ data.route.ratingAvg }}</strong>
+                <span>/ 5</span>
+                <small>{{ data.route.ratingCount }} 条评价</small>
+              </template>
+              <span v-else class="muted-rating">暂无评分</span>
+            </div>
+          </div>
         </div>
 
         <!-- Departures Section -->
@@ -160,7 +213,8 @@ onMounted(load)
                 selected: selectedDepartureId === item.id,
                 soldout: getAvailableSeats(item) != null && getAvailableSeats(item) <= 0
               }"
-              @click="selectedDepartureId = item.id"
+              :aria-disabled="!isDepartureBookable(item)"
+              @click="selectDeparture(item)"
             >
               <div class="dep-dates">
                 <strong>{{ item.startDate }}</strong>
@@ -193,6 +247,15 @@ onMounted(load)
               <div class="day-content">
                 <h5>{{ item.day.title }}</h5>
                 <p>{{ item.day.description }}</p>
+                <div v-if="item.items && item.items.length" class="itinerary-items-list">
+                  <div v-for="entry in item.items" :key="entry.id" class="itinerary-item-row">
+                    <span class="itinerary-item-type">{{ itineraryType(entry.itemType) }}</span>
+                    <div class="itinerary-item-copy">
+                      <strong>{{ entry.name }}</strong>
+                      <span v-if="entry.description">{{ entry.description }}</span>
+                    </div>
+                  </div>
+                </div>
                 <div class="day-meta-tags">
                   <span class="meta-tag-item">
                     <AppIcon name="bus" size="12" color="#0071e3" />
@@ -203,10 +266,60 @@ onMounted(load)
                     <AppIcon name="food" size="12" color="#ff9500" />
                     <span>餐食：{{ item.day.meals || '暂无安排' }}</span>
                   </span>
+                  <template v-if="item.day.hotelName || item.day.hotel?.name">
+                    <span>·</span>
+                    <span class="meta-tag-item">
+                      <AppIcon name="hotel" size="12" color="#5856d6" />
+                      <span>住宿：{{ item.day.hotelName || item.day.hotel.name }}</span>
+                    </span>
+                  </template>
                 </div>
               </div>
             </div>
           </div>
+          <div v-else class="empty-box">暂无已发布的每日行程。</div>
+        </div>
+
+        <div class="sheet-section map-section">
+          <div class="section-title-row">
+            <h4>行程地图</h4>
+            <span class="sub-hint">按行程顺序展示</span>
+          </div>
+          <MapPreview :itinerary="data.itinerary || []" />
+        </div>
+
+        <div class="sheet-section route-notes-section">
+          <div class="detail-notes-grid">
+            <div class="detail-note-card">
+              <span class="sub-hint">费用包含</span>
+              <p>{{ data.route.included || '暂无说明。' }}</p>
+            </div>
+            <div class="detail-note-card">
+              <span class="sub-hint">费用不包含</span>
+              <p>{{ data.route.excluded || '暂无说明。' }}</p>
+            </div>
+          </div>
+          <div class="detail-note-card booking-notice-card">
+            <span class="sub-hint">预订须知</span>
+            <p>{{ data.route.bookingNotice || '暂无说明。' }}</p>
+          </div>
+        </div>
+
+        <div class="sheet-section reviews-section">
+          <div class="section-title-row">
+            <h4>用户评价</h4>
+            <span class="sub-hint">{{ data.route.ratingCount || 0 }} 条</span>
+          </div>
+          <div v-if="reviews.length" class="reviews-list">
+            <article v-for="review in reviews" :key="review.id" class="review-row">
+              <div class="review-row-head">
+                <el-rate :model-value="Number(review.rating) || 0" disabled size="small" />
+                <span>{{ review.createdAt || '评价时间待同步' }}</span>
+              </div>
+              <p>{{ review.content || '用户未填写文字评价。' }}</p>
+            </article>
+          </div>
+          <div v-else class="empty-box">暂无用户评价。</div>
         </div>
       </div>
 
@@ -246,6 +359,27 @@ onMounted(load)
 
 .loading-wrap {
   padding: 24px;
+}
+
+.detail-error-state {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 80px 24px;
+  text-align: center;
+}
+
+.detail-error-state strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.detail-error-state p {
+  max-width: 280px;
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* Sheet Top Bar (Screenshot 3) */
@@ -451,6 +585,51 @@ onMounted(load)
   margin-bottom: 2px;
 }
 
+.route-overview-section {
+  padding: 2px 2px 0;
+}
+
+.route-overview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+
+.route-description {
+  max-width: 260px;
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.route-rating-summary {
+  display: grid;
+  min-width: 78px;
+  justify-items: end;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.route-rating-summary strong {
+  color: #b45309;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.route-rating-summary small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.muted-rating {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
 /* Section Common */
 .section-title-row {
   display: flex;
@@ -491,6 +670,11 @@ onMounted(load)
   -webkit-backdrop-filter: blur(10px);
   cursor: pointer;
   transition: all 0.15s ease;
+}
+
+.departure-card-item[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .departure-card-item:hover {
@@ -581,6 +765,48 @@ onMounted(load)
   margin: 0 0 6px;
 }
 
+.itinerary-items-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 8px 0 2px 10px;
+  border-left: 2px solid rgba(0, 113, 227, 0.14);
+}
+
+.itinerary-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.itinerary-item-type {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--theme-blue);
+  background: var(--theme-blue-tint);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.itinerary-item-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itinerary-item-copy strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.itinerary-item-copy span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .day-meta-tags {
   font-size: 10px;
   color: var(--text-tertiary);
@@ -593,6 +819,68 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 3px;
+}
+
+.map-section :deep(.map-preview-card) {
+  height: 260px;
+  border-radius: var(--radius-md);
+  box-shadow: none;
+}
+
+.detail-notes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.detail-note-card {
+  padding: 11px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.detail-note-card p {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.booking-notice-card {
+  margin-top: 8px;
+}
+
+.reviews-list {
+  display: grid;
+  gap: 8px;
+}
+
+.review-row {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.review-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-row-head span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.review-row p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 /* Bottom Sticky Footer */
@@ -634,5 +922,19 @@ onMounted(load)
 .booking-cta-btn {
   min-width: 110px;
   height: 36px;
+}
+
+@media (max-width: 420px) {
+  .route-overview-head {
+    display: grid;
+  }
+
+  .route-rating-summary {
+    justify-items: start;
+  }
+
+  .detail-notes-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

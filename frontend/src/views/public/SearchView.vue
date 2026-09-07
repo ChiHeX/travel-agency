@@ -1,27 +1,38 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 
 const router = useRouter()
+const currentRoute = useRoute()
 const closeDrawer = inject('closeDrawer', () => {})
 
-const keyword = ref('')
+const keyword = ref(currentRoute.query.keyword || '')
 const routes = ref([])
+const total = ref(0)
+const page = ref(Number(currentRoute.query.page) || 1)
+const pageSize = 10
 const loading = ref(false)
+const errorMessage = ref('')
 const destinations = computed(() => [...new Set(routes.value.map((item) => item.destination).filter(Boolean))])
 
 async function loadRoutes() {
   loading.value = true
+  errorMessage.value = ''
   try {
     const data = await routeApi.list({
       keyword: keyword.value || undefined,
       hasDeparture: true,
-      page: 1,
-      size: 10
+      page: page.value,
+      size: pageSize
     })
-    routes.value = data?.records || []
+    routes.value = data?.items || []
+    total.value = data?.total || 0
+  } catch (error) {
+    routes.value = []
+    total.value = 0
+    errorMessage.value = error.message || '搜索失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -29,6 +40,14 @@ async function loadRoutes() {
 
 function search(val = keyword.value) {
   keyword.value = val
+  page.value = 1
+  router.replace({ name: 'search', query: keyword.value ? { keyword: keyword.value } : {} })
+  loadRoutes()
+}
+
+function changePage(nextPage) {
+  page.value = nextPage
+  router.replace({ name: 'search', query: { ...(keyword.value ? { keyword: keyword.value } : {}), page: String(page.value) } })
   loadRoutes()
 }
 
@@ -59,7 +78,7 @@ onMounted(loadRoutes)
           aria-label="搜索地点或线路"
           autofocus
         />
-        <button v-if="keyword" type="button" class="clear-btn" @click="keyword = ''; loadRoutes()">
+        <button v-if="keyword" type="button" class="clear-btn" @click="search('')">
           <AppIcon name="close" size="10" color="#ffffff" />
         </button>
       </form>
@@ -80,8 +99,8 @@ onMounted(loadRoutes)
       <!-- Section: 可报名跟团路线 (Results Feed) -->
       <div class="results-section">
         <div class="results-title-row">
-          <h4 class="section-title">可报名路线 ({{ routes.length }})</h4>
-          <RouterLink to="/routes" class="view-all-link">
+          <h4 class="section-title">可报名路线 ({{ total }})</h4>
+          <RouterLink :to="{ name: 'routes', query: keyword ? { keyword } : undefined }" class="view-all-link">
             <span>路线规划</span>
             <AppIcon name="chevron-right" size="12" />
           </RouterLink>
@@ -89,6 +108,12 @@ onMounted(loadRoutes)
 
         <div v-if="loading" class="skeleton-list">
           <el-skeleton v-for="i in 3" :key="i" :rows="3" animated style="margin-bottom: 12px;" />
+        </div>
+
+        <div v-else-if="errorMessage" class="empty-results error-results">
+          <strong>搜索暂时不可用</strong>
+          <p>{{ errorMessage }}</p>
+          <button type="button" class="secondary-button" @click="loadRoutes">重新加载</button>
         </div>
 
         <div v-else-if="routes.length" class="route-cards-feed">
@@ -134,9 +159,20 @@ onMounted(loadRoutes)
 
         <div v-else class="empty-results">
           <p>未找到完全匹配的线路，请尝试其他关键词。</p>
-          <button type="button" class="secondary-button" @click="keyword = ''; loadRoutes()">
+          <button type="button" class="secondary-button" @click="search('')">
             查看全部路线
           </button>
+        </div>
+
+        <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+          <el-pagination
+            :current-page="page"
+            :page-size="pageSize"
+            :total="total"
+            background
+            layout="prev, pager, next"
+            @current-change="changePage"
+          />
         </div>
       </div>
     </div>
@@ -407,6 +443,17 @@ onMounted(loadRoutes)
   text-align: center;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.error-results strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 2px;
 }
 
 .empty-results p {

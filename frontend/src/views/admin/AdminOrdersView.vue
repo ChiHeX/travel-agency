@@ -28,7 +28,7 @@ async function load() {
       size: 20,
       status: status.value || undefined
     })
-    rows.value = data?.records || []
+    rows.value = data?.items || []
     total.value = data?.total || 0
   } finally {
     loading.value = false

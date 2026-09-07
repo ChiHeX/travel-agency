@@ -11,7 +11,7 @@ const loading = ref(false)
 async function load() {
   loading.value = true
   try {
-    routes.value = (await accountApi.favorites()) || []
+    routes.value = (await accountApi.favorites())?.items || []
   } finally {
     loading.value = false
   }

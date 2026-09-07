@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { guideApi } from '@/api/modules'
 
-const data = ref({ upcoming: [], active: [], history: [] })
+const data = ref({ upcoming: [], current: [], history: [] })
 const loading = ref(false)
 
 onMounted(async () => {
@@ -35,7 +35,7 @@ onMounted(async () => {
 
       <div class="stat-card">
         <span class="label">当前正在带团</span>
-        <div class="value text-warning">{{ data.active.length }}</div>
+        <div class="value text-warning">{{ data.current.length }}</div>
         <span class="hint">状态 TRAVELLING</span>
       </div>
 

@@ -1,0 +1,3440 @@
+openapi: 3.1.0
+info:
+  title: Travel Agency API
+  version: 1.0.0
+  description: |
+    旅行社在线跟团游系统的正式接口契约。PRD 定义业务，本文件定义可执行的 HTTP 契约。
+    当前后端脚手架不构成兼容依据；前端 Mock、正式后端和契约测试均以本文件为准。
+x-contract-status: FROZEN
+servers:
+  - url: /api
+    description: 当前站点 API
+security:
+  - bearerAuth: []
+tags:
+  - name: System
+  - name: Auth
+  - name: Home
+  - name: Routes
+  - name: Content
+  - name: Account
+  - name: Travelers
+  - name: Favorites
+  - name: Orders
+  - name: Messages
+  - name: Consultations
+  - name: Admin Dashboard
+  - name: Admin Routes
+  - name: Admin Departures
+  - name: Admin Resources
+  - name: Admin Orders
+  - name: Admin Accounts
+  - name: Admin Content
+  - name: Guide
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: 服务健康检查
+      security: []
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthEnvelope' }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: 注册普通用户
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: 注册成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: 登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: 获取当前登录用户
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /home:
+    get:
+      tags: [Home]
+      operationId: getHome
+      summary: 获取首页聚合数据
+      security: []
+      responses:
+        '200':
+          description: 首页真实统计及线路数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HomeEnvelope' }
+
+  /routes:
+    get:
+      tags: [Routes]
+      operationId: listPublicRoutes
+      summary: 搜索和筛选已发布线路
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: departureCity
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: destination
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: minPrice
+          in: query
+          schema: { $ref: '#/components/schemas/Money' }
+        - name: maxPrice
+          in: query
+          schema: { $ref: '#/components/schemas/Money' }
+        - name: durationDays
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: departureMonth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 12 }
+        - name: hasDeparture
+          in: query
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          description: 允许 minAdultPrice、validBookingCount、ratingAvg
+          schema:
+            type: string
+            enum: ['minAdultPrice,asc', 'minAdultPrice,desc', 'validBookingCount,desc', 'ratingAvg,desc']
+      responses:
+        '200':
+          description: 线路分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutePageEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /routes/{routeId}:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    get:
+      tags: [Routes]
+      operationId: getPublicRoute
+      summary: 获取线路详情、可报名团期、行程和近期评价
+      security: []
+      responses:
+        '200':
+          description: 线路详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /routes/{routeId}/reviews:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    get:
+      tags: [Routes]
+      operationId: listRouteReviews
+      summary: 获取线路的可见评价
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: 评价分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewPageEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attractions:
+    get:
+      tags: [Content]
+      operationId: listPublicAttractions
+      summary: 查询公开景点资料
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: city
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: 景点分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionPageEnvelope' }
+
+  /articles:
+    get:
+      tags: [Content]
+      operationId: listPublicArticles
+      summary: 查询已发布旅游攻略
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: destination
+          in: query
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: 攻略分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticlePageEnvelope' }
+
+  /articles/{articleId}:
+    parameters:
+      - { $ref: '#/components/parameters/ArticleId' }
+    get:
+      tags: [Content]
+      operationId: getPublicArticle
+      summary: 获取已发布攻略详情
+      security: []
+      responses:
+        '200':
+          description: 攻略详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticleEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /account/profile:
+    get:
+      tags: [Account]
+      operationId: getProfile
+      summary: 获取个人资料
+      responses:
+        '200':
+          description: 用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [Account]
+      operationId: updateProfile
+      summary: 修改个人资料
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdateRequest' }
+      responses:
+        '200':
+          description: 修改后的资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /account/password:
+    put:
+      tags: [Account]
+      operationId: changePassword
+      summary: 修改当前用户密码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChangeRequest' }
+      responses:
+        '204': { description: 密码修改成功 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /travelers:
+    get:
+      tags: [Travelers]
+      operationId: listTravelers
+      summary: 获取当前用户的常用出行人
+      responses:
+        '200':
+          description: 常用出行人列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TravelerListEnvelope' }
+    post:
+      tags: [Travelers]
+      operationId: createTraveler
+      summary: 新增常用出行人
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TravelerRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TravelerEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /travelers/{travelerId}:
+    parameters:
+      - { $ref: '#/components/parameters/TravelerId' }
+    put:
+      tags: [Travelers]
+      operationId: updateTraveler
+      summary: 修改自己的常用出行人
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TravelerUpdateRequest' }
+      responses:
+        '200':
+          description: 修改后的出行人
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TravelerEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [Travelers]
+      operationId: deleteTraveler
+      summary: 删除自己的常用出行人
+      responses:
+        '204': { description: 删除成功 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /favorites:
+    get:
+      tags: [Favorites]
+      operationId: listFavorites
+      summary: 获取收藏线路
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: 收藏线路分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutePageEnvelope' }
+    post:
+      tags: [Favorites]
+      operationId: addFavorite
+      summary: 收藏线路
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FavoriteCreateRequest' }
+      responses:
+        '201':
+          description: 收藏成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FavoriteEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /favorites/{routeId}:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    delete:
+      tags: [Favorites]
+      operationId: removeFavorite
+      summary: 取消收藏线路
+      responses:
+        '204': { description: 已取消收藏 }
+
+  /orders:
+    get:
+      tags: [Orders]
+      operationId: listMyOrders
+      summary: 分页查询当前用户订单
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/OrderStatus' }
+      responses:
+        '200':
+          description: 订单分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPageEnvelope' }
+    post:
+      tags: [Orders]
+      operationId: createOrder
+      summary: 创建待支付订单并占用团期名额
+      description: 服务端重新校验价格、团期状态和容量，并保存价格及出行人快照。
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderCreateRequest' }
+      responses:
+        '201':
+          description: 订单创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /orders/{orderNo}:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    get:
+      tags: [Orders]
+      operationId: getMyOrder
+      summary: 获取当前用户订单详情
+      responses:
+        '200':
+          description: 包含下单快照、支付、退款和评价状态的订单详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orders/{orderNo}/pay:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: startOrderPayment
+      summary: 发起支付宝沙箱支付
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200':
+          description: 支付跳转信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentStartEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /orders/{orderNo}/cancel:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: cancelOrder
+      summary: 取消待支付订单并释放名额
+      responses:
+        '200':
+          description: 取消后的订单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /orders/{orderNo}/refunds:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: createRefund
+      summary: 为已支付订单申请退款
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundCreateRequest' }
+      responses:
+        '201':
+          description: 退款申请已创建
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /orders/{orderNo}/reviews:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: createReview
+      summary: 评价已完成订单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewCreateRequest' }
+      responses:
+        '201':
+          description: 评价创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /payments/alipay/notify:
+    post:
+      tags: [Orders]
+      operationId: handleAlipayNotification
+      summary: 支付宝异步通知
+      description: 必须使用支付宝官方 SDK 验签、核对订单号与金额，并按交易号幂等处理。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+      responses:
+        '200':
+          description: 支付宝要求的确认文本
+          content:
+            text/plain:
+              schema: { type: string, enum: [success, failure] }
+
+  /messages:
+    get:
+      tags: [Messages]
+      operationId: listMessages
+      summary: 分页查询当前用户站内消息
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: unreadOnly
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 消息分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePageEnvelope' }
+
+  /messages/unread-count:
+    get:
+      tags: [Messages]
+      operationId: getUnreadMessageCount
+      summary: 获取当前用户未读消息数
+      responses:
+        '200':
+          description: 未读数量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UnreadCountEnvelope' }
+
+  /messages/{messageId}/read:
+    parameters:
+      - { $ref: '#/components/parameters/MessageId' }
+    patch:
+      tags: [Messages]
+      operationId: markMessageRead
+      summary: 将自己的消息标记为已读
+      responses:
+        '200':
+          description: 更新后的消息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /messages/read-all:
+    post:
+      tags: [Messages]
+      operationId: markAllMessagesRead
+      summary: 将当前用户全部消息标记为已读
+      responses:
+        '204': { description: 操作成功 }
+
+  /consultations:
+    get:
+      tags: [Consultations]
+      operationId: listMyConsultations
+      summary: 分页查询当前用户咨询
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: 咨询分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationPageEnvelope' }
+    post:
+      tags: [Consultations]
+      operationId: createConsultation
+      summary: 提交在线咨询
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsultationCreateRequest' }
+      responses:
+        '201':
+          description: 咨询创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /consultations/{consultationId}:
+    parameters:
+      - { $ref: '#/components/parameters/ConsultationId' }
+    get:
+      tags: [Consultations]
+      operationId: getMyConsultation
+      summary: 获取自己的咨询及回复
+      responses:
+        '200':
+          description: 咨询详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /consultations/{consultationId}/close:
+    parameters:
+      - { $ref: '#/components/parameters/ConsultationId' }
+    post:
+      tags: [Consultations]
+      operationId: closeMyConsultation
+      summary: 关闭自己的咨询
+      responses:
+        '200':
+          description: 关闭后的咨询
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/dashboard:
+    get:
+      tags: [Admin Dashboard]
+      operationId: getAdminDashboard
+      summary: 获取后台真实业务统计
+      security: [{ bearerAuth: [] }]
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, enum: [7, 30], default: 7 }
+      responses:
+        '200':
+          description: 统计指标和趋势
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/routes:
+    get:
+      tags: [Admin Routes]
+      operationId: listAdminRoutes
+      summary: 分页查询全部线路
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RouteStatus' }
+      responses:
+        '200':
+          description: 线路分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutePageEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin Routes]
+      operationId: createRoute
+      summary: 创建线路草稿
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteUpsertRequest' }
+      responses:
+        '201':
+          description: 线路创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/routes/{routeId}:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    get:
+      tags: [Admin Routes]
+      operationId: getAdminRoute
+      summary: 获取线路管理详情
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 线路详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Routes]
+      operationId: updateRoute
+      summary: 修改线路基本资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteUpsertRequest' }
+      responses:
+        '200':
+          description: 修改后的线路
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/routes/{routeId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    patch:
+      tags: [Admin Routes]
+      operationId: updateRouteStatus
+      summary: 上架或下架线路
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的线路
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/routes/{routeId}/itinerary-days:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+    get:
+      tags: [Admin Routes]
+      operationId: listItineraryDays
+      summary: 获取线路每日行程
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 每日行程列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayListEnvelope' }
+    post:
+      tags: [Admin Routes]
+      operationId: createItineraryDay
+      summary: 新增每日行程
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryDayRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/itinerary-days/{dayId}:
+    parameters:
+      - { $ref: '#/components/parameters/DayId' }
+    put:
+      tags: [Admin Routes]
+      operationId: updateItineraryDay
+      summary: 修改每日行程
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryDayRequest' }
+      responses:
+        '200':
+          description: 修改后的每日行程
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin Routes]
+      operationId: deleteItineraryDay
+      summary: 删除每日行程及其项目
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '204': { description: 删除成功 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/itinerary-days/{dayId}/items:
+    parameters:
+      - { $ref: '#/components/parameters/DayId' }
+    get:
+      tags: [Admin Routes]
+      operationId: listItineraryItems
+      summary: 获取某日行程项目
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 行程项目列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryItemListEnvelope' }
+    post:
+      tags: [Admin Routes]
+      operationId: createItineraryItem
+      summary: 新增行程项目
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryItemRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryItemEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/itinerary-items/{itemId}:
+    parameters:
+      - { $ref: '#/components/parameters/ItemId' }
+    put:
+      tags: [Admin Routes]
+      operationId: updateItineraryItem
+      summary: 修改行程项目
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ItineraryItemRequest' }
+      responses:
+        '200':
+          description: 修改后的项目
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryItemEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin Routes]
+      operationId: deleteItineraryItem
+      summary: 删除行程项目
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '204': { description: 删除成功 }
+
+  /admin/departures:
+    get:
+      tags: [Admin Departures]
+      operationId: listAdminDepartures
+      summary: 分页查询团期
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: routeId
+          in: query
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: guideId
+          in: query
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DepartureStatus' }
+        - name: startDateFrom
+          in: query
+          schema: { $ref: '#/components/schemas/Date' }
+        - name: startDateTo
+          in: query
+          schema: { $ref: '#/components/schemas/Date' }
+      responses:
+        '200':
+          description: 团期分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeparturePageEnvelope' }
+    post:
+      tags: [Admin Departures]
+      operationId: createDeparture
+      summary: 创建团期
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+      responses:
+        '201':
+          description: 团期创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/departures/{departureId}:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    get:
+      tags: [Admin Departures]
+      operationId: getAdminDeparture
+      summary: 获取团期管理详情
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 团期详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Departures]
+      operationId: updateDeparture
+      summary: 修改团期
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+      responses:
+        '200':
+          description: 修改后的团期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/departures/{departureId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    patch:
+      tags: [Admin Departures]
+      operationId: updateDepartureStatus
+      summary: 修改团期运营状态
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DepartureStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的团期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/attractions:
+    get:
+      tags: [Admin Resources]
+      operationId: listAdminAttractions
+      summary: 分页查询景点资料
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: 景点分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionPageEnvelope' }
+    post:
+      tags: [Admin Resources]
+      operationId: createAttraction
+      summary: 创建景点资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttractionUpsertRequest' }
+      responses:
+        '201':
+          description: 景点创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/attractions/{attractionId}:
+    parameters:
+      - { $ref: '#/components/parameters/AttractionId' }
+    put:
+      tags: [Admin Resources]
+      operationId: updateAttraction
+      summary: 修改景点资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttractionUpsertRequest' }
+      responses:
+        '200':
+          description: 修改后的景点
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin Resources]
+      operationId: deleteAttraction
+      summary: 删除未被行程引用的景点资料
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '204': { description: 删除成功 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/hotels:
+    get:
+      tags: [Admin Resources]
+      operationId: listAdminHotels
+      summary: 分页查询酒店资料
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: 酒店分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelPageEnvelope' }
+    post:
+      tags: [Admin Resources]
+      operationId: createHotel
+      summary: 创建酒店资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+      responses:
+        '201':
+          description: 酒店创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/hotels/{hotelId}:
+    parameters:
+      - { $ref: '#/components/parameters/HotelId' }
+    put:
+      tags: [Admin Resources]
+      operationId: updateHotel
+      summary: 修改酒店资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+      responses:
+        '200':
+          description: 修改后的酒店
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin Resources]
+      operationId: deleteHotel
+      summary: 删除未被行程引用的酒店资料
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '204': { description: 删除成功 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/guides:
+    get:
+      tags: [Admin Resources]
+      operationId: listAdminGuides
+      summary: 分页查询导游
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccountStatus' }
+      responses:
+        '200':
+          description: 导游分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuidePageEnvelope' }
+    post:
+      tags: [Admin Resources]
+      operationId: createGuideAccount
+      summary: 创建导游账号和资料
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuideCreateRequest' }
+      responses:
+        '201':
+          description: 导游创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/guides/{guideId}:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    get:
+      tags: [Admin Resources]
+      operationId: getAdminGuide
+      summary: 获取导游资料
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 导游资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Resources]
+      operationId: updateGuide
+      summary: 修改导游资料
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GuideUpdateRequest' }
+      responses:
+        '200':
+          description: 修改后的导游
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/guides/{guideId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    patch:
+      tags: [Admin Resources]
+      operationId: updateGuideStatus
+      summary: 启用或停用导游
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的导游
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/orders:
+    get:
+      tags: [Admin Orders]
+      operationId: listAdminOrders
+      summary: 分页查询订单
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          description: 订单号、联系人或手机号
+          schema: { type: string, maxLength: 100 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/OrderStatus' }
+      responses:
+        '200':
+          description: 订单分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPageEnvelope' }
+
+  /admin/orders/{orderNo}:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    get:
+      tags: [Admin Orders]
+      operationId: getAdminOrder
+      summary: 获取后台订单详情
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 订单完整业务详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/orders/{orderNo}/confirm:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Admin Orders]
+      operationId: confirmOrder
+      summary: 确认已支付订单报名
+      description: 再次检查团期状态、容量和实名信息后执行状态变化。
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 确认后的订单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/refunds:
+    get:
+      tags: [Admin Orders]
+      operationId: listAdminRefunds
+      summary: 分页查询退款申请
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RefundStatus' }
+      responses:
+        '200':
+          description: 退款分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundPageEnvelope' }
+
+  /admin/refunds/{refundId}:
+    parameters:
+      - { $ref: '#/components/parameters/RefundId' }
+    get:
+      tags: [Admin Orders]
+      operationId: getAdminRefund
+      summary: 获取退款审核详情
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 退款详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/refunds/{refundId}/approve:
+    parameters:
+      - { $ref: '#/components/parameters/RefundId' }
+    post:
+      tags: [Admin Orders]
+      operationId: approveRefund
+      summary: 同意退款申请
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundDecisionRequest' }
+      responses:
+        '200':
+          description: 审核后的退款记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/refunds/{refundId}/reject:
+    parameters:
+      - { $ref: '#/components/parameters/RefundId' }
+    post:
+      tags: [Admin Orders]
+      operationId: rejectRefund
+      summary: 拒绝退款申请
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefundDecisionRequest' }
+      responses:
+        '200':
+          description: 审核后的退款记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefundEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/reviews:
+    get:
+      tags: [Admin Content]
+      operationId: listAdminReviews
+      summary: 分页查询评价
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ReviewStatus' }
+      responses:
+        '200':
+          description: 评价分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewPageEnvelope' }
+
+  /admin/reviews/{reviewId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/ReviewId' }
+    patch:
+      tags: [Admin Content]
+      operationId: updateReviewStatus
+      summary: 调整评价可见状态
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的评价
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users:
+    get:
+      tags: [Admin Accounts]
+      operationId: listUsers
+      summary: 分页查询普通用户
+      x-roles: [ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccountStatus' }
+      responses:
+        '200':
+          description: 用户分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPageEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{userId}:
+    parameters:
+      - { $ref: '#/components/parameters/UserId' }
+    get:
+      tags: [Admin Accounts]
+      operationId: getUser
+      summary: 获取用户基础资料
+      x-roles: [ADMIN]
+      responses:
+        '200':
+          description: 用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users/{userId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/UserId' }
+    patch:
+      tags: [Admin Accounts]
+      operationId: updateUserStatus
+      summary: 启用或停用用户账号
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/staff:
+    get:
+      tags: [Admin Accounts]
+      operationId: listStaff
+      summary: 分页查询工作人员
+      x-roles: [ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccountStatus' }
+      responses:
+        '200':
+          description: 工作人员分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffPageEnvelope' }
+    post:
+      tags: [Admin Accounts]
+      operationId: createStaff
+      summary: 创建工作人员账号
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffCreateRequest' }
+      responses:
+        '201':
+          description: 工作人员创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/staff/{staffId}:
+    parameters:
+      - { $ref: '#/components/parameters/StaffId' }
+    put:
+      tags: [Admin Accounts]
+      operationId: updateStaff
+      summary: 修改工作人员资料
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffUpdateRequest' }
+      responses:
+        '200':
+          description: 修改后的工作人员
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/staff/{staffId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/StaffId' }
+    patch:
+      tags: [Admin Accounts]
+      operationId: updateStaffStatus
+      summary: 启用或停用工作人员账号
+      x-roles: [ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的工作人员
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/consultations:
+    get:
+      tags: [Admin Content]
+      operationId: listAdminConsultations
+      summary: 分页查询在线咨询
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ConsultationStatus' }
+      responses:
+        '200':
+          description: 咨询分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationPageEnvelope' }
+
+  /admin/consultations/{consultationId}:
+    parameters:
+      - { $ref: '#/components/parameters/ConsultationId' }
+    get:
+      tags: [Admin Content]
+      operationId: getAdminConsultation
+      summary: 获取咨询详情和回复
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 咨询详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/consultations/{consultationId}/replies:
+    parameters:
+      - { $ref: '#/components/parameters/ConsultationId' }
+    post:
+      tags: [Admin Content]
+      operationId: replyConsultation
+      summary: 回复在线咨询
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsultationReplyRequest' }
+      responses:
+        '201':
+          description: 回复创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/consultations/{consultationId}/close:
+    parameters:
+      - { $ref: '#/components/parameters/ConsultationId' }
+    post:
+      tags: [Admin Content]
+      operationId: closeConsultationByStaff
+      summary: 关闭在线咨询
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 关闭后的咨询
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/articles:
+    get:
+      tags: [Admin Content]
+      operationId: listAdminArticles
+      summary: 分页查询全部攻略
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ArticleStatus' }
+      responses:
+        '200':
+          description: 攻略分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticlePageEnvelope' }
+    post:
+      tags: [Admin Content]
+      operationId: createArticle
+      summary: 创建攻略草稿
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArticleUpsertRequest' }
+      responses:
+        '201':
+          description: 攻略创建成功
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticleEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/articles/{articleId}:
+    parameters:
+      - { $ref: '#/components/parameters/ArticleId' }
+    get:
+      tags: [Admin Content]
+      operationId: getAdminArticle
+      summary: 获取攻略管理详情
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 攻略详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticleEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Content]
+      operationId: updateArticle
+      summary: 修改攻略
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArticleUpsertRequest' }
+      responses:
+        '200':
+          description: 修改后的攻略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticleEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin Content]
+      operationId: deleteArticle
+      summary: 删除未发布攻略
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '204': { description: 删除成功 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/articles/{articleId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/ArticleId' }
+    patch:
+      tags: [Admin Content]
+      operationId: updateArticleStatus
+      summary: 发布或下线攻略
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArticleStatusUpdateRequest' }
+      responses:
+        '200':
+          description: 更新后的攻略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticleEnvelope' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/logs:
+    get:
+      tags: [Admin Content]
+      operationId: listOperationLogs
+      summary: 分页查询操作日志
+      x-roles: [ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: module
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: operatorId
+          in: query
+          schema: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: 操作日志分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationLogPageEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /guide/dashboard:
+    get:
+      tags: [Guide]
+      operationId: getGuideDashboard
+      summary: 获取导游工作台
+      x-roles: [GUIDE, ADMIN]
+      responses:
+        '200':
+          description: 即将出发、当前带团和历史带团
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideDashboardEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /guide/departures:
+    get:
+      tags: [Guide]
+      operationId: listGuideDepartures
+      summary: 查询当前导游负责的团期
+      x-roles: [GUIDE, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [UPCOMING, CURRENT, HISTORY] }
+      responses:
+        '200':
+          description: 本人团期分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeparturePageEnvelope' }
+
+  /guide/departures/{departureId}:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    get:
+      tags: [Guide]
+      operationId: getGuideDeparture
+      summary: 获取本人负责团期和行程详情
+      x-roles: [GUIDE, ADMIN]
+      responses:
+        '200':
+          description: 团期与行程详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuideDepartureDetailEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /guide/departures/{departureId}/passengers:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    get:
+      tags: [Guide]
+      operationId: listGuidePassengers
+      summary: 获取本人负责团期的最小必要游客名单
+      x-roles: [GUIDE, ADMIN]
+      responses:
+        '200':
+          description: 不含完整证件号码的游客名单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PassengerListEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /guide/departures/{departureId}/start:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    post:
+      tags: [Guide]
+      operationId: startGuideDeparture
+      summary: 将本人负责团期标记为行程中
+      x-roles: [GUIDE, ADMIN]
+      responses:
+        '200':
+          description: 更新后的团期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /guide/departures/{departureId}/complete:
+    parameters:
+      - { $ref: '#/components/parameters/DepartureId' }
+    post:
+      tags: [Guide]
+      operationId: completeGuideDeparture
+      summary: 将本人负责团期标记为已完成
+      x-roles: [GUIDE, ADMIN]
+      responses:
+        '200':
+          description: 更新后的团期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  headers:
+    Location:
+      description: 新建资源的访问路径
+      schema: { type: string, format: uri-reference }
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 同一用户和同一业务动作下用于安全重试的唯一键
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    RouteId: { name: routeId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    ArticleId: { name: articleId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    AttractionId: { name: attractionId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    HotelId: { name: hotelId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    TravelerId: { name: travelerId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    MessageId: { name: messageId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    ConsultationId: { name: consultationId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    DayId: { name: dayId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    ItemId: { name: itemId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    DepartureId: { name: departureId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    GuideId: { name: guideId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    OrderNo:
+      name: orderNo
+      in: path
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 40, example: TA202609070001 }
+    RefundId: { name: refundId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    ReviewId: { name: reviewId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    UserId: { name: userId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+    StaffId: { name: staffId, in: path, required: true, schema: { $ref: '#/components/schemas/Id' } }
+
+  responses:
+    BadRequest:
+      description: 请求格式或参数类型错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: BAD_REQUEST
+            message: 请求格式不正确
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    Unauthorized:
+      description: 未登录或访问令牌无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: AUTHENTICATION_REQUIRED
+            message: 请先登录
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    Forbidden:
+      description: 角色、资源归属或数据权限不足
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: ACCESS_DENIED
+            message: 无权访问该资源
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    NotFound:
+      description: 资源不存在或对当前用户不可见
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: RESOURCE_NOT_FOUND
+            message: 目标资源不存在
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    Conflict:
+      description: 重复提交、并发或资源状态冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: RESOURCE_STATE_CONFLICT
+            message: 当前资源状态不允许此操作
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    ValidationFailed:
+      description: 字段语义校验或业务规则校验失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: VALIDATION_ERROR
+            message: 请求参数校验失败
+            data: null
+            errors:
+              - field: contactPhone
+                code: INVALID_FORMAT
+                message: 手机号格式不正确
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    Id:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      example: '1001'
+    Money:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)\.[0-9]{2}$'
+      example: '2999.00'
+    Date:
+      type: string
+      format: date
+      example: '2026-10-01'
+    DateTime:
+      type: string
+      format: date-time
+      example: '2026-09-07T14:30:00+08:00'
+    Longitude:
+      type: number
+      minimum: -180
+      maximum: 180
+      example: 102.8328910
+    Latitude:
+      type: number
+      minimum: -90
+      maximum: 90
+      example: 24.8800950
+    AccountStatus:
+      type: string
+      enum: [ACTIVE, DISABLED]
+      example: ACTIVE
+    RouteStatus:
+      type: string
+      enum: [DRAFT, PUBLISHED, OFFLINE]
+      example: PUBLISHED
+    DepartureStatus:
+      type: string
+      enum: [DRAFT, OPEN, FULL, CLOSED, TRAVELLING, FINISHED, CANCELLED]
+      example: OPEN
+    OrderStatus:
+      type: string
+      enum: [WAIT_PAY, PAID_WAIT_CONFIRM, CONFIRMED, TRAVELLING, COMPLETED, CANCELLED, REFUND_APPLYING, REFUND_PROCESSING, REFUNDED, REFUND_REJECTED]
+      example: WAIT_PAY
+    PaymentStatus:
+      type: string
+      enum: [UNPAID, PENDING, PAID, FAILED, CLOSED, REFUNDED]
+      example: UNPAID
+    RefundStatus:
+      type: string
+      enum: [APPLYING, PROCESSING, REFUNDED, REJECTED]
+      example: APPLYING
+    ReviewStatus:
+      type: string
+      enum: [VISIBLE, HIDDEN]
+      example: VISIBLE
+    ConsultationStatus:
+      type: string
+      enum: [WAIT_REPLY, REPLIED, CLOSED]
+      example: WAIT_REPLY
+    ArticleStatus:
+      type: string
+      enum: [DRAFT, PUBLISHED, OFFLINE]
+      example: PUBLISHED
+    Gender:
+      type: string
+      enum: [MALE, FEMALE, OTHER]
+      example: MALE
+    IdentityDocumentType:
+      type: string
+      enum: [CHINESE_ID_CARD, PASSPORT, OTHER]
+      example: CHINESE_ID_CARD
+    RoleCode:
+      type: string
+      enum: [USER, STAFF, GUIDE, ADMIN]
+
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [field, code, message]
+      properties:
+        field:
+          type: [string, 'null']
+          example: contactPhone
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]*$'
+          example: INVALID_FORMAT
+        message:
+          type: string
+          example: 手机号格式不正确
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [code, message, data, errors, traceId]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]*$'
+        message: { type: string }
+        data: { type: 'null' }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ErrorDetail' }
+        traceId: { type: string, format: uuid }
+    SuccessEnvelope:
+      type: object
+      required: [code, message, data, errors, traceId]
+      properties:
+        code: { type: string, const: OK, example: OK }
+        message: { type: string, const: success, example: success }
+        data: {}
+        errors:
+          type: array
+          maxItems: 0
+        traceId: { type: string, format: uuid, example: 550e8400-e29b-41d4-a716-446655440000 }
+
+    PageFields:
+      type: object
+      required: [page, size, total, totalPages]
+      properties:
+        page: { type: integer, minimum: 1, example: 1 }
+        size: { type: integer, minimum: 1, maximum: 100, example: 20 }
+        total: { type: integer, minimum: 0, example: 1 }
+        totalPages: { type: integer, minimum: 0, example: 1 }
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 32, example: demo_user }
+        password: { type: string, minLength: 8, maxLength: 72, format: password, example: DemoPass123! }
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, nickname]
+      properties:
+        username: { type: string, pattern: '^[A-Za-z0-9_]{3,32}$', example: demo_user }
+        password: { type: string, minLength: 8, maxLength: 72, format: password, example: DemoPass123! }
+        nickname: { type: string, minLength: 1, maxLength: 32, example: 行迹旅人 }
+        phone: { type: string, pattern: '^1[3-9][0-9]{9}$', example: '13800138000' }
+        email: { type: string, format: email, maxLength: 128, example: traveler@example.com }
+    ProfileUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname]
+      properties:
+        nickname: { type: string, minLength: 1, maxLength: 32, example: 行迹旅人 }
+        realName: { type: [string, 'null'], maxLength: 64, example: 张三 }
+        phone: { type: [string, 'null'], pattern: '^1[3-9][0-9]{9}$', example: '13800138000' }
+        email: { type: [string, 'null'], format: email, maxLength: 128, example: traveler@example.com }
+        avatarUrl: { type: [string, 'null'], format: uri, maxLength: 500 }
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword: { type: string, minLength: 8, maxLength: 72, format: password }
+        newPassword: { type: string, minLength: 8, maxLength: 72, format: password }
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, username, nickname, roles, status, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        username: { type: string, example: demo_user }
+        nickname: { type: string, example: 行迹旅人 }
+        realName: { type: [string, 'null'], example: 张三 }
+        phone: { type: [string, 'null'], example: '13800138000' }
+        email: { type: [string, 'null'], format: email, example: traveler@example.com }
+        avatarUrl: { type: [string, 'null'], format: uri }
+        roles:
+          type: array
+          items: { $ref: '#/components/schemas/RoleCode' }
+          description: 用户拥有的角色；真实后端必须按账号授权。契约 Mock 为便于联调会生成全部角色。
+          example: [USER, STAFF, GUIDE, ADMIN]
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [accessToken, tokenType, expiresIn, user]
+      properties:
+        accessToken: { type: string, example: mock-access-token }
+        tokenType: { type: string, const: Bearer, example: Bearer }
+        expiresIn: { type: integer, minimum: 1, description: 有效秒数, example: 86400 }
+        user: { $ref: '#/components/schemas/User' }
+
+    HealthEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { type: string, const: UP, example: UP }
+    AuthEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AuthSession' }
+    UserEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/User' }
+
+    RouteSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, departureCity, destination, durationDays, ratingAvg, ratingCount, validBookingCount, status]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 昆明·大理·丽江 6 日跟团游 }
+        departureCity: { type: string, example: 上海 }
+        destination: { type: string, example: 云南 }
+        durationDays: { type: integer, minimum: 1, example: 6 }
+        description: { type: [string, 'null'], example: 深度体验云南经典自然与人文线路。 }
+        coverUrl: { type: [string, 'null'], format: uri, example: https://images.unsplash.com/photo-1500530855697-b586d89ba3ee }
+        minAdultPrice:
+          anyOf:
+            - { $ref: '#/components/schemas/Money' }
+            - { type: 'null' }
+        nextDepartureDate:
+          anyOf:
+            - { $ref: '#/components/schemas/Date' }
+            - { type: 'null' }
+        availableSeats: { type: [integer, 'null'], minimum: 0, example: 18 }
+        ratingAvg: { type: string, pattern: '^[0-5]\.[0-9]{2}$', example: '4.80' }
+        ratingCount: { type: integer, minimum: 0, example: 26 }
+        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        status: { $ref: '#/components/schemas/RouteStatus' }
+        favorite: { type: boolean, example: false }
+    Route:
+      allOf:
+        - { $ref: '#/components/schemas/RouteSummary' }
+        - type: object
+          required: [included, excluded, bookingNotice, createdAt, updatedAt]
+          properties:
+            included: { type: [string, 'null'], example: 行程内交通、酒店及约定餐食。 }
+            excluded: { type: [string, 'null'], example: 个人消费及行程外项目。 }
+            bookingNotice: { type: [string, 'null'], example: 请携带有效身份证件并按集合时间出发。 }
+            createdAt: { $ref: '#/components/schemas/DateTime' }
+            updatedAt: { $ref: '#/components/schemas/DateTime' }
+    RouteUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [name, departureCity, destination, durationDays]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 200 }
+        departureCity: { type: string, minLength: 1, maxLength: 64 }
+        destination: { type: string, minLength: 1, maxLength: 255 }
+        durationDays: { type: integer, minimum: 1, maximum: 365 }
+        description: { type: [string, 'null'], maxLength: 10000 }
+        coverUrl: { type: [string, 'null'], format: uri, maxLength: 500 }
+        included: { type: [string, 'null'], maxLength: 10000 }
+        excluded: { type: [string, 'null'], maxLength: 10000 }
+        bookingNotice: { type: [string, 'null'], maxLength: 10000 }
+    RouteStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PUBLISHED, OFFLINE]
+
+    Departure:
+      type: object
+      additionalProperties: false
+      required: [id, routeId, startDate, endDate, adultPrice, childPrice, maxPeople, reservedPeople, confirmedPeople, availableSeats, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: [string, 'null'], example: 昆明·大理·丽江 6 日跟团游 }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1, example: 30 }
+        reservedPeople: { type: integer, minimum: 0, example: 4 }
+        confirmedPeople: { type: integer, minimum: 0, example: 8 }
+        availableSeats: { type: integer, minimum: 0, example: 18 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        guideName: { type: [string, 'null'], example: 李导 }
+        status: { $ref: '#/components/schemas/DepartureStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    DepartureUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [routeId, startDate, endDate, adultPrice, childPrice, maxPeople]
+      properties:
+        routeId: { $ref: '#/components/schemas/Id' }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+    DepartureStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/DepartureStatus' }
+
+    ItineraryItem:
+      type: object
+      additionalProperties: false
+      required: [id, sortNo, itemType, name]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        sortNo: { type: integer, minimum: 1, example: 1 }
+        itemType: { type: string, enum: [ATTRACTION, TRANSPORT, MEAL, ACTIVITY, OTHER], example: ATTRACTION }
+        name: { type: string, example: 大理古城 }
+        description: { type: [string, 'null'], example: 游览大理古城街巷。 }
+        attractionId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+    ItineraryDay:
+      type: object
+      additionalProperties: false
+      required: [id, routeId, dayNumber, title, items]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        dayNumber: { type: integer, minimum: 1, example: 1 }
+        title: { type: string, example: 上海 → 昆明 }
+        description: { type: [string, 'null'], example: 抵达昆明并入住酒店。 }
+        transportation: { type: [string, 'null'], example: 飞机、旅游巴士 }
+        meals: { type: [string, 'null'], example: 晚餐 }
+        hotelId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        hotelName: { type: [string, 'null'], example: 昆明测试酒店 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ItineraryItem' }
+    ItineraryDayRequest:
+      type: object
+      additionalProperties: false
+      required: [dayNumber, title]
+      properties:
+        dayNumber: { type: integer, minimum: 1 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, 'null'], maxLength: 10000 }
+        transportation: { type: [string, 'null'], maxLength: 255 }
+        meals: { type: [string, 'null'], maxLength: 255 }
+        hotelId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+    ItineraryItemRequest:
+      type: object
+      additionalProperties: false
+      required: [sortNo, itemType, name]
+      properties:
+        sortNo: { type: integer, minimum: 1 }
+        itemType: { type: string, enum: [ATTRACTION, TRANSPORT, MEAL, ACTIVITY, OTHER] }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, 'null'], maxLength: 10000 }
+        attractionId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+
+    Review:
+      type: object
+      additionalProperties: false
+      required: [id, orderNo, routeId, userNickname, rating, content, status, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        orderNo: { type: string, example: TA202609070001 }
+        routeId: { $ref: '#/components/schemas/Id' }
+        userNickname: { type: string, example: 行迹旅人 }
+        rating: { type: integer, minimum: 1, maximum: 5, example: 5 }
+        content: { type: string, minLength: 1, maxLength: 1000, example: 行程安排合理，导游讲解认真。 }
+        status: { $ref: '#/components/schemas/ReviewStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+    ReviewCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [rating, content]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        content: { type: string, minLength: 1, maxLength: 1000 }
+    ReviewStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ReviewStatus' }
+
+    RouteDetail:
+      type: object
+      additionalProperties: false
+      required: [route, departures, itinerary, reviews, favorite]
+      properties:
+        route: { $ref: '#/components/schemas/Route' }
+        departures:
+          type: array
+          items: { $ref: '#/components/schemas/Departure' }
+        itinerary:
+          type: array
+          items: { $ref: '#/components/schemas/ItineraryDay' }
+        reviews:
+          type: array
+          items: { $ref: '#/components/schemas/Review' }
+        favorite: { type: boolean, example: false }
+
+    RoutePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/RouteSummary' }
+    ReviewPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Review' }
+    RoutePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/RoutePage' }
+    RouteEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Route' }
+    RouteDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/RouteDetail' }
+    ReviewEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Review' }
+    ReviewPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/ReviewPage' }
+
+    Attraction:
+      type: object
+      additionalProperties: false
+      required: [id, name, city, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 大理古城 }
+        city: { type: string, example: 大理 }
+        address: { type: [string, 'null'], example: 云南省大理白族自治州大理市 }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], example: 大理历史文化核心景区。 }
+        dataSource: { type: [string, 'null'], example: 高德地图开放平台（测试资料） }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    AttractionUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [name, city, dataSource]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        city: { type: string, minLength: 1, maxLength: 64 }
+        address: { type: [string, 'null'], maxLength: 255 }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], maxLength: 10000 }
+        dataSource: { type: string, minLength: 1, maxLength: 500 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+    Hotel:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 昆明测试酒店 }
+        address: { type: [string, 'null'], example: 云南省昆明市测试路 1 号 }
+        contactPhone: { type: [string, 'null'], example: '087112345678' }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], example: 仅用于课程演示的酒店资料。 }
+        dataSource: { type: [string, 'null'], example: 团队测试数据 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    HotelUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [name, dataSource]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        address: { type: [string, 'null'], maxLength: 255 }
+        contactPhone: { type: [string, 'null'], maxLength: 20 }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], maxLength: 10000 }
+        dataSource: { type: string, minLength: 1, maxLength: 500 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+    Article:
+      type: object
+      additionalProperties: false
+      required: [id, title, content, status, authorId, authorName, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        title: { type: string, example: 初次到云南旅行实用指南 }
+        summary: { type: [string, 'null'], example: 云南跟团游出行准备和注意事项。 }
+        content: { type: string, example: 本攻略内容为团队原创测试内容。 }
+        city: { type: [string, 'null'], example: 昆明 }
+        destination: { type: [string, 'null'], example: 云南 }
+        attractionId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        coverUrl: { type: [string, 'null'], format: uri }
+        status: { $ref: '#/components/schemas/ArticleStatus' }
+        authorId: { $ref: '#/components/schemas/Id' }
+        authorName: { type: string, example: 旅行社编辑 }
+        publishedAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    ArticleUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [title, content]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 200 }
+        summary: { type: [string, 'null'], maxLength: 500 }
+        content: { type: string, minLength: 1, maxLength: 100000 }
+        city: { type: [string, 'null'], maxLength: 64 }
+        destination: { type: [string, 'null'], maxLength: 128 }
+        attractionId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        coverUrl: { type: [string, 'null'], format: uri, maxLength: 500 }
+    ArticleStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PUBLISHED, OFFLINE]
+
+    DestinationStatistic:
+      type: object
+      additionalProperties: false
+      required: [destination, validBookingCount]
+      properties:
+        destination: { type: string, example: 云南 }
+        validBookingCount: { type: integer, minimum: 0, example: 132 }
+    HomeData:
+      type: object
+      additionalProperties: false
+      required: [popularDestinations, popularRoutes, recommendedRoutes, upcomingRoutes]
+      properties:
+        popularDestinations:
+          type: array
+          items: { $ref: '#/components/schemas/DestinationStatistic' }
+        popularRoutes:
+          type: array
+          items: { $ref: '#/components/schemas/RouteSummary' }
+        recommendedRoutes:
+          type: array
+          items: { $ref: '#/components/schemas/RouteSummary' }
+        upcomingRoutes:
+          type: array
+          items: { $ref: '#/components/schemas/RouteSummary' }
+
+    AttractionPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Attraction' }
+    HotelPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Hotel' }
+    ArticlePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Article' }
+    HomeEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/HomeData' }
+    AttractionEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Attraction' }
+    AttractionPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AttractionPage' }
+    HotelEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Hotel' }
+    HotelPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/HotelPage' }
+    ArticleEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Article' }
+    ArticlePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/ArticlePage' }
+
+    TravelerRequest:
+      type: object
+      additionalProperties: false
+      required: [name, gender, birthDate, idType, idNo, emergencyName, emergencyPhone]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64, example: 张三 }
+        gender: { $ref: '#/components/schemas/Gender' }
+        birthDate: { $ref: '#/components/schemas/Date' }
+        idType: { $ref: '#/components/schemas/IdentityDocumentType' }
+        idNo: { type: string, minLength: 3, maxLength: 64, example: '320101199001011234' }
+        phone: { type: [string, 'null'], maxLength: 20, example: '13800138000' }
+        emergencyName: { type: string, minLength: 1, maxLength: 64, example: 李四 }
+        emergencyPhone: { type: string, minLength: 3, maxLength: 20, example: '13900139000' }
+    TravelerUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, gender, birthDate, idType, emergencyName, emergencyPhone]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64, example: 张三 }
+        gender: { $ref: '#/components/schemas/Gender' }
+        birthDate: { $ref: '#/components/schemas/Date' }
+        idType: { $ref: '#/components/schemas/IdentityDocumentType' }
+        idNo:
+          type: string
+          minLength: 3
+          maxLength: 64
+          description: 仅在需要更换证件号码时提交；省略表示保留原值。
+        phone: { type: [string, 'null'], maxLength: 20, example: '13800138000' }
+        emergencyName: { type: string, minLength: 1, maxLength: 64, example: 李四 }
+        emergencyPhone: { type: string, minLength: 3, maxLength: 20, example: '13900139000' }
+    Traveler:
+      type: object
+      additionalProperties: false
+      required: [id, name, gender, birthDate, idType, idNoMasked, emergencyName, emergencyPhone, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 张三 }
+        gender: { $ref: '#/components/schemas/Gender' }
+        birthDate: { $ref: '#/components/schemas/Date' }
+        idType: { $ref: '#/components/schemas/IdentityDocumentType' }
+        idNoMasked: { type: string, example: '320***********1234' }
+        phone: { type: [string, 'null'], example: '13800138000' }
+        emergencyName: { type: string, example: 李四 }
+        emergencyPhone: { type: string, example: '13900139000' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    FavoriteCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [routeId]
+      properties:
+        routeId: { $ref: '#/components/schemas/Id' }
+    Favorite:
+      type: object
+      additionalProperties: false
+      required: [id, routeId, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+    TravelerEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Traveler' }
+    TravelerListEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Traveler' }
+    FavoriteEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Favorite' }
+
+    OrderTravelerRequest:
+      type: object
+      additionalProperties: false
+      required: [travelerType, name, gender, birthDate, idType, idNo, emergencyName, emergencyPhone]
+      properties:
+        travelerType: { type: string, enum: [ADULT, CHILD] }
+        sourceTravelerId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        gender: { $ref: '#/components/schemas/Gender' }
+        birthDate: { $ref: '#/components/schemas/Date' }
+        idType: { $ref: '#/components/schemas/IdentityDocumentType' }
+        idNo: { type: string, minLength: 3, maxLength: 64 }
+        phone: { type: [string, 'null'], maxLength: 20 }
+        emergencyName: { type: string, minLength: 1, maxLength: 64 }
+        emergencyPhone: { type: string, minLength: 3, maxLength: 20 }
+    OrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [departureId, contactName, contactPhone, adultCount, childCount, travelers]
+      properties:
+        departureId: { $ref: '#/components/schemas/Id' }
+        contactName: { type: string, minLength: 1, maxLength: 64, example: 张三 }
+        contactPhone: { type: string, pattern: '^1[3-9][0-9]{9}$', example: '13800138000' }
+        contactEmail: { type: [string, 'null'], format: email, maxLength: 128, example: traveler@example.com }
+        adultCount: { type: integer, minimum: 0, example: 1 }
+        childCount: { type: integer, minimum: 0, example: 0 }
+        remark: { type: [string, 'null'], maxLength: 1000 }
+        travelers:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/OrderTravelerRequest' }
+    OrderSummary:
+      type: object
+      additionalProperties: false
+      required: [id, orderNo, userId, routeId, departureId, routeName, contactName, contactPhone, adultCount, childCount, totalAmount, status, paymentStatus, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        orderNo: { type: string, example: TA202609070001 }
+        userId: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        departureId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: string, example: 昆明·大理·丽江 6 日跟团游 }
+        routeCoverUrl: { type: [string, 'null'], format: uri }
+        departureStartDate: { $ref: '#/components/schemas/Date' }
+        contactName: { type: string, example: 张三 }
+        contactPhone: { type: string, example: '13800138000' }
+        adultCount: { type: integer, minimum: 0, example: 1 }
+        childCount: { type: integer, minimum: 0, example: 0 }
+        totalAmount: { $ref: '#/components/schemas/Money' }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        paymentStatus: { $ref: '#/components/schemas/PaymentStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    Order:
+      allOf:
+        - { $ref: '#/components/schemas/OrderSummary' }
+        - type: object
+          required: [contactEmail, adultUnitPrice, childUnitPrice, remark]
+          properties:
+            contactEmail: { type: [string, 'null'], format: email, example: traveler@example.com }
+            adultUnitPrice: { $ref: '#/components/schemas/Money' }
+            childUnitPrice: { $ref: '#/components/schemas/Money' }
+            remark: { type: [string, 'null'] }
+            paidAt:
+              anyOf:
+                - { $ref: '#/components/schemas/DateTime' }
+                - { type: 'null' }
+            confirmedAt:
+              anyOf:
+                - { $ref: '#/components/schemas/DateTime' }
+                - { type: 'null' }
+            cancelledAt:
+              anyOf:
+                - { $ref: '#/components/schemas/DateTime' }
+                - { type: 'null' }
+            completedAt:
+              anyOf:
+                - { $ref: '#/components/schemas/DateTime' }
+                - { type: 'null' }
+    OrderTraveler:
+      type: object
+      additionalProperties: false
+      required: [id, travelerType, name, gender, birthDate, idType, idNoMasked, emergencyName, emergencyPhone]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        travelerType: { type: string, enum: [ADULT, CHILD] }
+        name: { type: string, example: 张三 }
+        gender: { $ref: '#/components/schemas/Gender' }
+        birthDate: { $ref: '#/components/schemas/Date' }
+        idType: { $ref: '#/components/schemas/IdentityDocumentType' }
+        idNoMasked: { type: string, example: '320***********1234' }
+        phone: { type: [string, 'null'], example: '13800138000' }
+        emergencyName: { type: string, example: 李四 }
+        emergencyPhone: { type: string, example: '13900139000' }
+    Payment:
+      type: object
+      additionalProperties: false
+      required: [id, paymentNo, orderNo, channel, amount, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        paymentNo: { type: string, example: PAY202609070001 }
+        orderNo: { type: string, example: TA202609070001 }
+        channel: { type: string, enum: [ALIPAY_SANDBOX] }
+        amount: { $ref: '#/components/schemas/Money' }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        thirdPartyTradeNo: { type: [string, 'null'] }
+        paidAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    PaymentStart:
+      type: object
+      additionalProperties: false
+      required: [orderNo, paymentNo, channel, amount, paymentUrl, expiresAt]
+      properties:
+        orderNo: { type: string, example: TA202609070001 }
+        paymentNo: { type: string, example: PAY202609070001 }
+        channel: { type: string, const: ALIPAY_SANDBOX }
+        amount: { $ref: '#/components/schemas/Money' }
+        paymentUrl: { type: string, format: uri, example: https://openapi-sandbox.dl.alipaydev.com/gateway.do }
+        expiresAt: { $ref: '#/components/schemas/DateTime' }
+    RefundCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 2, maxLength: 500, example: 出行时间冲突，申请退款。 }
+    RefundDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [comment]
+      properties:
+        comment: { type: string, minLength: 1, maxLength: 500, example: 已核验订单和退款条件。 }
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [id, orderNo, userId, amount, reason, originalOrderStatus, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        orderNo: { type: string, example: TA202609070001 }
+        userId: { $ref: '#/components/schemas/Id' }
+        amount: { $ref: '#/components/schemas/Money' }
+        reason: { type: string, example: 出行时间冲突，申请退款。 }
+        originalOrderStatus: { $ref: '#/components/schemas/OrderStatus' }
+        status: { $ref: '#/components/schemas/RefundStatus' }
+        reviewedBy:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        reviewedAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        reviewComment: { type: [string, 'null'] }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    OrderDetail:
+      type: object
+      additionalProperties: false
+      required: [order, route, departure, travelers, refunds]
+      properties:
+        order: { $ref: '#/components/schemas/Order' }
+        route: { $ref: '#/components/schemas/RouteSummary' }
+        departure: { $ref: '#/components/schemas/Departure' }
+        travelers:
+          type: array
+          items: { $ref: '#/components/schemas/OrderTraveler' }
+        payment:
+          anyOf:
+            - { $ref: '#/components/schemas/Payment' }
+            - { type: 'null' }
+        refunds:
+          type: array
+          items: { $ref: '#/components/schemas/Refund' }
+        review:
+          anyOf:
+            - { $ref: '#/components/schemas/Review' }
+            - { type: 'null' }
+    OrderPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/OrderSummary' }
+    RefundPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Refund' }
+    OrderEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Order' }
+    OrderPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/OrderPage' }
+    OrderDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/OrderDetail' }
+    PaymentStartEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PaymentStart' }
+    RefundEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Refund' }
+    RefundPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/RefundPage' }
+
+    Message:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, content, read, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        type: { type: string, example: ORDER_CONFIRMED }
+        title: { type: string, example: 报名确认成功 }
+        content: { type: string, example: 您的订单已由旅行社确认。 }
+        read: { type: boolean, example: false }
+        readAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+    MessagePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Message' }
+    MessageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Message' }
+    MessagePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/MessagePage' }
+    UnreadCountEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [count]
+              properties:
+                count: { type: integer, minimum: 0, example: 2 }
+
+    ConsultationReply:
+      type: object
+      additionalProperties: false
+      required: [id, staffId, staffName, content, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        staffId: { $ref: '#/components/schemas/Id' }
+        staffName: { type: string, example: 行程顾问 }
+        content: { type: string, example: 您好，该团期目前仍有可报名名额。 }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+    Consultation:
+      type: object
+      additionalProperties: false
+      required: [id, userId, title, content, status, replies, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        userId: { $ref: '#/components/schemas/Id' }
+        userNickname: { type: [string, 'null'], example: 行迹旅人 }
+        title: { type: string, example: 团期集合地点咨询 }
+        content: { type: string, example: 请问出发当天在哪里集合？ }
+        status: { $ref: '#/components/schemas/ConsultationStatus' }
+        replies:
+          type: array
+          items: { $ref: '#/components/schemas/ConsultationReply' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    ConsultationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [title, content]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 100 }
+        content: { type: string, minLength: 2, maxLength: 2000 }
+    ConsultationReplyRequest:
+      type: object
+      additionalProperties: false
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 2000 }
+    ConsultationPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Consultation' }
+    ConsultationEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Consultation' }
+    ConsultationPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/ConsultationPage' }
+
+    DashboardMetric:
+      type: object
+      additionalProperties: false
+      required: [date, orderCount, participantCount, orderAmount]
+      properties:
+        date: { $ref: '#/components/schemas/Date' }
+        orderCount: { type: integer, minimum: 0, example: 8 }
+        participantCount: { type: integer, minimum: 0, example: 15 }
+        orderAmount: { $ref: '#/components/schemas/Money' }
+    DashboardData:
+      type: object
+      additionalProperties: false
+      required: [userCount, publishedRouteCount, openDepartureCount, todayOrderCount, pendingConfirmCount, pendingRefundCount, participantCount, grossOrderAmount, orderTrend, popularRoutes, popularDestinations]
+      properties:
+        userCount: { type: integer, minimum: 0, example: 128 }
+        publishedRouteCount: { type: integer, minimum: 0, example: 12 }
+        openDepartureCount: { type: integer, minimum: 0, example: 8 }
+        todayOrderCount: { type: integer, minimum: 0, example: 6 }
+        pendingConfirmCount: { type: integer, minimum: 0, example: 3 }
+        pendingRefundCount: { type: integer, minimum: 0, example: 1 }
+        participantCount: { type: integer, minimum: 0, example: 256 }
+        grossOrderAmount: { $ref: '#/components/schemas/Money' }
+        orderTrend:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardMetric' }
+        popularRoutes:
+          type: array
+          items: { $ref: '#/components/schemas/RouteSummary' }
+        popularDestinations:
+          type: array
+          items: { $ref: '#/components/schemas/DestinationStatistic' }
+
+    AccountStatusUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/AccountStatus' }
+    GuideCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, name, phone]
+      properties:
+        username: { type: string, pattern: '^[A-Za-z0-9_]{3,32}$' }
+        password: { type: string, minLength: 8, maxLength: 72, format: password }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: string, minLength: 3, maxLength: 20 }
+        intro: { type: [string, 'null'], maxLength: 1000 }
+    GuideUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, phone]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: string, minLength: 3, maxLength: 20 }
+        intro: { type: [string, 'null'], maxLength: 1000 }
+    Guide:
+      type: object
+      additionalProperties: false
+      required: [id, userId, username, name, phone, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        userId: { $ref: '#/components/schemas/Id' }
+        username: { type: string, example: guide_demo }
+        name: { type: string, example: 李导 }
+        phone: { type: string, example: '13800138001' }
+        intro: { type: [string, 'null'], example: 具有云南线路带团经验。 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    StaffCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, realName, employeeNo]
+      properties:
+        username: { type: string, pattern: '^[A-Za-z0-9_]{3,32}$' }
+        password: { type: string, minLength: 8, maxLength: 72, format: password }
+        realName: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: [string, 'null'], maxLength: 20 }
+        employeeNo: { type: string, minLength: 1, maxLength: 32 }
+        department: { type: [string, 'null'], maxLength: 64 }
+        position: { type: [string, 'null'], maxLength: 64 }
+    StaffUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [realName, employeeNo]
+      properties:
+        realName: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: [string, 'null'], maxLength: 20 }
+        employeeNo: { type: string, minLength: 1, maxLength: 32 }
+        department: { type: [string, 'null'], maxLength: 64 }
+        position: { type: [string, 'null'], maxLength: 64 }
+    Staff:
+      type: object
+      additionalProperties: false
+      required: [id, userId, username, realName, employeeNo, status, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        userId: { $ref: '#/components/schemas/Id' }
+        username: { type: string, example: staff_demo }
+        realName: { type: string, example: 王顾问 }
+        phone: { type: [string, 'null'], example: '13800138002' }
+        employeeNo: { type: string, example: EMP001 }
+        department: { type: [string, 'null'], example: 运营部 }
+        position: { type: [string, 'null'], example: 行程顾问 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    Passenger:
+      type: object
+      additionalProperties: false
+      required: [orderNo, travelerType, name, phone, emergencyName, emergencyPhone]
+      properties:
+        orderNo: { type: string, example: TA202609070001 }
+        travelerType: { type: string, enum: [ADULT, CHILD] }
+        name: { type: string, example: 张三 }
+        phone: { type: [string, 'null'], example: '13800138000' }
+        emergencyName: { type: string, example: 李四 }
+        emergencyPhone: { type: string, example: '13900139000' }
+    OperationLog:
+      type: object
+      additionalProperties: false
+      required: [id, operatorId, operatorName, module, operationType, result, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        operatorId: { $ref: '#/components/schemas/Id' }
+        operatorName: { type: string, example: 王顾问 }
+        module: { type: string, example: ORDER }
+        operationType: { type: string, example: CONFIRM }
+        objectType: { type: [string, 'null'], example: ORDER }
+        objectId: { type: [string, 'null'], example: TA202609070001 }
+        result: { type: string, enum: [SUCCESS, FAILURE] }
+        detail: { type: [string, 'null'], example: 确认报名 }
+        ipAddress: { type: [string, 'null'], example: 127.0.0.1 }
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+
+    GuidePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Guide' }
+    StaffPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Staff' }
+    UserPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/User' }
+    DeparturePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Departure' }
+    OperationLogPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/OperationLog' }
+    GuideDashboardData:
+      type: object
+      additionalProperties: false
+      required: [upcoming, current, history]
+      properties:
+        upcoming:
+          type: array
+          items: { $ref: '#/components/schemas/Departure' }
+        current:
+          type: array
+          items: { $ref: '#/components/schemas/Departure' }
+        history:
+          type: array
+          items: { $ref: '#/components/schemas/Departure' }
+    GuideDepartureDetail:
+      type: object
+      additionalProperties: false
+      required: [departure, route, itinerary]
+      properties:
+        departure: { $ref: '#/components/schemas/Departure' }
+        route: { $ref: '#/components/schemas/Route' }
+        itinerary:
+          type: array
+          items: { $ref: '#/components/schemas/ItineraryDay' }
+
+    DashboardEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/DashboardData' }
+    DepartureEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Departure' }
+    DeparturePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/DeparturePage' }
+    ItineraryDayEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/ItineraryDay' }
+    ItineraryDayListEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/ItineraryDay' }
+    ItineraryItemEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/ItineraryItem' }
+    ItineraryItemListEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/ItineraryItem' }
+    GuideEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Guide' }
+    GuidePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/GuidePage' }
+    StaffEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Staff' }
+    StaffPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/StaffPage' }
+    UserPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/UserPage' }
+    OperationLogPageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/OperationLogPage' }
+    GuideDashboardEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/GuideDashboardData' }
+    GuideDepartureDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/GuideDepartureDetail' }
+    PassengerListEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Passenger' }

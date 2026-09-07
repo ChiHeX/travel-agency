@@ -10,9 +10,9 @@ const editingId = ref(null)
 
 const form = reactive({
   name: '',
-  gender: '男',
+  gender: 'MALE',
   birthDate: '',
-  idType: '身份证',
+  idType: 'CHINESE_ID_CARD',
   idNo: '',
   phone: '',
   emergencyName: '',
@@ -22,9 +22,9 @@ const form = reactive({
 function reset() {
   Object.assign(form, {
     name: '',
-    gender: '男',
+    gender: 'MALE',
     birthDate: '',
-    idType: '身份证',
+    idType: 'CHINESE_ID_CARD',
     idNo: '',
     phone: '',
     emergencyName: '',
@@ -37,7 +37,16 @@ function open(item) {
   reset()
   if (item) {
     editingId.value = item.id
-    Object.assign(form, item, { idNo: '' })
+    Object.assign(form, {
+      name: item.name,
+      gender: item.gender,
+      birthDate: item.birthDate,
+      idType: item.idType,
+      idNo: '',
+      phone: item.phone || '',
+      emergencyName: item.emergencyName,
+      emergencyPhone: item.emergencyPhone
+    })
   }
   dialog.value = true
 }
@@ -52,11 +61,21 @@ async function load() {
 }
 
 async function save() {
-  if (!form.name || (!form.idNo && !editingId.value) || !form.emergencyName) {
-    return ElMessage.warning('请完整填写姓名、证件号码和紧急联系人')
+  if (!form.name || !form.birthDate || (!form.idNo && !editingId.value) || !form.emergencyName || !form.emergencyPhone) {
+    return ElMessage.warning('请完整填写姓名、出生日期、证件号码和紧急联系人')
   }
-  if (editingId.value) await accountApi.updateTraveler(editingId.value, form)
-  else await accountApi.createTraveler(form)
+  const payload = {
+    name: form.name,
+    gender: form.gender,
+    birthDate: form.birthDate,
+    idType: form.idType,
+    phone: form.phone || null,
+    emergencyName: form.emergencyName,
+    emergencyPhone: form.emergencyPhone,
+    ...(form.idNo ? { idNo: form.idNo } : {})
+  }
+  if (editingId.value) await accountApi.updateTraveler(editingId.value, payload)
+  else await accountApi.createTraveler(payload)
   dialog.value = false
   ElMessage.success('出行人资料已保存')
   load()
@@ -109,8 +128,8 @@ onMounted(load)
           <tbody>
             <tr v-for="item in travelers" :key="item.id">
               <td><strong>{{ item.name }}</strong></td>
-              <td>{{ item.gender }}</td>
-              <td>{{ item.idType }} {{ item.idNoMasked }}</td>
+              <td>{{ { MALE: '男', FEMALE: '女', OTHER: '其他' }[item.gender] || item.gender }}</td>
+              <td>{{ { CHINESE_ID_CARD: '身份证', PASSPORT: '护照', OTHER: '其他证件' }[item.idType] || item.idType }} {{ item.idNoMasked }}</td>
               <td>{{ item.phone || '—' }}</td>
               <td>{{ item.emergencyName }} ({{ item.emergencyPhone || '—' }})</td>
               <td style="text-align: right;">
@@ -143,8 +162,9 @@ onMounted(load)
         <div class="form-field">
           <label>性别</label>
           <select v-model="form.gender">
-            <option>男</option>
-            <option>女</option>
+            <option value="MALE">男</option>
+            <option value="FEMALE">女</option>
+            <option value="OTHER">其他</option>
           </select>
         </div>
 
@@ -156,9 +176,9 @@ onMounted(load)
         <div class="form-field">
           <label>证件类型</label>
           <select v-model="form.idType">
-            <option>身份证</option>
-            <option>护照</option>
-            <option>港澳通行证</option>
+            <option value="CHINESE_ID_CARD">身份证</option>
+            <option value="PASSPORT">护照</option>
+            <option value="OTHER">其他证件</option>
           </select>
         </div>
 

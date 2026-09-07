@@ -49,12 +49,14 @@ REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态�
 
 ## 主要 API 分组
 
+本节只描述模块边界和权限归属。精确接口与模型以 [OpenAPI 定义](openapi.yaml) 为准，通用规则以 [API 契约](API.md) 为准，避免在架构文档中复制并逐渐产生过期接口清单。
+
 | 分组 | 主要接口 | 权限 |
 |---|---|---|
 | 认证 | `POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me` | 注册/登录公开，其余登录 |
 | 线路 | `GET /api/routes`、`GET /api/routes/{id}` | 公开 |
 | 账户 | `/api/account`、`/api/travelers`、`/api/favorites`、`/api/messages` | USER |
-| 订单 | `/api/orders`、`/api/payments/alipay/callback` | 用户；回调公开但必须 HMAC 验签 |
+| 订单 | `/api/orders`、`/api/payments/alipay/notify` | 用户；支付通知公开但必须按支付宝规范验签 |
 | 后台 | `/api/admin/**` | STAFF / ADMIN，用户与日志接口再限制 ADMIN |
 | 导游 | `/api/guide/**` | GUIDE / ADMIN，业务方法校验本人 guide_id |
 | 内容 | `GET /api/articles`、`GET /api/attractions`、`/api/consultations` | 公开浏览；咨询需登录 |

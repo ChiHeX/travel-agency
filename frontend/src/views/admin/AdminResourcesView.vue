@@ -22,7 +22,7 @@ const loaders = {
 async function load() {
   loading.value = true
   try {
-    rows.value = (await loaders[props.resource]()) || []
+    rows.value = (await loaders[props.resource]())?.items || []
   } finally {
     loading.value = false
   }
@@ -36,10 +36,9 @@ async function updateDeparture(row) {
 }
 
 async function decision(row, action) {
-  await adminApi.refundDecision(row.id, {
-    action,
-    comment: action === 'APPROVE' ? '审核通过，已进入原路退款流程' : '申请原因需要进一步核实'
-  })
+  const comment = action === 'APPROVE' ? '审核通过，已进入原路退款流程' : '申请原因需要进一步核实'
+  if (action === 'APPROVE') await adminApi.approveRefund(row.id, comment)
+  else await adminApi.rejectRefund(row.id, comment)
   ElMessage.success('退款审核已处理完毕')
   load()
 }
@@ -124,7 +123,7 @@ onMounted(load)
 
             <tr v-else-if="resource === 'refunds'">
               <td><strong>#{{ row.id }}</strong></td>
-              <td>#{{ row.orderId }}</td>
+              <td>#{{ row.orderNo }}</td>
               <td class="amount">¥{{ row.amount }}</td>
               <td>{{ row.reason }}</td>
               <td>

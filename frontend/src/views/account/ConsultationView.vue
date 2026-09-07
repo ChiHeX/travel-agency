@@ -11,7 +11,7 @@ const submitting = ref(false)
 async function load() {
   loading.value = true
   try {
-    items.value = (await accountApi.consultations()) || []
+    items.value = (await accountApi.consultations())?.items || []
   } finally {
     loading.value = false
   }
@@ -86,18 +86,18 @@ onMounted(load)
         <div v-else-if="items.length" class="history-list">
           <article
             v-for="item in items"
-            :key="item.consultation.id"
+            :key="item.id"
             class="history-card"
           >
             <div class="card-status-row">
-              <span class="tag" :class="item.consultation.status === 'RESOLVED' ? 'success' : 'warning'">
-                {{ item.consultation.status === 'RESOLVED' ? '已回复' : '处理中' }}
+              <span class="tag" :class="item.status === 'REPLIED' ? 'success' : 'warning'">
+                {{ item.status === 'REPLIED' ? '已回复' : '处理中' }}
               </span>
-              <span class="consult-time">{{ item.consultation.createdAt }}</span>
+              <span class="consult-time">{{ item.createdAt }}</span>
             </div>
 
-            <h3 class="consult-title">{{ item.consultation.title }}</h3>
-            <p class="consult-content">{{ item.consultation.content }}</p>
+            <h3 class="consult-title">{{ item.title }}</h3>
+            <p class="consult-content">{{ item.content }}</p>
 
             <!-- Staff Replies -->
             <div v-if="item.replies && item.replies.length" class="replies-container">

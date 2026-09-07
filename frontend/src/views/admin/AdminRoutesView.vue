@@ -16,7 +16,7 @@ async function load() {
   loading.value = true
   try {
     const data = await adminApi.routes({ ...form, page: page.value, size: 10 })
-    rows.value = data?.records || []
+    rows.value = data?.items || []
     total.value = data?.total || 0
   } finally {
     loading.value = false

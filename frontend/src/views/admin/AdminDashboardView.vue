@@ -22,9 +22,9 @@ const money = (value) => (value == null ? '¥0.00' : `¥${Number(value).toFixed(
     <div class="admin-page-head">
       <div>
         <h2>运营数据概览</h2>
-        <p>数据源自生产系统实时订单、报名人次与团期数据，无任何硬编码模拟数据。</p>
+        <p>真实联调时展示数据库中的订单、报名人次与团期统计；契约 Mock 模式仅用于页面开发。</p>
       </div>
-      <span class="tag success">● 生产数据库直连</span>
+      <span class="tag success">● API 实时数据</span>
     </div>
 
     <div v-if="loading" class="stats-grid">

@@ -3,24 +3,19 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { orderApi } from '@/api/modules'
+import { orderStatusLabels, paymentStatusLabels } from '@/utils/order'
 
 const router = useRouter()
 const orders = ref([])
 const loading = ref(false)
 const activeStatus = ref('')
+const page = ref(1)
+const pageSize = 10
+const total = ref(0)
+const errorMessage = ref('')
+const cancellingOrderNo = ref('')
 
-const labels = {
-  WAIT_PAY: '待支付',
-  PAID_WAIT_CONFIRM: '待确认',
-  CONFIRMED: '已确认',
-  TRAVELLING: '行程中',
-  COMPLETED: '已完成',
-  CANCELLED: '已取消',
-  REFUND_APPLYING: '退款审核中',
-  REFUND_PROCESSING: '退款处理中',
-  REFUNDED: '已退款',
-  REFUND_REJECTED: '退款未通过'
-}
+const labels = orderStatusLabels
 
 const statusTags = {
   WAIT_PAY: 'warning',
@@ -37,31 +32,51 @@ const statusTags = {
 
 async function load() {
   loading.value = true
+  errorMessage.value = ''
   try {
-    orders.value = (await orderApi.list(activeStatus.value ? { status: activeStatus.value } : {}))?.items || []
+    const data = await orderApi.list({
+      ...(activeStatus.value ? { status: activeStatus.value } : {}),
+      page: page.value,
+      size: pageSize
+    })
+    orders.value = data?.items || []
+    total.value = data?.total || 0
+  } catch (error) {
+    orders.value = []
+    total.value = 0
+    errorMessage.value = error.message || '订单列表加载失败'
   } finally {
     loading.value = false
   }
 }
 
 async function cancel(order) {
-  await ElMessageBox.confirm('确认取消这个待支付订单吗？已支付订单需要申请退款。', '取消订单', {
-    type: 'warning',
-    confirmButtonText: '确认取消',
-    cancelButtonText: '再想想'
-  })
-  await orderApi.cancel(order.orderNo)
-  ElMessage.success('订单已成功取消')
+  try {
+    await ElMessageBox.confirm('确认取消这个待支付订单吗？已支付订单需要申请退款。', '取消订单', {
+      type: 'warning',
+      confirmButtonText: '确认取消',
+      cancelButtonText: '再想想'
+    })
+    cancellingOrderNo.value = order.orderNo
+    await orderApi.cancel(order.orderNo)
+    ElMessage.success('订单已成功取消')
+    await load()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+  } finally {
+    cancellingOrderNo.value = ''
+  }
+}
+
+function selectStatus(status) {
+  activeStatus.value = status
+  page.value = 1
   load()
 }
 
-async function pay(order) {
-  const data = await orderApi.pay(order.orderNo)
-  if (import.meta.env.MODE === 'mock') {
-    ElMessage.info('模拟支付请求已创建；真实环境将跳转至支付宝沙箱。')
-    return
-  }
-  window.location.assign(data.paymentUrl)
+function changePage(nextPage) {
+  page.value = nextPage
+  load()
 }
 
 function viewDetail(order) {
@@ -88,17 +103,17 @@ onMounted(load)
           type="button"
           class="status-tab-btn"
           :class="{ active: !activeStatus }"
-          @click="activeStatus = ''; load()"
+          @click="selectStatus('')"
         >
           全部订单
         </button>
         <button
-          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUNDED']"
+          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_REJECTED', 'CANCELLED']"
           :key="status"
           type="button"
           class="status-tab-btn"
           :class="{ active: activeStatus === status }"
-          @click="activeStatus = status; load()"
+          @click="selectStatus(status)"
         >
           {{ labels[status] }}
         </button>
@@ -108,6 +123,12 @@ onMounted(load)
       <div class="orders-feed">
         <div v-if="loading" class="orders-skeleton">
           <el-skeleton v-for="i in 3" :key="i" :rows="4" animated style="margin-bottom: 16px;" />
+        </div>
+
+        <div v-else-if="errorMessage" class="empty-box order-error">
+          <strong>订单暂时无法加载</strong>
+          <span>{{ errorMessage }}</span>
+          <button type="button" class="secondary-button" @click="load">重新加载</button>
         </div>
 
         <div v-else-if="orders.length" class="orders-list">
@@ -123,10 +144,11 @@ onMounted(load)
             </div>
 
             <div class="order-card-body" @click="viewDetail(order)">
+              <img v-if="order.routeCoverUrl" class="order-cover" :src="order.routeCoverUrl" :alt="order.routeName" />
               <div class="order-info-col">
-                <h3 class="order-route-title">线路编号 #{{ order.routeId }}</h3>
+                <h3 class="order-route-title">{{ order.routeName }}</h3>
                 <div class="order-meta-chips">
-                  <span>团期 #{{ order.departureId }}</span>
+                  <span>{{ order.departureStartDate }} 出发</span>
                   <span>·</span>
                   <span>联系人：{{ order.contactName }} ({{ order.contactPhone }})</span>
                   <span>·</span>
@@ -146,7 +168,7 @@ onMounted(load)
             <div class="order-card-footer">
               <span class="payment-badge">
                 <span class="dot"></span>
-                支付状态：{{ order.paymentStatus === 'PAID' ? '已支付' : '待支付 / 未支付' }}
+                支付状态：{{ paymentStatusLabels[order.paymentStatus] || order.paymentStatus }}
               </span>
 
               <div class="order-actions">
@@ -157,7 +179,7 @@ onMounted(load)
                   v-if="order.status === 'WAIT_PAY'"
                   type="button"
                   class="primary-button action-btn"
-                  @click="pay(order)"
+                  @click="router.push({ name: 'order-payment', params: { orderNo: order.orderNo } })"
                 >
                   去支付
                 </button>
@@ -165,9 +187,10 @@ onMounted(load)
                   v-if="order.status === 'WAIT_PAY'"
                   type="button"
                   class="danger-button action-btn"
+                  :disabled="cancellingOrderNo === order.orderNo"
                   @click="cancel(order)"
                 >
-                  取消订单
+                  {{ cancellingOrderNo === order.orderNo ? '取消中...' : '取消订单' }}
                 </button>
               </div>
             </div>
@@ -176,6 +199,17 @@ onMounted(load)
 
         <div v-else class="empty-box">
           暂无相关订单记录，您可以前往跟团线路列表探索心仪行程。
+        </div>
+
+        <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+          <el-pagination
+            background
+            layout="prev, pager, next"
+            :current-page="page"
+            :page-size="pageSize"
+            :total="total"
+            @current-change="changePage"
+          />
         </div>
       </div>
     </div>
@@ -235,6 +269,16 @@ onMounted(load)
   gap: 16px;
 }
 
+.order-error {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+}
+
+.order-error span { color: var(--text-secondary); font-size: 12px; }
+
+.pagination-wrap { display: flex; justify-content: center; padding: 24px 0 4px; }
+
 .order-card-box {
   background: white;
   border: 1px solid var(--border-line);
@@ -281,6 +325,16 @@ onMounted(load)
   padding: 20px;
   cursor: pointer;
 }
+
+.order-cover {
+  width: 112px;
+  height: 72px;
+  margin-right: 16px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.order-info-col { flex: 1; min-width: 0; }
 
 .order-route-title {
   font-size: 16px;
@@ -368,6 +422,7 @@ onMounted(load)
     align-items: flex-start;
     gap: 12px;
   }
+  .order-cover { width: 100%; height: 150px; margin: 0; }
   .order-price-col {
     text-align: left;
   }

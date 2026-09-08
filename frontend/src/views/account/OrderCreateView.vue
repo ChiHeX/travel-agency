@@ -2,13 +2,17 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { orderApi, routeApi } from '@/api/modules'
+import { accountApi, orderApi, routeApi } from '@/api/modules'
+import { createIdempotencyKey, idTypeLabels } from '@/utils/order'
 
 const currentRoute = useRoute()
 const router = useRouter()
 const routeData = ref(null)
+const savedTravelers = ref([])
 const loading = ref(true)
 const submitting = ref(false)
+const loadError = ref('')
+let createOrderKey = createIdempotencyKey()
 
 const form = reactive({
   departureId: String(currentRoute.query.departureId || ''),
@@ -22,15 +26,27 @@ const form = reactive({
 })
 
 const participantCount = computed(() => Number(form.adultCount || 0) + Number(form.childCount || 0))
-const departure = computed(() => routeData.value?.departures?.find((item) => item.id === form.departureId))
-const totalAmount = computed(
-  () =>
-    Number(departure.value?.adultPrice || 0) * Number(form.adultCount || 0) +
-    Number(departure.value?.childPrice || 0) * Number(form.childCount || 0)
+const departure = computed(() =>
+  routeData.value?.departures?.find((item) => String(item.id) === String(form.departureId))
 )
+const availableSeats = computed(() => Number(departure.value?.availableSeats ?? 0))
+const canSubmit = computed(() =>
+  departure.value?.status === 'OPEN' &&
+  participantCount.value > 0 &&
+  participantCount.value <= 100 &&
+  availableSeats.value >= participantCount.value
+)
+const totalAmount = computed(() => {
+  const total =
+    Math.round(Number(departure.value?.adultPrice || 0) * 100) * Number(form.adultCount || 0) +
+    Math.round(Number(departure.value?.childPrice || 0) * 100) * Number(form.childCount || 0)
+  return (total / 100).toFixed(2)
+})
 
 function emptyTraveler() {
   return {
+    sourceTravelerId: null,
+    idNoMasked: '',
     name: '',
     gender: 'MALE',
     birthDate: '',
@@ -50,21 +66,69 @@ function syncTravelers() {
 watch(participantCount, syncTravelers, { immediate: true })
 
 onMounted(async () => {
+  loadError.value = ''
   try {
-    routeData.value = await routeApi.detail(currentRoute.query.routeId || 0)
-  } catch (_) {
-    /* quiet */
+    const [detailResult, travelersResult] = await Promise.allSettled([
+      routeApi.detail(currentRoute.query.routeId),
+      accountApi.travelers()
+    ])
+    if (detailResult.status === 'rejected') throw detailResult.reason
+    routeData.value = detailResult.value
+    savedTravelers.value = travelersResult.status === 'fulfilled' ? travelersResult.value || [] : []
+  } catch (error) {
+    loadError.value = error.message || '报名资料加载失败，请返回线路详情重试'
   } finally {
     loading.value = false
   }
 })
 
+function selectSavedTraveler(target, travelerId) {
+  const selected = savedTravelers.value.find((item) => String(item.id) === String(travelerId))
+  if (!selected) {
+    Object.assign(target, emptyTraveler())
+    return
+  }
+  Object.assign(target, {
+    sourceTravelerId: selected.id,
+    idNoMasked: selected.idNoMasked,
+    name: selected.name,
+    gender: selected.gender,
+    birthDate: selected.birthDate,
+    idType: selected.idType,
+    idNo: '',
+    phone: selected.phone || '',
+    emergencyName: selected.emergencyName,
+    emergencyPhone: selected.emergencyPhone
+  })
+}
+
+function savedTravelerDisabled(savedId, currentIndex) {
+  return form.travelers.some(
+    (item, index) => index !== currentIndex && String(item.sourceTravelerId) === String(savedId)
+  )
+}
+
 async function submit() {
   if (!departure.value) return ElMessage.warning('团期信息加载失败，请返回线路详情重新选择')
+  if (departure.value.status !== 'OPEN' || availableSeats.value < participantCount.value) {
+    return ElMessage.warning('当前团期状态或剩余名额已不满足报名人数，请返回重新选择')
+  }
+  if (!form.contactName.trim() || !/^1[3-9]\d{9}$/.test(form.contactPhone)) {
+    return ElMessage.warning('请填写联系人姓名和有效的 11 位手机号')
+  }
+  if (form.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.contactEmail)) {
+    return ElMessage.warning('请填写有效的联系人邮箱')
+  }
   if (
     participantCount.value <= 0 ||
+    participantCount.value > 100 ||
     form.travelers.some(
-      (item) => !item.name || !item.birthDate || !item.idNo || !item.emergencyName || !item.emergencyPhone
+      (item) =>
+        !item.name.trim() ||
+        !item.birthDate ||
+        item.idNo.trim().length < 3 ||
+        !item.emergencyName.trim() ||
+        item.emergencyPhone.trim().length < 3
     )
   ) {
     return ElMessage.warning('请完整填写每位出行人的实名姓名、证件号码与紧急联系人')
@@ -72,18 +136,29 @@ async function submit() {
   submitting.value = true
   try {
     const order = await orderApi.create({
-      ...form,
+      departureId: String(form.departureId),
+      contactName: form.contactName.trim(),
+      contactPhone: form.contactPhone.trim(),
       contactEmail: form.contactEmail || null,
       adultCount: Number(form.adultCount),
       childCount: Number(form.childCount),
+      remark: form.remark || null,
       travelers: form.travelers.map((traveler, index) => ({
-        ...traveler,
+        travelerType: index < Number(form.adultCount) ? 'ADULT' : 'CHILD',
+        sourceTravelerId: traveler.sourceTravelerId || null,
+        name: traveler.name.trim(),
+        gender: traveler.gender,
+        birthDate: traveler.birthDate,
+        idType: traveler.idType,
+        idNo: traveler.idNo.trim(),
         phone: traveler.phone || null,
-        travelerType: index < Number(form.adultCount) ? 'ADULT' : 'CHILD'
+        emergencyName: traveler.emergencyName.trim(),
+        emergencyPhone: traveler.emergencyPhone.trim()
       }))
-    })
+    }, createOrderKey)
+    createOrderKey = createIdempotencyKey()
     ElMessage.success('订单已创建，请尽快完成支付')
-    router.replace({ name: 'order-detail', params: { orderNo: order.orderNo } })
+    router.replace({ name: 'order-payment', params: { orderNo: order.orderNo } })
   } finally {
     submitting.value = false
   }
@@ -106,7 +181,13 @@ async function submit() {
         <el-skeleton :rows="8" animated />
       </div>
 
-      <template v-else>
+      <div v-else-if="loadError" class="empty-box booking-error">
+        <strong>报名信息暂时无法加载</strong>
+        <p>{{ loadError }}</p>
+        <button type="button" class="secondary-button" @click="router.back()">返回线路详情</button>
+      </div>
+
+      <template v-else-if="departure && routeData?.route">
         <!-- Departure Overview Banner (旅游平台 Style) -->
         <div class="departure-summary-card" v-if="departure && routeData?.route">
           <div class="dep-icon">
@@ -123,6 +204,8 @@ async function submit() {
               <span>成人 ¥{{ departure.adultPrice }}/人</span>
               <span>·</span>
               <span>儿童 ¥{{ departure.childPrice }}/人</span>
+              <span>·</span>
+              <span>剩余 {{ departure.availableSeats }} 人</span>
             </div>
           </div>
         </div>
@@ -141,7 +224,7 @@ async function submit() {
                 <span>包含全程门票及标准床位</span>
               </div>
               <div class="counter-control">
-                <input v-model.number="form.adultCount" type="number" min="1" max="50" class="num-input" />
+                <input v-model.number="form.adultCount" type="number" min="1" :max="availableSeats" class="num-input" />
                 <span class="unit-text">人</span>
               </div>
             </div>
@@ -152,7 +235,7 @@ async function submit() {
                 <span>12周岁以下，含车位与导服</span>
               </div>
               <div class="counter-control">
-                <input v-model.number="form.childCount" type="number" min="0" max="50" class="num-input" />
+                <input v-model.number="form.childCount" type="number" min="0" :max="availableSeats" class="num-input" />
                 <span class="unit-text">人</span>
               </div>
             </div>
@@ -197,6 +280,25 @@ async function submit() {
                 <span class="traveler-type-tag">{{ index < form.adultCount ? '成人票' : '儿童票' }}</span>
               </div>
 
+              <div v-if="savedTravelers.length" class="saved-traveler-picker">
+                <label>从常用出行人带入</label>
+                <select
+                  :value="traveler.sourceTravelerId || ''"
+                  @change="selectSavedTraveler(traveler, $event.target.value)"
+                >
+                  <option value="">不使用常用出行人</option>
+                  <option
+                    v-for="saved in savedTravelers"
+                    :key="saved.id"
+                    :value="saved.id"
+                    :disabled="savedTravelerDisabled(saved.id, index)"
+                  >
+                    {{ saved.name }} · {{ idTypeLabels[saved.idType] || saved.idType }} {{ saved.idNoMasked }}
+                  </option>
+                </select>
+                <span v-if="traveler.idNoMasked">已带入脱敏资料，请在下方重新输入完整证件号完成本次实名报名。</span>
+              </div>
+
               <div class="traveler-fields-grid">
                 <div class="form-field">
                   <label>真实姓名 <span class="req">*</span></label>
@@ -228,7 +330,12 @@ async function submit() {
 
                 <div class="form-field wide">
                   <label>证件号码 <span class="req">*</span></label>
-                  <input v-model="traveler.idNo" placeholder="请输入完整有效证件号码" required />
+                  <input
+                    v-model="traveler.idNo"
+                    autocomplete="off"
+                    :placeholder="traveler.idNoMasked ? `原资料：${traveler.idNoMasked}，请重新输入完整号码` : '请输入完整有效证件号码'"
+                    required
+                  />
                 </div>
 
                 <div class="form-field">
@@ -272,7 +379,7 @@ async function submit() {
             <span class="price-label">订单应付总额</span>
             <div class="price-figure">
               <span class="curr">¥</span>
-              <strong>{{ totalAmount.toFixed(2) }}</strong>
+              <strong>{{ totalAmount }}</strong>
             </div>
             <span class="price-detail-hint">包含 {{ form.adultCount }} 成人 / {{ form.childCount }} 儿童</span>
           </div>
@@ -280,13 +387,17 @@ async function submit() {
           <button
             type="button"
             class="primary-button checkout-submit-btn"
-            :disabled="submitting"
+            :disabled="submitting || !canSubmit"
             @click="submit"
           >
-            {{ submitting ? '正在创建订单...' : '立即提交订单' }}
+            {{ submitting ? '正在创建订单...' : canSubmit ? '立即提交订单' : '当前团期不可报名' }}
           </button>
         </div>
       </template>
+
+      <div v-else class="empty-box booking-error">
+        当前团期不存在或已不可报名，请返回线路详情重新选择。
+      </div>
     </div>
   </div>
 </template>
@@ -442,6 +553,17 @@ async function submit() {
   color: var(--danger-red);
 }
 
+.booking-error {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.booking-error p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
 /* Travelers Sub-Cards */
 .travelers-list {
   display: flex;
@@ -461,6 +583,38 @@ async function submit() {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 14px;
+}
+
+.saved-traveler-picker {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--brand-blue-subtle);
+}
+
+.saved-traveler-picker label {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.saved-traveler-picker select {
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-sm);
+  background: white;
+  padding: 0 10px;
+}
+
+.saved-traveler-picker span {
+  grid-column: 2;
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
 .traveler-index-badge {
@@ -557,6 +711,12 @@ async function submit() {
   }
   .traveler-fields-grid {
     grid-template-columns: 1fr;
+  }
+  .saved-traveler-picker {
+    grid-template-columns: 1fr;
+  }
+  .saved-traveler-picker span {
+    grid-column: 1;
   }
   .sticky-checkout-bar {
     flex-direction: column;

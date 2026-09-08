@@ -13,6 +13,8 @@ import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
 import OrderCreateView from '@/views/account/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
+import PaymentView from '@/views/account/PaymentView.vue'
+import PaymentResultView from '@/views/account/PaymentResultView.vue'
 import AccountView from '@/views/account/AccountView.vue'
 import TravelersView from '@/views/account/TravelersView.vue'
 import FavoritesView from '@/views/account/FavoritesView.vue'
@@ -50,6 +52,8 @@ const routes = [
       { path: '', redirect: { name: 'account-profile' } },
       { path: 'profile', name: 'account-profile', component: AccountView },
       { path: 'orders', name: 'account-orders', component: OrdersView },
+      { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
+      { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
       { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
       { path: 'order/create', name: 'order-create', component: OrderCreateView },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },

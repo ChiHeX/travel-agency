@@ -1,6 +1,11 @@
 import request from './request'
 
-function idempotentConfig(idempotencyKey = crypto.randomUUID()) {
+function createIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function idempotentConfig(idempotencyKey = createIdempotencyKey()) {
   return { headers: { 'Idempotency-Key': idempotencyKey } }
 }
 

@@ -15,6 +15,7 @@ const data = ref(null)
 const loading = ref(true)
 const errorMessage = ref('')
 const favorite = ref(false)
+const favoriteSubmitting = ref(false)
 const selectedDepartureId = ref(null)
 
 const departures = computed(() => data.value?.departures || [])
@@ -28,9 +29,9 @@ async function load() {
   errorMessage.value = ''
   try {
     data.value = await routeApi.detail(route.params.id)
-    favorite.value = Boolean(data.value?.favorite || data.value?.route?.favorited)
+    favorite.value = Boolean(data.value?.favorite)
     if (departures.value.length > 0) {
-      selectedDepartureId.value = departures.value[0].id
+      selectedDepartureId.value = departures.value.find(isDepartureBookable)?.id || null
     }
   } catch (error) {
     data.value = null
@@ -42,6 +43,8 @@ async function load() {
 
 async function toggleFavorite() {
   if (!auth.isLoggedIn) return router.push({ name: 'login', query: { redirect: route.fullPath } })
+  if (favoriteSubmitting.value) return
+  favoriteSubmitting.value = true
   try {
     if (favorite.value) {
       await accountApi.removeFavorite(route.params.id)
@@ -52,8 +55,8 @@ async function toggleFavorite() {
       favorite.value = true
       ElMessage.success('已加入收藏')
     }
-  } catch (_) {
-    favorite.value = !favorite.value
+  } finally {
+    favoriteSubmitting.value = false
   }
 }
 
@@ -66,9 +69,7 @@ function book(departure) {
 }
 
 function getAvailableSeats(item) {
-  if (item?.availableSeats != null) return Number(item.availableSeats)
-  if (item?.maxPeople == null) return null
-  return Number(item.maxPeople) - Number(item.confirmedPeople || 0) - Number(item.reservedPeople || 0)
+  return item?.availableSeats == null ? null : Number(item.availableSeats)
 }
 
 function isDepartureBookable(item) {
@@ -84,9 +85,10 @@ function selectDeparture(item) {
 function itineraryType(type) {
   const labels = {
     ATTRACTION: '景点',
-    HOTEL: '酒店',
     MEAL: '餐食',
-    TRANSPORT: '交通'
+    TRANSPORT: '交通',
+    ACTIVITY: '活动',
+    OTHER: '其他'
   }
   return labels[type] || type || '行程'
 }
@@ -122,7 +124,7 @@ onMounted(load)
           <span>返回</span>
         </button>
         <div class="sheet-actions">
-          <button type="button" class="sheet-action-btn" :class="{ favorited: favorite }" @click="toggleFavorite">
+          <button type="button" class="sheet-action-btn" :class="{ favorited: favorite }" :disabled="favoriteSubmitting" @click="toggleFavorite">
             <AppIcon v-if="favorite" name="heart-filled" size="13" color="#ff3b30" />
             <AppIcon v-else name="heart" size="13" />
             <span>{{ favorite ? '已收藏' : '收藏' }}</span>
@@ -242,11 +244,11 @@ onMounted(load)
           </div>
 
           <div v-if="data.itinerary && data.itinerary.length" class="day-itinerary-list">
-            <div v-for="item in data.itinerary" :key="item.day.id" class="day-row-card">
-              <div class="day-badge">D{{ item.day.dayNumber }}</div>
+            <div v-for="item in data.itinerary" :key="item.id" class="day-row-card">
+              <div class="day-badge">D{{ item.dayNumber }}</div>
               <div class="day-content">
-                <h5>{{ item.day.title }}</h5>
-                <p>{{ item.day.description }}</p>
+                <h5>{{ item.title }}</h5>
+                <p>{{ item.description || '暂无当日行程说明。' }}</p>
                 <div v-if="item.items && item.items.length" class="itinerary-items-list">
                   <div v-for="entry in item.items" :key="entry.id" class="itinerary-item-row">
                     <span class="itinerary-item-type">{{ itineraryType(entry.itemType) }}</span>
@@ -259,18 +261,18 @@ onMounted(load)
                 <div class="day-meta-tags">
                   <span class="meta-tag-item">
                     <AppIcon name="bus" size="12" color="#0071e3" />
-                    <span>交通：{{ item.day.transportation || '暂无安排' }}</span>
+                    <span>交通：{{ item.transportation || '暂无安排' }}</span>
                   </span>
                   <span>·</span>
                   <span class="meta-tag-item">
                     <AppIcon name="food" size="12" color="#ff9500" />
-                    <span>餐食：{{ item.day.meals || '暂无安排' }}</span>
+                    <span>餐食：{{ item.meals || '暂无安排' }}</span>
                   </span>
-                  <template v-if="item.day.hotelName || item.day.hotel?.name">
+                  <template v-if="item.hotelName">
                     <span>·</span>
                     <span class="meta-tag-item">
                       <AppIcon name="hotel" size="12" color="#5856d6" />
-                      <span>住宿：{{ item.day.hotelName || item.day.hotel.name }}</span>
+                      <span>住宿：{{ item.hotelName }}</span>
                     </span>
                   </template>
                 </div>
@@ -313,8 +315,11 @@ onMounted(load)
           <div v-if="reviews.length" class="reviews-list">
             <article v-for="review in reviews" :key="review.id" class="review-row">
               <div class="review-row-head">
-                <el-rate :model-value="Number(review.rating) || 0" disabled size="small" />
-                <span>{{ review.createdAt || '评价时间待同步' }}</span>
+                <div class="review-author-rating">
+                  <strong>{{ review.userNickname }}</strong>
+                  <el-rate :model-value="Number(review.rating) || 0" disabled size="small" />
+                </div>
+                <span>{{ review.createdAt }}</span>
               </div>
               <p>{{ review.content || '用户未填写文字评价。' }}</p>
             </article>
@@ -339,10 +344,10 @@ onMounted(load)
         <button
           type="button"
           class="primary-button booking-cta-btn"
-          :disabled="!selectedDeparture || getAvailableSeats(selectedDeparture) == null || getAvailableSeats(selectedDeparture) <= 0"
+          :disabled="!isDepartureBookable(selectedDeparture)"
           @click="selectedDeparture && book(selectedDeparture)"
         >
-          {{ selectedDeparture && getAvailableSeats(selectedDeparture) > 0 ? '立即报名' : getAvailableSeats(selectedDeparture) === 0 ? '团期已满' : '余量待同步' }}
+          {{ isDepartureBookable(selectedDeparture) ? '立即报名' : selectedDeparture && getAvailableSeats(selectedDeparture) === 0 ? '团期已满' : '暂无可报名团期' }}
         </button>
       </div>
     </template>
@@ -874,6 +879,17 @@ onMounted(load)
 .review-row-head span {
   color: var(--text-tertiary);
   font-size: 10px;
+}
+
+.review-author-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.review-author-rating strong {
+  color: var(--text-primary);
+  font-size: 11px;
 }
 
 .review-row p {

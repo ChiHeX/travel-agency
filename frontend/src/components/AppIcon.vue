@@ -188,6 +188,11 @@ const sizePx = computed(() => (typeof props.size === 'number' ? `${props.size}px
       <polyline points="9 18 15 12 9 6" />
     </template>
 
+    <!-- Chevron Down (SF Symbol: chevron.down) -->
+    <template v-else-if="name === 'chevron-down'">
+      <polyline points="6 9 12 15 18 9" />
+    </template>
+
     <!-- Filter / Sliders (SF Symbol: slider.horizontal.3) -->
     <template v-else-if="name === 'filter'">
       <line x1="4" y1="21" x2="4" y2="14" />

@@ -12,6 +12,7 @@ const savedTravelers = ref([])
 const loading = ref(true)
 const submitting = ref(false)
 const loadError = ref('')
+const submitError = ref('')
 let createOrderKey = createIdempotencyKey()
 
 const form = reactive({
@@ -59,6 +60,7 @@ function emptyTraveler() {
 }
 
 function syncTravelers() {
+  if (!Number.isInteger(participantCount.value) || participantCount.value < 0 || participantCount.value > 100) return
   while (form.travelers.length < participantCount.value) form.travelers.push(emptyTraveler())
   if (form.travelers.length > participantCount.value) form.travelers.splice(participantCount.value)
 }
@@ -109,6 +111,9 @@ function savedTravelerDisabled(savedId, currentIndex) {
 }
 
 async function submit() {
+  if (submitting.value) return
+  submitError.value = ''
+  if (![form.adultCount, form.childCount].every((value) => Number.isInteger(value) && value >= 0) || participantCount.value > 100) return ElMessage.warning('出行人数须为非负整数，总人数不超过 100 人')
   if (!departure.value) return ElMessage.warning('团期信息加载失败，请返回线路详情重新选择')
   if (departure.value.status !== 'OPEN' || availableSeats.value < participantCount.value) {
     return ElMessage.warning('当前团期状态或剩余名额已不满足报名人数，请返回重新选择')
@@ -159,6 +164,7 @@ async function submit() {
     createOrderKey = createIdempotencyKey()
     ElMessage.success('订单已创建，请尽快完成支付')
     router.replace({ name: 'order-payment', params: { orderNo: order.orderNo } })
+  } catch (cause) { submitError.value = cause.message || '订单提交失败，请重试'
   } finally {
     submitting.value = false
   }
@@ -374,9 +380,10 @@ async function submit() {
         </div>
 
         <!-- Sticky Checkout Action Bar -->
+        <p v-if="submitError" class="form-error" role="alert">{{ submitError }}</p>
         <div class="sticky-checkout-bar">
           <div class="price-breakdown">
-            <span class="price-label">订单应付总额</span>
+            <span class="price-label">预估金额（以创建订单结果为准）</span>
             <div class="price-figure">
               <span class="curr">¥</span>
               <strong>{{ totalAmount }}</strong>

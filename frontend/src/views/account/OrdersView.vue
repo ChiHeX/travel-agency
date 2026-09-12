@@ -62,7 +62,7 @@ async function cancel(order) {
     ElMessage.success('订单已成功取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') throw error
+    if (error !== 'cancel' && error !== 'close') errorMessage.value = error.message || '取消失败，请重试'
   } finally {
     cancellingOrderNo.value = ''
   }

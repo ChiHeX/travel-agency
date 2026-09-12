@@ -22,6 +22,7 @@ const reviewOpen = ref(false)
 const refundSubmitting = ref(false)
 const reviewSubmitting = ref(false)
 const cancelling = ref(false)
+const actionError = ref('')
 const refund = reactive({ reason: '' })
 const review = reactive({ rating: 5, content: '' })
 let refundKey = createIdempotencyKey()
@@ -55,6 +56,8 @@ async function load() {
 }
 
 async function submitRefund() {
+  if (refundSubmitting.value) return
+  actionError.value = ''
   const reason = refund.reason.trim()
   if (reason.length < 2 || reason.length > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
   refundSubmitting.value = true
@@ -65,20 +68,28 @@ async function submitRefund() {
     refundOpen.value = false
     ElMessage.success('退款申请已提交，请等待审核')
     await load()
+  } catch (cause) {
+    actionError.value = cause.message || '退款申请提交失败'
   } finally {
     refundSubmitting.value = false
   }
 }
 
 async function submitReview() {
+  if (reviewSubmitting.value || !canReview.value) return
+  actionError.value = ''
   const content = review.content.trim()
+  if (!Number.isInteger(review.rating) || review.rating < 1 || review.rating > 5) return ElMessage.warning('请选择 1–5 星评分')
   if (!content || content.length > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
   reviewSubmitting.value = true
   try {
-    await orderApi.review(currentRoute.params.orderNo, { rating: review.rating, content })
+    const saved = await orderApi.review(currentRoute.params.orderNo, { rating: review.rating, content })
+    detail.value.review = saved
     reviewOpen.value = false
     ElMessage.success('感谢您的真实评价')
-    await load()
+  } catch (cause) {
+    actionError.value = cause.message || '评价提交失败'
+    if (cause.status === 409) await load()
   } finally {
     reviewSubmitting.value = false
   }
@@ -96,7 +107,7 @@ async function cancelOrder() {
     ElMessage.success('订单已取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') throw error
+    if (error !== 'cancel' && error !== 'close') actionError.value = error.message || '取消失败，请重试'
   } finally {
     cancelling.value = false
   }
@@ -231,7 +242,7 @@ onMounted(load)
             <span class="sub-label">历史订单不受后续修改影响 · 证件号已脱敏保护</span>
           </div>
 
-          <table class="data-table">
+          <table class="data-table responsive-cards">
             <thead>
               <tr>
                 <th>出行人姓名</th>
@@ -243,11 +254,11 @@ onMounted(load)
             </thead>
             <tbody>
               <tr v-for="traveler in detail.travelers" :key="traveler.id">
-                <td><strong>{{ traveler.name }}</strong></td>
-                <td>{{ genderLabels[traveler.gender] || traveler.gender }}</td>
-                <td>{{ idTypeLabels[traveler.idType] || traveler.idType }} {{ traveler.idNoMasked }}</td>
-                <td>{{ traveler.phone || '—' }}</td>
-                <td>{{ traveler.emergencyName }} ({{ traveler.emergencyPhone || '—' }})</td>
+                <td data-label="姓名"><strong>{{ traveler.name }}</strong></td>
+                <td data-label="性别">{{ genderLabels[traveler.gender] || traveler.gender }}</td>
+                <td data-label="证件">{{ idTypeLabels[traveler.idType] || traveler.idType }} {{ traveler.idNoMasked }}</td>
+                <td data-label="电话">{{ traveler.phone || '—' }}</td>
+                <td data-label="紧急联系人">{{ traveler.emergencyName }} ({{ traveler.emergencyPhone || '—' }})</td>
               </tr>
             </tbody>
           </table>
@@ -277,7 +288,15 @@ onMounted(load)
         </div>
 
         <!-- Bottom Actions -->
+        <div v-if="detail.review" class="detail-card">
+          <h3>我的评价</h3>
+          <el-rate :model-value="detail.review.rating" disabled />
+          <p class="review-copy">{{ detail.review.content }}</p>
+          <span class="sub-label">{{ detail.review.createdAt }}</span>
+          <RouterLink :to="{ name: 'route-detail', params: { id: detail.order.routeId } }" class="text-button">查看线路评价</RouterLink>
+        </div>
         <div class="bottom-actions-row">
+          <p v-if="actionError && !reviewOpen && !refundOpen" class="form-error" role="alert">{{ actionError }}</p>
           <button
             v-if="detail.order.status === 'WAIT_PAY'"
             type="button"
@@ -322,7 +341,9 @@ onMounted(load)
     </div>
 
     <!-- Refund Dialog -->
-    <el-dialog v-model="refundOpen" title="申请订单退款" width="460px">
+    <el-dialog v-model="refundOpen" title="申请订单退款" width="min(460px, calc(100vw - 32px))" :close-on-click-modal="!refundSubmitting" :show-close="!refundSubmitting">
+      <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
+      <p>订单金额：¥{{ detail?.order.totalAmount }}，退款金额以审核结果为准。</p>
       <div class="form-field">
         <label>请填写详细退款原因</label>
         <textarea v-model="refund.reason" rows="4" placeholder="例如：时间冲突无法按期出行，申请办理退款手续..."></textarea>
@@ -334,14 +355,16 @@ onMounted(load)
     </el-dialog>
 
     <!-- Review Dialog -->
-    <el-dialog v-model="reviewOpen" title="评价跟团游体验" width="460px">
+    <el-dialog v-model="reviewOpen" title="评价跟团游体验" width="min(460px, calc(100vw - 32px))" :close-on-click-modal="!reviewSubmitting" :show-close="!reviewSubmitting">
+      <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
+      <p>评价提交后不可重复提交，请确认内容。</p>
       <div class="form-field">
         <label>整体评分</label>
         <el-rate v-model="review.rating" />
       </div>
       <div class="form-field">
         <label>行程体验与导游服务评价</label>
-        <textarea v-model="review.content" rows="4" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
+        <textarea v-model="review.content" rows="4" maxlength="1000" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
       </div>
       <template #footer>
         <button class="secondary-button" @click="reviewOpen = false">取消</button>
@@ -602,7 +625,6 @@ onMounted(load)
 @media (max-width: 520px) {
   .summary-tiles-grid,
   .payment-grid { grid-template-columns: 1fr; }
-  .data-table { min-width: 720px; }
-  .detail-card { overflow-x: auto; }
+  .data-table { min-width: 0; }
 }
 </style>

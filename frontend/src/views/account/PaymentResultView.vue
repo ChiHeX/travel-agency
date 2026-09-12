@@ -12,6 +12,7 @@ const refreshing = ref(false)
 const errorMessage = ref('')
 let timer
 let attempts = 0
+let disposed = false
 
 const paymentStatus = computed(() => detail.value?.payment?.status || detail.value?.order?.paymentStatus)
 const paid = computed(() =>
@@ -22,6 +23,7 @@ const failed = computed(() => ['FAILED', 'CLOSED'].includes(paymentStatus.value)
 const pending = computed(() => !paid.value && !failed.value)
 
 async function load({ initial = false } = {}) {
+  if (refreshing.value || disposed) return
   if (initial) loading.value = true
   else refreshing.value = true
   errorMessage.value = ''
@@ -38,14 +40,14 @@ async function load({ initial = false } = {}) {
 async function poll() {
   await load()
   attempts += 1
-  if (pending.value && attempts < 20) timer = window.setTimeout(poll, 3000)
+  if (!disposed && pending.value && attempts < 20) timer = window.setTimeout(poll, 3000)
 }
 
 onMounted(async () => {
   await load({ initial: true })
-  if (pending.value) timer = window.setTimeout(poll, 3000)
+  if (!disposed && pending.value) timer = window.setTimeout(poll, 3000)
 })
-onBeforeUnmount(() => window.clearTimeout(timer))
+onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
 </script>
 
 <template>

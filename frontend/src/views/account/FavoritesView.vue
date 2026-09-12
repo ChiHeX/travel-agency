@@ -11,6 +11,7 @@ const page = ref(1)
 const pageSize = 12
 const total = ref(0)
 const errorMessage = ref('')
+const removing = ref(false)
 
 async function load() {
   loading.value = true
@@ -29,6 +30,9 @@ async function load() {
 }
 
 async function remove(id) {
+  if (removing.value) return
+  removing.value = true
+  try {
   await accountApi.removeFavorite(id)
   routes.value = routes.value.filter((item) => item.id !== id)
   total.value = Math.max(0, total.value - 1)
@@ -37,6 +41,8 @@ async function remove(id) {
     page.value -= 1
     load()
   }
+  } catch (cause) { errorMessage.value = cause.message || '取消收藏失败' }
+  finally { removing.value = false }
 }
 
 function changePage(nextPage) {
@@ -77,6 +83,7 @@ onMounted(load)
             type="button"
             class="remove-fav-btn"
             title="取消收藏"
+            :disabled="removing"
             @click.stop="remove(item.id)"
           >
             <AppIcon name="heart-filled" size="13" color="#ff3b30" />

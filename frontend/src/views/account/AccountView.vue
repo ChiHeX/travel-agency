@@ -3,13 +3,21 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
+import RequestState from '@/components/RequestState.vue'
 
 const auth = useAuthStore()
 const loading = ref(false)
+const fetching = ref(true)
+const error = ref('')
+const submitError = ref('')
 const form = reactive({ nickname: '', realName: '', phone: '', email: '', avatarUrl: '' })
 
-onMounted(() => {
-  const user = auth.user || {}
+async function load() {
+  fetching.value = true
+  error.value = ''
+  try {
+  const user = await authApi.profile()
+  auth.user = user
   Object.assign(form, {
     nickname: user.nickname || '',
     realName: user.realName || '',
@@ -17,9 +25,16 @@ onMounted(() => {
     email: user.email || '',
     avatarUrl: user.avatarUrl || ''
   })
-})
+  } catch (cause) { error.value = cause.message || '资料加载失败' }
+  finally { fetching.value = false }
+}
+onMounted(load)
 
 async function submit() {
+  if (loading.value) return
+  submitError.value = ''
+  if (!form.nickname.trim() || form.nickname.length > 32) { submitError.value = '昵称应为 1–32 个字符'; return }
+  if (form.phone && !/^1[3-9]\d{9}$/.test(form.phone)) { submitError.value = '请输入有效手机号'; return }
   loading.value = true
   try {
     const user = await authApi.updateProfile({
@@ -32,6 +47,8 @@ async function submit() {
     auth.user = user
     localStorage.setItem('travel_agency_user', JSON.stringify(user))
     ElMessage.success('个人资料已成功更新')
+  } catch (cause) {
+    submitError.value = cause.message || '资料保存失败'
   } finally {
     loading.value = false
   }
@@ -54,11 +71,13 @@ async function submit() {
         </div>
 
         <nav class="settings-nav-list">
+          <RouterLink to="/account/reviews">我的评价</RouterLink>
+          <RouterLink to="/account/security">账号安全 / 修改密码</RouterLink>
           <RouterLink to="/account/profile" class="active">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
             </svg>
-            个人资料与安全
+            个人资料
           </RouterLink>
           <RouterLink to="/account/orders">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -103,6 +122,7 @@ async function submit() {
           </div>
         </div>
 
+        <RequestState :loading="fetching" :error="error" @retry="load">
         <div class="admin-panel profile-settings-card">
           <form class="profile-form-grid" @submit.prevent="submit">
             <div class="form-field">
@@ -131,12 +151,14 @@ async function submit() {
             </div>
 
             <div class="form-actions-row">
+              <p v-if="submitError" role="alert" class="form-error">{{ submitError }}</p>
               <button type="submit" class="primary-button" :disabled="loading">
                 {{ loading ? '正在保存...' : '保存个人资料' }}
               </button>
             </div>
           </form>
         </div>
+        </RequestState>
       </main>
     </div>
   </div>

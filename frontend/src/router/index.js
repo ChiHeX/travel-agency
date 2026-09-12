@@ -9,13 +9,20 @@ import RouteDetailView from '@/views/public/RouteDetailView.vue'
 import LoginView from '@/views/public/LoginView.vue'
 import RegisterView from '@/views/public/RegisterView.vue'
 import ArticlesView from '@/views/public/ArticlesView.vue'
+import LatestGuidesView from '@/views/public/LatestGuidesView.vue'
+import CityGuidesView from '@/views/public/CityGuidesView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
+import GuidePublishersView from '@/views/public/GuidePublishersView.vue'
+import PublisherGuidesView from '@/views/public/PublisherGuidesView.vue'
+import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
 import OrderCreateView from '@/views/account/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
 import PaymentView from '@/views/account/PaymentView.vue'
 import PaymentResultView from '@/views/account/PaymentResultView.vue'
 import AccountView from '@/views/account/AccountView.vue'
+import ReviewsView from '@/views/account/ReviewsView.vue'
+import SecurityView from '@/views/account/SecurityView.vue'
 import TravelersView from '@/views/account/TravelersView.vue'
 import FavoritesView from '@/views/account/FavoritesView.vue'
 import MessagesView from '@/views/account/MessagesView.vue'
@@ -39,7 +46,12 @@ const routes = [
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
       { path: 'articles', name: 'articles', component: ArticlesView },
+      { path: 'articles/latest', name: 'latest-guides', component: LatestGuidesView },
+      { path: 'articles/cities/:city', name: 'city-guides', component: CityGuidesView },
+      { path: 'articles/publishers', name: 'article-publishers', component: GuidePublishersView },
+      { path: 'articles/publishers/:id', name: 'publisher-guides', component: PublisherGuidesView },
       { path: 'articles/:id', name: 'article-detail', component: ArticleDetailView },
+      { path: 'attractions/:id', name: 'attraction-detail', component: AttractionDetailView },
       { path: 'auth/login', name: 'login', component: LoginView },
       { path: 'auth/register', name: 'register', component: RegisterView }
     ]
@@ -51,6 +63,8 @@ const routes = [
     children: [
       { path: '', redirect: { name: 'account-profile' } },
       { path: 'profile', name: 'account-profile', component: AccountView },
+      { path: 'reviews', name: 'account-reviews', component: ReviewsView },
+      { path: 'security', name: 'account-security', component: SecurityView },
       { path: 'orders', name: 'account-orders', component: OrdersView },
       { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
       { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
@@ -115,6 +129,12 @@ router.beforeEach(async (to) => {
     return auth.isLoggedIn ? { name: 'home' } : { name: 'login' }
   }
   return true
+})
+
+window.addEventListener('travel-auth-expired', () => {
+  useAuthStore().logout()
+  const current = router.currentRoute.value
+  if (current.meta.requiresAuth) router.replace({ name: 'login', query: { redirect: current.fullPath } })
 })
 
 export default router

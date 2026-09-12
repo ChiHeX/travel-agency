@@ -55,6 +55,8 @@ async function toggleFavorite() {
       favorite.value = true
       ElMessage.success('已加入收藏')
     }
+  } catch (cause) {
+    ElMessage.error(cause.message || '收藏操作失败，请重试')
   } finally {
     favoriteSubmitting.value = false
   }
@@ -93,10 +95,12 @@ function itineraryType(type) {
   return labels[type] || type || '行程'
 }
 
-function shareRoute() {
+async function shareRoute() {
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(window.location.href)
-    ElMessage.success('线路链接已复制')
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      ElMessage.success('线路链接已复制')
+    } catch { ElMessage.warning('复制失败，请复制浏览器地址栏中的链接') }
   }
 }
 

@@ -45,24 +45,32 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/login", "/api/auth/register", "/api/health", "/api/payments/alipay/callback", "/actuator/health").permitAll()
+                        .requestMatchers("/api/auth/login", "/api/auth/register", "/api/health", "/api/payments/alipay/notify", "/actuator/health").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/routes/**", "/api/articles/**", "/api/attractions/**").permitAll()
                         .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "STAFF")
                         .requestMatchers("/api/guide/**").hasAnyRole("ADMIN", "GUIDE")
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, exception) -> {
-                            response.setStatus(401);
-                            response.setContentType("application/json;charset=UTF-8");
-                            response.getWriter().write("{\"success\":false,\"message\":\"请先登录\"}");
+                            writeError(response, 401, "AUTHENTICATION_REQUIRED", "请先登录");
                         })
                         .accessDeniedHandler((request, response, exception) -> {
-                            response.setStatus(403);
-                            response.setContentType("application/json;charset=UTF-8");
-                            response.getWriter().write("{\"success\":false,\"message\":\"无权访问该资源\"}");
+                            writeError(response, 403, "ACCESS_DENIED", "无权访问该资源");
                         }))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    /**
+     * 以契约统一错误结构写出 401/403 响应：{ code, message, data:null, errors:[], traceId }。
+     */
+    private static void writeError(jakarta.servlet.http.HttpServletResponse response, int status,
+                                   String code, String message) throws java.io.IOException {
+        response.setStatus(status);
+        response.setContentType("application/json;charset=UTF-8");
+        String traceId = java.util.UUID.randomUUID().toString();
+        response.getWriter().write("{\"code\":\"" + code + "\",\"message\":\"" + message
+                + "\",\"data\":null,\"errors\":[],\"traceId\":\"" + traceId + "\"}");
     }
 
     @Bean

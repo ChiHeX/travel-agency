@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import com.travelagency.domain.mapper.SysUserMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -19,9 +20,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     private final JwtTokenProvider tokenProvider;
+    private final SysUserMapper userMapper;
 
-    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider) {
+    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider, SysUserMapper userMapper) {
         this.tokenProvider = tokenProvider;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -32,6 +35,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = authorization.substring(7);
             try {
                 JwtTokenProvider.Claims claims = tokenProvider.parse(token);
+                var user = userMapper.selectById(claims.userId());
+                if (user == null || !Integer.valueOf(1).equals(user.status)
+                        || Integer.valueOf(1).equals(user.deleted)) {
+                    throw new IllegalArgumentException("Account is unavailable");
+                }
                 UserPrincipal principal = new UserPrincipal(claims.userId(), claims.username(), claims.roles(), true);
                 var authentication = new UsernamePasswordAuthenticationToken(
                         principal, null, principal.getAuthorities());

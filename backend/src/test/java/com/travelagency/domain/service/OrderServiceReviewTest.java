@@ -9,6 +9,7 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
@@ -62,13 +63,16 @@ class OrderServiceReviewTest {
     private MessageMapper messageMapper;
     @Mock
     private SysUserMapper sysUserMapper;
+    @Mock
+    private IdempotencyRecordMapper idempotencyRecordMapper;
 
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper,
-                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper);
+                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
+                idempotencyRecordMapper);
     }
 
     private static TravelOrder order(long id, String status) {
@@ -187,9 +191,9 @@ class OrderServiceReviewTest {
         assertEquals("宣阳", view.userNickname());
         assertEquals(o.orderNo, view.orderNo());
 
-        // 线路评分被重算
+        // 线路评分被重算：内存对象同步更新，落库走单条原子 UPDATE（子查询统计）
         assertEquals(2, travelRoute.ratingCount);
         assertEquals(new BigDecimal("4.00"), travelRoute.ratingAvg);
-        verify(routeMapper).updateById(travelRoute);
+        verify(routeMapper).update(any(), any());
     }
 }

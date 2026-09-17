@@ -8,6 +8,7 @@ import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RefundStatus;
+import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.UserPrincipal;
@@ -23,6 +24,7 @@ import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
 import com.travelagency.domain.entity.Payment;
@@ -32,6 +34,7 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
@@ -41,6 +44,7 @@ import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -67,6 +71,12 @@ public class OrderService {
     private final ReviewMapper reviewMapper;
     private final MessageMapper messageMapper;
     private final SysUserMapper sysUserMapper;
+    private final IdempotencyRecordMapper idempotencyRecordMapper;
+
+    /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
+    private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
+    /** 申请退款动作的幂等作用域。 */
+    private static final String SCOPE_APPLY_REFUND = "APPLY_REFUND";
 
     @Value("${app.integrations.alipay.gateway-url:https://openapi-sandbox.dl.alipaydev.com/gateway.do}")
     private String alipayGatewayUrl;
@@ -80,7 +90,8 @@ public class OrderService {
             RefundMapper refundMapper,
             ReviewMapper reviewMapper,
             MessageMapper messageMapper,
-            SysUserMapper sysUserMapper) {
+            SysUserMapper sysUserMapper,
+            IdempotencyRecordMapper idempotencyRecordMapper) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
@@ -90,16 +101,58 @@ public class OrderService {
         this.reviewMapper = reviewMapper;
         this.messageMapper = messageMapper;
         this.sysUserMapper = sysUserMapper;
+        this.idempotencyRecordMapper = idempotencyRecordMapper;
     }
 
     @Transactional
     public OrderView create(Long userId, CreateOrderRequest request) {
+        return create(userId, request, null);
+    }
+
+    /**
+     * 下单，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>同一用户携带同一幂等键重复提交时只会真正下单一次：首次请求先抢占幂等记录，业务成功后回填订单号；
+     * 后续重放请求读到同一记录后直接返回首次生成的订单，不会重复占用团期名额、也不会产生第二张支付单。</p>
+     */
+    @Transactional
+    public OrderView create(Long userId, CreateOrderRequest request, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_CREATE_ORDER, idempotencyKey);
+            if (replay != null) {
+                TravelOrder existing = orderMapper.selectOne(new QueryWrapper<TravelOrder>()
+                        .eq("order_no", replay.resourceNo));
+                if (existing == null) {
+                    throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                            "相同幂等键的请求正在处理中，请稍后重试");
+                }
+                return loadOrderView(existing);
+            }
+        }
+
         int participantCount = request.adultCount() + request.childCount();
         if (participantCount <= 0) {
             throw new BusinessException(422, "VALIDATION_ERROR", "至少选择一位成人或儿童");
         }
         if (request.travelers().size() != participantCount) {
             throw new BusinessException(422, "VALIDATION_ERROR", "出行人数量必须与成人和儿童人数一致");
+        }
+        // 出行人类型要么全部显式指定，要么全部不指定走下标兜底推断。
+        // 部分指定会让快照类型变得不确定，此时直接拒绝，而不是静默按位置猜错。
+        List<String> explicitTypes = request.travelers().stream()
+                .map(CreateOrderRequest.TravelerSnapshotRequest::travelerType)
+                .toList();
+        boolean anyExplicit = explicitTypes.stream().anyMatch(type -> type != null && !type.isBlank());
+        boolean allExplicit = explicitTypes.stream().allMatch(type -> type != null && !type.isBlank());
+        if (anyExplicit && !allExplicit) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "出行人类型需要全部指定或全部不指定");
+        }
+        if (allExplicit) {
+            long adults = explicitTypes.stream().filter(TravelerType.ADULT::equals).count();
+            if (adults != request.adultCount()) {
+                throw new BusinessException(422, "VALIDATION_ERROR", "标记为成人的出行人数量与成人人数不一致");
+            }
         }
         Departure departure = departureMapper.selectById(request.departureId());
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
@@ -146,8 +199,10 @@ public class OrderService {
         for (CreateOrderRequest.TravelerSnapshotRequest requestTraveler : request.travelers()) {
             OrderTraveler snapshot = new OrderTraveler();
             snapshot.orderId = order.id;
-            // 请求不区分单个出行人的类型：按「前 adultCount 位为成人，其余为儿童」写入快照。
-            snapshot.travelerType = index < adultCount ? TravelerType.ADULT : TravelerType.CHILD;
+            // 优先采用调用方显式指定的类型；未指定时按「前 adultCount 位为成人，其余为儿童」兜底推断。
+            snapshot.travelerType = allExplicit
+                    ? requestTraveler.travelerType()
+                    : (index < adultCount ? TravelerType.ADULT : TravelerType.CHILD);
             snapshot.name = requestTraveler.name();
             snapshot.gender = requestTraveler.gender();
             snapshot.birthDate = requestTraveler.birthDate();
@@ -169,7 +224,50 @@ public class OrderService {
         paymentMapper.insert(payment);
         // 重新读取以带回 created_at / updated_at 等数据库默认值，契约 Order 要求这两个字段必填。
         TravelOrder saved = orderMapper.selectById(order.id);
-        return OrderView.from(saved == null ? order : saved, routeMapper.selectById(order.routeId), departure);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_CREATE_ORDER, idempotencyKey, "ORDER", order.orderNo);
+        }
+        TravelOrder result = saved == null ? order : saved;
+        return OrderView.from(result, routeMapper.selectById(order.routeId), departure);
+    }
+
+    /**
+     * 抢占幂等键。
+     *
+     * <p>返回 {@code null} 表示抢占成功、调用方应继续执行业务；返回已有记录表示这是重放请求。
+     * 并发场景下唯一键 (user_id, scope, idem_key) 会阻塞后到的插入，等首个事务提交后再抛出
+     * 重复键冲突，因此这里能可靠区分「重放」与「仍在处理中」。</p>
+     */
+    private IdempotencyRecord claimIdempotencyKey(Long userId, String scope, String idemKey) {
+        IdempotencyRecord record = new IdempotencyRecord();
+        record.userId = userId;
+        record.scope = scope;
+        record.idemKey = idemKey;
+        try {
+            idempotencyRecordMapper.insert(record);
+            return null;
+        } catch (DuplicateKeyException conflict) {
+            IdempotencyRecord existing = idempotencyRecordMapper.selectOne(new QueryWrapper<IdempotencyRecord>()
+                    .eq("user_id", userId).eq("scope", scope).eq("idem_key", idemKey));
+            if (existing == null || existing.resourceNo == null) {
+                throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                        "相同幂等键的请求正在处理中，请稍后重试");
+            }
+            return existing;
+        }
+    }
+
+    /** 业务成功后把产生的单号回填到幂等记录，供重放请求返回同一结果。 */
+    private void recordIdempotencyResource(Long userId, String scope, String idemKey, String type, String resourceNo) {
+        idempotencyRecordMapper.update(null, new UpdateWrapper<IdempotencyRecord>()
+                .eq("user_id", userId).eq("scope", scope).eq("idem_key", idemKey)
+                .set("resource_type", type).set("resource_no", resourceNo));
+    }
+
+    /** 按订单实体装配契约 OrderView（补齐线路与团期）。 */
+    private OrderView loadOrderView(TravelOrder order) {
+        return OrderView.from(order, routeMapper.selectById(order.routeId),
+                departureMapper.selectById(order.departureId));
     }
 
     /**
@@ -224,8 +322,14 @@ public class OrderService {
                 order.totalAmount, alipayGatewayUrl, expiresAt);
     }
 
+    /**
+     * 取消待支付订单并释放名额。
+     *
+     * <p>契约 {@code POST /orders/{orderNo}/cancel} 的 200 响应是 {@code OrderEnvelope}，
+     * 即 data 为取消后的订单对象；此前实现返回 void，实际响应 data 为 null。</p>
+     */
     @Transactional
-    public void cancel(String orderNo, Long userId) {
+    public OrderView cancel(String orderNo, Long userId) {
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
@@ -235,6 +339,7 @@ public class OrderService {
         order.cancelledAt = LocalDateTime.now();
         orderMapper.updateById(order);
         releaseReserved(order);
+        return loadOrderView(order);
     }
 
     /**
@@ -243,6 +348,20 @@ public class OrderService {
      */
     @Transactional
     public void markPaid(String orderNo, String tradeNo) {
+        markPaid(orderNo, tradeNo, null);
+    }
+
+    /**
+     * 支付回调入账，可携带回调声明的支付金额用于核对。
+     *
+     * <p>幂等由「条件更新」这一原子闸门保证：只有把支付单从非 PAID 成功改成 PAID 的那一次回调
+     * 才会继续推进订单并发送通知。并发重复投递时，后到的回调影响行数为 0，直接返回，
+     * 因此不会重复发通知，也不会把订单推进两次。</p>
+     *
+     * @param callbackAmount 回调声明的金额；为 null 表示调用方已完成金额核对
+     */
+    @Transactional
+    public void markPaid(String orderNo, String tradeNo, BigDecimal callbackAmount) {
         TravelOrder order = findByNo(orderNo);
         Payment payment = paymentFor(order.id);
         if (PaymentStatus.PAID.equals(payment.status)) {
@@ -250,6 +369,20 @@ public class OrderService {
         }
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "订单当前状态不接受支付回调");
+        }
+        if (callbackAmount != null && !amountEquals(callbackAmount, order.totalAmount)) {
+            throw new BusinessException(409, "PAYMENT_AMOUNT_MISMATCH", "回调金额与订单应付金额不一致");
+        }
+        // 原子闸门：并发回调只有一个能把支付单从非 PAID 推进到 PAID
+        int claimed = paymentMapper.update(null, new UpdateWrapper<Payment>()
+                .eq("id", payment.id)
+                .ne("status", PaymentStatus.PAID)
+                .set("status", PaymentStatus.PAID)
+                .set("third_party_trade_no", tradeNo)
+                .set("paid_at", LocalDateTime.now()));
+        if (claimed != 1) {
+            // 已被并发回调抢先处理，本次属于重复投递，不再推进订单
+            return;
         }
         payment.status = PaymentStatus.PAID;
         payment.thirdPartyTradeNo = tradeNo;
@@ -261,6 +394,14 @@ public class OrderService {
         order.paidAt = LocalDateTime.now();
         orderMapper.updateById(order);
         notify(order.userId, "支付成功", "订单 " + order.orderNo + " 已支付，等待旅行社确认报名。", "PAYMENT_SUCCESS");
+    }
+
+    /** 金额按数值比较，避免 "2500.0" 与 "2500.00" 因标度不同被误判为不一致。 */
+    private static boolean amountEquals(BigDecimal left, BigDecimal right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        return left.compareTo(right) == 0;
     }
 
     @Transactional
@@ -294,7 +435,34 @@ public class OrderService {
 
     @Transactional
     public RefundView applyRefund(String orderNo, Long userId, RefundRequest request) {
-        TravelOrder order = findByNo(orderNo);
+        return applyRefund(orderNo, userId, request, null);
+    }
+
+    /**
+     * 申请退款，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>两道并发防线：① 幂等键保证同一用户的重复提交只生成一条申请；
+     * ② 读取订单时加行锁（{@code SELECT ... FOR UPDATE}）把同一订单上的并发申请串行化，
+     * 后到者能看到前一条 APPLYING 申请并收到 409，而不是各自插入一条“处理中”退款单。</p>
+     */
+    @Transactional
+    public RefundView applyRefund(String orderNo, Long userId, RefundRequest request, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_APPLY_REFUND, idempotencyKey);
+            if (replay != null) {
+                Refund replayed = replay.resourceNo == null ? null
+                        : refundMapper.selectById(Long.valueOf(replay.resourceNo));
+                if (replayed == null) {
+                    throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                            "相同幂等键的请求正在处理中，请稍后重试");
+                }
+                TravelOrder replayOrder = orderMapper.selectById(replayed.orderId);
+                return RefundView.from(replayed, replayOrder == null ? orderNo : replayOrder.orderNo);
+            }
+        }
+
+        TravelOrder order = findByNoForUpdate(orderNo);
         ensureOwner(order, userId);
         if (!(OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)
                 || OrderStatus.CONFIRMED.equals(order.status))) {
@@ -315,6 +483,9 @@ public class OrderService {
         refundMapper.insert(refund);
         order.status = OrderStatus.REFUND_APPLYING;
         orderMapper.updateById(order);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_APPLY_REFUND, idempotencyKey, "REFUND", String.valueOf(refund.id));
+        }
         // 回查以带回 created_at / updated_at，契约 Refund 要求这两个字段必填。
         Refund saved = refundMapper.selectById(refund.id);
         return RefundView.from(saved == null ? refund : saved, order.orderNo);
@@ -322,6 +493,9 @@ public class OrderService {
 
     @Transactional
     public void processRefund(Long refundId, String action, String comment, Long reviewerId) {
+        if (!"APPROVE".equalsIgnoreCase(action) && !"REJECT".equalsIgnoreCase(action)) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "审核动作只能是 APPROVE 或 REJECT");
+        }
         Refund refund = refundMapper.selectById(refundId);
         if (refund == null || !RefundStatus.APPLYING.equals(refund.status)) {
             throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请不存在或已处理");
@@ -329,6 +503,18 @@ public class OrderService {
         TravelOrder order = orderMapper.selectById(refund.orderId);
         if (order == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "关联订单不存在");
+        }
+        // 原子闸门：并发审批同一退款单时，只有一个请求能把 APPLYING 抢成 PROCESSING。
+        // 否则两个请求都会通过上面的状态检查，导致名额被释放两次、线路有效报名数被回退两次。
+        int claimed = refundMapper.update(null, new UpdateWrapper<Refund>()
+                .eq("id", refundId)
+                .eq("status", RefundStatus.APPLYING)
+                .set("status", RefundStatus.PROCESSING)
+                .set("reviewed_by", reviewerId)
+                .set("reviewed_at", LocalDateTime.now())
+                .set("review_comment", comment));
+        if (claimed != 1) {
+            throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请已被其他审核人处理");
         }
         refund.reviewedBy = reviewerId;
         refund.reviewedAt = LocalDateTime.now();
@@ -352,14 +538,13 @@ public class OrderService {
             payment.status = PaymentStatus.REFUNDED;
             paymentMapper.updateById(payment);
             notify(order.userId, "退款审核通过", "订单 " + order.orderNo + " 的退款已处理完成。", "REFUND_APPROVED");
-        } else if ("REJECT".equalsIgnoreCase(action)) {
+        } else {
+            // action 已在方法入口校验为 APPROVE / REJECT 之一，走到这里只能是 REJECT
             refund.status = RefundStatus.REJECTED;
             refundMapper.updateById(refund);
             order.status = refund.originalOrderStatus;
             orderMapper.updateById(order);
             notify(order.userId, "退款申请未通过", "订单 " + order.orderNo + " 的退款申请未通过。", "REFUND_REJECTED");
-        } else {
-            throw new BusinessException(422, "VALIDATION_ERROR", "审核动作只能是 APPROVE 或 REJECT");
         }
     }
 
@@ -422,9 +607,15 @@ public class OrderService {
         return RefundView.from(refund, order == null ? null : order.orderNo);
     }
 
+    /**
+     * 同意退款申请，返回审核后的退款记录。
+     * 契约 {@code POST /admin/refunds/{refundId}/approve} 的 200 响应是 RefundEnvelope，
+     * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。
+     */
     @Transactional
-    public void approveRefund(Long refundId, String comment, Long reviewerId) {
+    public RefundView approveRefund(Long refundId, String comment, Long reviewerId) {
         processRefund(refundId, "APPROVE", comment, reviewerId);
+        return refundDetail(refundId);
     }
 
     @Transactional
@@ -443,6 +634,12 @@ public class OrderService {
      * 公开线路可见评价分页，对齐契约 GET /routes/{routeId}/reviews。
      */
     public PageResponse<ReviewView> listRouteReviews(Long routeId, int page, int size) {
+        // 线路不存在、已删除或未发布时不应对外暴露评价列表，契约要求返回 404。
+        TravelRoute route = routeMapper.selectById(routeId);
+        if (route == null || (route.deleted != null && route.deleted == 1)
+                || !RouteStatus.PUBLISHED.equals(route.status)) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "线路不存在或未发布");
+        }
         QueryWrapper<Review> query = new QueryWrapper<Review>()
                 .eq("route_id", routeId).eq("status", "VISIBLE").orderByDesc("created_at");
         Page<Review> result = reviewMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
@@ -483,6 +680,19 @@ public class OrderService {
 
     public TravelOrder findByNo(String orderNo) {
         TravelOrder order = orderMapper.selectOne(new QueryWrapper<TravelOrder>().eq("order_no", orderNo));
+        if (order == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单不存在");
+        }
+        return order;
+    }
+
+    /**
+     * 按订单号读取并加行锁（{@code SELECT ... FOR UPDATE}），把同一订单上的并发写操作串行化。
+     * 必须在事务内调用；用于申请退款等「先检查后写入」的流程，避免检查与写入之间被并发插入。
+     */
+    private TravelOrder findByNoForUpdate(String orderNo) {
+        TravelOrder order = orderMapper.selectOne(new QueryWrapper<TravelOrder>()
+                .eq("order_no", orderNo).last("FOR UPDATE"));
         if (order == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单不存在");
         }
@@ -605,19 +815,35 @@ public class OrderService {
         }
     }
 
+    /**
+     * 重算线路评分。
+     *
+     * <p>落库改用「单条 UPDATE + 子查询」，由数据库一次性算出统计值，取代原先的
+     * 「读评价列表 → 本地求和 → updateById 写回」。后者在并发评价或并发调整可见状态时，
+     * 两个事务会各自把基于旧快照算出的结果写回，导致 rating_count / rating_avg 长期偏离真实值。</p>
+     */
     private void refreshRouteRating(Long routeId) {
+        if (routeId == null) {
+            return;
+        }
         List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
                 .eq("route_id", routeId).eq("status", "VISIBLE"));
         TravelRoute route = routeMapper.selectById(routeId);
         if (route == null) {
             return;
         }
+        // 同步内存对象，便于调用方与测试直接读取
         route.ratingCount = reviews.size();
         route.ratingAvg = reviews.isEmpty() ? BigDecimal.ZERO : reviews.stream()
                 .map(review -> BigDecimal.valueOf(review.rating))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal.valueOf(reviews.size()), 2, RoundingMode.HALF_UP);
-        routeMapper.updateById(route);
+        routeMapper.update(null, new UpdateWrapper<TravelRoute>()
+                .eq("id", routeId)
+                .setSql("rating_count = (SELECT COUNT(*) FROM review WHERE route_id = " + routeId
+                        + " AND status = 'VISIBLE')")
+                .setSql("rating_avg = (SELECT COALESCE(ROUND(AVG(rating), 2), 0) FROM review WHERE route_id = "
+                        + routeId + " AND status = 'VISIBLE')"));
     }
 
     private void notify(Long userId, String title, String content, String type) {

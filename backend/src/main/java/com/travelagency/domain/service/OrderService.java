@@ -8,17 +8,20 @@ import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RefundStatus;
+import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderSummaryView;
+import com.travelagency.domain.dto.OrderTravelerView;
+import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.PaymentStartResponse;
 import com.travelagency.domain.dto.PaymentView;
 import com.travelagency.domain.dto.RefundRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
-import com.travelagency.domain.dto.TravelerView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
@@ -90,7 +93,7 @@ public class OrderService {
     }
 
     @Transactional
-    public TravelOrder create(Long userId, CreateOrderRequest request) {
+    public OrderView create(Long userId, CreateOrderRequest request) {
         int participantCount = request.adultCount() + request.childCount();
         if (participantCount <= 0) {
             throw new BusinessException(422, "VALIDATION_ERROR", "至少选择一位成人或儿童");
@@ -138,9 +141,13 @@ public class OrderService {
         order.remark = request.remark();
         orderMapper.insert(order);
 
+        int adultCount = request.adultCount();
+        int index = 0;
         for (CreateOrderRequest.TravelerSnapshotRequest requestTraveler : request.travelers()) {
             OrderTraveler snapshot = new OrderTraveler();
             snapshot.orderId = order.id;
+            // 请求不区分单个出行人的类型：按「前 adultCount 位为成人，其余为儿童」写入快照。
+            snapshot.travelerType = index < adultCount ? TravelerType.ADULT : TravelerType.CHILD;
             snapshot.name = requestTraveler.name();
             snapshot.gender = requestTraveler.gender();
             snapshot.birthDate = requestTraveler.birthDate();
@@ -150,6 +157,7 @@ public class OrderService {
             snapshot.emergencyName = requestTraveler.emergencyName();
             snapshot.emergencyPhone = requestTraveler.emergencyPhone();
             orderTravelerMapper.insert(snapshot);
+            index++;
         }
 
         Payment payment = new Payment();
@@ -159,20 +167,36 @@ public class OrderService {
         payment.amount = order.totalAmount;
         payment.status = PaymentStatus.UNPAID;
         paymentMapper.insert(payment);
-        return order;
+        // 重新读取以带回 created_at / updated_at 等数据库默认值，契约 Order 要求这两个字段必填。
+        TravelOrder saved = orderMapper.selectById(order.id);
+        return OrderView.from(saved == null ? order : saved, routeMapper.selectById(order.routeId), departure);
     }
 
     /**
      * 当前用户订单分页查询，对齐契约 GET /orders（page/size + status）。
      */
-    public PageResponse<TravelOrder> listMine(Long userId, String status, int page, int size) {
+    public PageResponse<OrderSummaryView> listMine(Long userId, String status, int page, int size) {
         QueryWrapper<TravelOrder> query = new QueryWrapper<TravelOrder>().eq("user_id", userId);
         if (status != null && !status.isBlank()) {
             query.eq("status", status);
         }
         query.orderByDesc("created_at");
         Page<TravelOrder> result = orderMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
-        return PageResponse.from(result);
+        return toSummaryPage(result);
+    }
+
+    /**
+     * 把订单实体分页转成契约 OrderSummary 分页，一次性批量补齐 routeName / departureStartDate，避免 N+1 查询。
+     */
+    public PageResponse<OrderSummaryView> toSummaryPage(Page<TravelOrder> result) {
+        List<TravelOrder> records = result.getRecords();
+        Map<Long, TravelRoute> routes = batchRoutes(records);
+        Map<Long, Departure> departures = batchDepartures(records);
+        List<OrderSummaryView> items = records.stream()
+                .map(order -> OrderSummaryView.from(order, routes.get(order.routeId), departures.get(order.departureId)))
+                .toList();
+        return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages());
     }
 
     public OrderDetailResponse detail(String orderNo, UserPrincipal requester) {
@@ -291,7 +315,9 @@ public class OrderService {
         refundMapper.insert(refund);
         order.status = OrderStatus.REFUND_APPLYING;
         orderMapper.updateById(order);
-        return RefundView.from(refund, order.orderNo);
+        // 回查以带回 created_at / updated_at，契约 Refund 要求这两个字段必填。
+        Refund saved = refundMapper.selectById(refund.id);
+        return RefundView.from(saved == null ? refund : saved, order.orderNo);
     }
 
     @Transactional
@@ -357,7 +383,9 @@ public class OrderService {
         review.status = "VISIBLE";
         reviewMapper.insert(review);
         refreshRouteRating(order.routeId);
-        return ReviewView.from(review, order.orderNo, nicknameOf(userId));
+        // 回查以带回 created_at / updated_at，契约 Review 要求 createdAt 必填。
+        Review saved = reviewMapper.selectById(review.id);
+        return ReviewView.from(saved == null ? review : saved, order.orderNo, nicknameOf(userId));
     }
 
     // ------------------------------------------------------------------
@@ -470,11 +498,10 @@ public class OrderService {
     }
 
     private OrderDetailResponse toDetail(TravelOrder order) {
-        List<TravelerView> travelers = orderTravelerMapper.selectList(new QueryWrapper<OrderTraveler>()
+        List<OrderTravelerView> travelers = orderTravelerMapper.selectList(new QueryWrapper<OrderTraveler>()
                         .eq("order_id", order.id).orderByAsc("id"))
                 .stream()
-                .map(snapshot -> new TravelerView(snapshot.id, snapshot.name, snapshot.gender, snapshot.birthDate,
-                        snapshot.idType, maskId(snapshot.idNo), snapshot.phone, snapshot.emergencyName, snapshot.emergencyPhone))
+                .map(OrderTravelerView::from)
                 .toList();
         Payment payment = paymentFor(order.id);
         payment.callbackPayload = null;
@@ -488,8 +515,28 @@ public class OrderService {
                 .eq("order_id", order.id).orderByDesc("created_at").last("LIMIT 1"));
         ReviewView reviewView = review == null ? null
                 : ReviewView.from(review, order.orderNo, nicknameOf(review.userId));
-        return new OrderDetailResponse(order, routeMapper.selectById(order.routeId),
-                departureMapper.selectById(order.departureId), travelers, paymentView, refunds, reviewView);
+        TravelRoute route = routeMapper.selectById(order.routeId);
+        Departure departure = departureMapper.selectById(order.departureId);
+        return new OrderDetailResponse(OrderView.from(order, route, departure), route,
+                departure, travelers, paymentView, refunds, reviewView);
+    }
+
+    private Map<Long, TravelRoute> batchRoutes(List<TravelOrder> orders) {
+        List<Long> ids = orders.stream().map(order -> order.routeId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return routeMapper.selectList(new QueryWrapper<TravelRoute>().in("id", ids)).stream()
+                .collect(Collectors.toMap(route -> route.id, route -> route, (a, b) -> a));
+    }
+
+    private Map<Long, Departure> batchDepartures(List<TravelOrder> orders) {
+        List<Long> ids = orders.stream().map(order -> order.departureId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return departureMapper.selectList(new QueryWrapper<Departure>().in("id", ids)).stream()
+                .collect(Collectors.toMap(departure -> departure.id, departure -> departure, (a, b) -> a));
     }
 
     private PageResponse<ReviewView> toReviewPage(Page<Review> result) {
@@ -507,7 +554,7 @@ public class OrderService {
         if (ids.isEmpty()) {
             return Map.of();
         }
-        return orderMapper.selectBatchIds(ids).stream()
+        return orderMapper.selectByIds(ids).stream()
                 .collect(Collectors.toMap(o -> o.id, o -> o.orderNo, (a, b) -> a));
     }
 
@@ -516,7 +563,7 @@ public class OrderService {
         if (ids.isEmpty()) {
             return Map.of();
         }
-        return sysUserMapper.selectBatchIds(ids).stream()
+        return sysUserMapper.selectByIds(ids).stream()
                 .collect(Collectors.toMap(u -> u.id, u -> u.nickname, (a, b) -> a));
     }
 

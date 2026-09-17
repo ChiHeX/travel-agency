@@ -13,6 +13,7 @@ import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.AdminUserView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.RefundDecisionRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
@@ -361,7 +362,7 @@ public class AdminController {
     }
 
     @GetMapping("/orders")
-    public ApiResponse<PageResponse<TravelOrder>> orders(
+    public ApiResponse<PageResponse<OrderSummaryView>> orders(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false) String keyword,
@@ -376,7 +377,7 @@ public class AdminController {
                     .or().like("contact_phone", keyword));
         }
         query.orderByDesc("created_at");
-        return ApiResponse.ok(PageResponse.from(orderMapper.selectPage(
+        return ApiResponse.ok(orderService.toSummaryPage(orderMapper.selectPage(
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size), query)));
     }
 

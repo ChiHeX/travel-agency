@@ -5,12 +5,13 @@ import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderSummaryView;
+import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.PaymentStartResponse;
 import com.travelagency.domain.dto.RefundRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
-import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -35,13 +36,13 @@ public class OrderController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<TravelOrder>> create(@Valid @RequestBody CreateOrderRequest request) {
-        TravelOrder order = orderService.create(CurrentUser.required().userId(), request);
-        return ResponseEntity.created(URI.create("/api/orders/" + order.orderNo)).body(ApiResponse.ok(order));
+    public ResponseEntity<ApiResponse<OrderView>> create(@Valid @RequestBody CreateOrderRequest request) {
+        OrderView order = orderService.create(CurrentUser.required().userId(), request);
+        return ResponseEntity.created(URI.create("/api/orders/" + order.orderNo())).body(ApiResponse.ok(order));
     }
 
     @GetMapping
-    public ApiResponse<PageResponse<TravelOrder>> mine(
+    public ApiResponse<PageResponse<OrderSummaryView>> mine(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status) {

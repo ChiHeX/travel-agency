@@ -8,10 +8,12 @@ INSERT INTO sys_role (code, name, description) VALUES
     ('ADMIN', '系统管理员', '系统级用户与权限管理')
 ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description);
 
--- password is the BCrypt hash for the demo password "password".
+-- password_hash is the BCrypt hash for the demo password "password".
+-- If the demo password ever needs to change, regenerate with BCrypt.hashpw(plain, BCrypt.gensalt(10))
+-- and update both this file and any existing database rows.
 INSERT INTO sys_user (username, password_hash, nickname, real_name, status, deleted)
-VALUES ('admin', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '系统管理员', '演示管理员', 1, 0)
-ON DUPLICATE KEY UPDATE nickname = VALUES(nickname), status = 1, deleted = 0;
+VALUES ('admin', '$2a$10$P1/CvJy8Lm3Rs0A8m2fD2Om5NGZbDEkisGjmvQ8fpGyITLhCzurjy', '系统管理员', '演示管理员', 1, 0)
+ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), nickname = VALUES(nickname), status = 1, deleted = 0;
 
 INSERT INTO sys_user_role (user_id, role_id)
 SELECT u.id, r.id FROM sys_user u JOIN sys_role r ON r.code = 'ADMIN'

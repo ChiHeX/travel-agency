@@ -71,12 +71,13 @@ VALUES ('演示景点与线路基础资料', '团队原创整理的课程测试�
 
 INSERT INTO sys_user (username, password_hash, nickname, real_name, phone, email, status, deleted)
 VALUES
-    ('demo_user', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '旅行测试员', '测试旅客', '13900000001', 'demo_user@example.test', 1, 0),
-    ('demo_staff', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '运营测试员', '测试运营', '13900000002', 'demo_staff@example.test', 1, 0),
-    ('demo_guide_a', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '小林导游', '林晓', '13900000003', 'demo_guide_a@example.test', 1, 0),
-    ('demo_guide_b', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '小周导游', '周远', '13900000004', 'demo_guide_b@example.test', 1, 0),
-    ('guide_editor', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '旅行编辑部', '课程攻略编辑', '13900000005', 'guide_editor@example.test', 1, 0)
-ON DUPLICATE KEY UPDATE nickname = VALUES(nickname), real_name = VALUES(real_name), phone = VALUES(phone),
+    ('demo_user', '$2a$10$wWQn/oU4soMhQf4gYJbAceOg2ovPU7j0WUmdaINZ6geKt6VnRXAVe', '旅行测试员', '测试旅客', '13900000001', 'demo_user@example.test', 1, 0),
+    ('demo_staff', '$2a$10$wWQn/oU4soMhQf4gYJbAceOg2ovPU7j0WUmdaINZ6geKt6VnRXAVe', '运营测试员', '测试运营', '13900000002', 'demo_staff@example.test', 1, 0),
+    ('demo_guide_a', '$2a$10$wWQn/oU4soMhQf4gYJbAceOg2ovPU7j0WUmdaINZ6geKt6VnRXAVe', '小林导游', '林晓', '13900000003', 'demo_guide_a@example.test', 1, 0),
+    ('demo_guide_b', '$2a$10$wWQn/oU4soMhQf4gYJbAceOg2ovPU7j0WUmdaINZ6geKt6VnRXAVe', '小周导游', '周远', '13900000004', 'demo_guide_b@example.test', 1, 0),
+    ('guide_editor', '$2a$10$wWQn/oU4soMhQf4gYJbAceOg2ovPU7j0WUmdaINZ6geKt6VnRXAVe', '旅行编辑部', '课程攻略编辑', '13900000005', 'guide_editor@example.test', 1, 0)
+ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), nickname = VALUES(nickname),
+    real_name = VALUES(real_name), phone = VALUES(phone),
     email = VALUES(email), status = 1, deleted = 0;
 
 INSERT INTO sys_user_role (user_id, role_id)

@@ -406,13 +406,20 @@ public class AdminController {
         return ApiResponse.ok(orderService.refundDetail(id));
     }
 
+    /**
+     * 同意退款申请。
+     *
+     * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。
+     * requestBody 是可选的，但一旦提供仍须校验，否则超长 comment 会绕过
+     * RefundDecisionRequest 上的 @Size 约束（同文件 reject 端点原本就带 @Valid）。</p>
+     */
     @PostMapping("/refunds/{id}/approve")
-    public ApiResponse<Void> approveRefund(
-            @PathVariable Long id, @RequestBody(required = false) RefundDecisionRequest request) {
+    public ApiResponse<RefundView> approveRefund(
+            @PathVariable Long id, @Valid @RequestBody(required = false) RefundDecisionRequest request) {
         String comment = request == null ? null : request.comment();
-        orderService.approveRefund(id, comment, CurrentUser.required().userId());
+        RefundView refund = orderService.approveRefund(id, comment, CurrentUser.required().userId());
         log("退款", "APPROVE", "REFUND", id, "SUCCESS", comment);
-        return ApiResponse.ok();
+        return ApiResponse.ok(refund);
     }
 
     @PostMapping("/refunds/{id}/reject")

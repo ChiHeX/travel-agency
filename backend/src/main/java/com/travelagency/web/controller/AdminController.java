@@ -11,6 +11,7 @@ import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.AdminUserView;
+import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
@@ -51,6 +52,7 @@ import com.travelagency.domain.service.DepartureService;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
@@ -200,26 +202,44 @@ public class AdminController {
         return ApiResponse.ok();
     }
 
+    /**
+     * 后台团期分页查询，对齐契约 GET /admin/departures（分页信封 + routeId/guideId/status/日期区间筛选）。
+     */
     @GetMapping("/departures")
-    public ApiResponse<List<Departure>> departures(
+    public ApiResponse<PageResponse<DepartureView>> departures(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) Long routeId,
-            @RequestParam(required = false) String status) {
-        return ApiResponse.ok(departureService.list(routeId, status));
+            @RequestParam(required = false) Long guideId,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateFrom,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateTo) {
+        return ApiResponse.ok(departureService.page(routeId, guideId, status, startDateFrom, startDateTo, page, size));
+    }
+
+    /**
+     * 团期管理详情，对齐契约 GET /admin/departures/{departureId}。
+     * 此前缺少该映射，前端 api/modules.js 调用时会命中 PUT 的路径而返回 405。
+     */
+    @GetMapping("/departures/{id}")
+    public ApiResponse<DepartureView> departureDetail(@PathVariable Long id) {
+        return ApiResponse.ok(departureService.detail(id));
     }
 
     @PostMapping("/departures")
-    public ApiResponse<Departure> createDeparture(@RequestBody Departure departure) {
+    public ApiResponse<DepartureView> createDeparture(@RequestBody Departure departure) {
         Departure saved = departureService.save(departure);
         log("团期", "CREATE", "DEPARTURE", saved.id, "SUCCESS", "创建团期");
-        return ApiResponse.ok(saved);
+        // 回查以带回 created_at / updated_at 等数据库默认值，并返回契约 Departure 视图。
+        return ApiResponse.ok(departureService.detail(saved.id));
     }
 
     @PutMapping("/departures/{id}")
-    public ApiResponse<Departure> updateDeparture(@PathVariable Long id, @RequestBody Departure departure) {
+    public ApiResponse<DepartureView> updateDeparture(@PathVariable Long id, @RequestBody Departure departure) {
         departure.id = id;
         Departure saved = departureService.save(departure);
         log("团期", "UPDATE", "DEPARTURE", id, "SUCCESS", "编辑团期");
-        return ApiResponse.ok(saved);
+        return ApiResponse.ok(departureService.detail(saved.id));
     }
 
     @PatchMapping("/departures/{id}/status")
@@ -285,9 +305,18 @@ public class AdminController {
         return ApiResponse.ok();
     }
 
+    /**
+     * 后台景点分页查询，对齐契约 GET /admin/attractions（分页信封 + keyword 筛选）。
+     */
     @GetMapping("/attractions")
-    public ApiResponse<List<Attraction>> attractions() {
-        return ApiResponse.ok(attractionMapper.selectList(new QueryWrapper<Attraction>().orderByDesc("created_at")));
+    public ApiResponse<PageResponse<Attraction>> attractions(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword) {
+        QueryWrapper<Attraction> query = new QueryWrapper<>();
+        appendKeyword(query, keyword, "name", "intro", "city");
+        return ApiResponse.ok(PageResponse.from(attractionMapper.selectPage(pageOf(page, size),
+                query.orderByDesc("created_at"))));
     }
 
     @PostMapping("/attractions")
@@ -309,9 +338,18 @@ public class AdminController {
         return ApiResponse.ok();
     }
 
+    /**
+     * 后台酒店分页查询，对齐契约 GET /admin/hotels（分页信封 + keyword 筛选）。
+     */
     @GetMapping("/hotels")
-    public ApiResponse<List<Hotel>> hotels() {
-        return ApiResponse.ok(hotelMapper.selectList(new QueryWrapper<Hotel>().orderByDesc("created_at")));
+    public ApiResponse<PageResponse<Hotel>> hotels(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword) {
+        QueryWrapper<Hotel> query = new QueryWrapper<>();
+        appendKeyword(query, keyword, "name", "address", "intro");
+        return ApiResponse.ok(PageResponse.from(hotelMapper.selectPage(pageOf(page, size),
+                query.orderByDesc("created_at"))));
     }
 
     @PostMapping("/hotels")
@@ -333,9 +371,31 @@ public class AdminController {
         return ApiResponse.ok();
     }
 
+    /**
+     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + keyword 筛选）。
+     */
     @GetMapping("/guides")
-    public ApiResponse<List<Guide>> guides() {
-        return ApiResponse.ok(guideMapper.selectList(new QueryWrapper<Guide>().orderByDesc("created_at")));
+    public ApiResponse<PageResponse<Guide>> guides(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword) {
+        QueryWrapper<Guide> query = new QueryWrapper<>();
+        appendKeyword(query, keyword, "name", "phone", "intro");
+        return ApiResponse.ok(PageResponse.from(guideMapper.selectPage(pageOf(page, size),
+                query.orderByDesc("created_at"))));
+    }
+
+    /**
+     * 后台导游详情，对齐契约 GET /admin/guides/{guideId}。
+     * 此前仅有列表映射，前端 adminApi.guide 调用时命中缺失的 GET 映射而 404。
+     */
+    @GetMapping("/guides/{guideId}")
+    public ApiResponse<Guide> guideDetail(@PathVariable Long guideId) {
+        Guide guide = guideMapper.selectById(guideId);
+        if (guide == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "导游不存在");
+        }
+        return ApiResponse.ok(guide);
     }
 
     @PostMapping("/guides")
@@ -508,10 +568,25 @@ public class AdminController {
         return ApiResponse.ok(guide);
     }
 
+    /**
+     * 操作日志分页查询，对齐契约 GET /admin/logs（分页信封 + module/operatorId 筛选）。
+     */
     @GetMapping("/logs")
     @PreAuthorize("hasRole('ADMIN')")
-    public ApiResponse<List<OperationLog>> logs() {
-        return ApiResponse.ok(operationLogMapper.selectList(new QueryWrapper<OperationLog>().orderByDesc("created_at").last("LIMIT 200")));
+    public ApiResponse<PageResponse<OperationLog>> logs(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String module,
+            @RequestParam(required = false) Long operatorId) {
+        QueryWrapper<OperationLog> query = new QueryWrapper<>();
+        if (module != null && !module.isBlank()) {
+            query.eq("module", module.trim());
+        }
+        if (operatorId != null) {
+            query.eq("operator_id", operatorId);
+        }
+        return ApiResponse.ok(PageResponse.from(operationLogMapper.selectPage(pageOf(page, size),
+                query.orderByDesc("created_at"))));
     }
 
     private SysUser createAccount(String username, String password, String realName, String phone, String roleCode) {
@@ -549,5 +624,27 @@ public class AdminController {
         log.result = result;
         log.detail = detail;
         operationLogMapper.insert(log);
+    }
+
+    /** 归一化分页参数：page 下限 1，size 限制在 1..100，避免非法分页参数直接透传给数据库。 */
+    private static <T> Page<T> pageOf(long page, long size) {
+        return new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100));
+    }
+
+    /** 对给定列做 OR 模糊匹配；keyword 为空时不追加任何条件。 */
+    private static <T> void appendKeyword(QueryWrapper<T> query, String keyword, String... columns) {
+        if (keyword == null || keyword.isBlank() || columns == null || columns.length == 0) {
+            return;
+        }
+        String kw = keyword.trim();
+        query.and(w -> {
+            for (int i = 0; i < columns.length; i++) {
+                if (i == 0) {
+                    w.like(columns[i], kw);
+                } else {
+                    w.or().like(columns[i], kw);
+                }
+            }
+        });
     }
 }

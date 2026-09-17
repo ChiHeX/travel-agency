@@ -70,7 +70,10 @@ public class AuthService {
             relation.roleId = userRole.id;
             userRoleMapper.insert(relation);
         }
-        return issueToken(user);
+        // 回查以带回 created_at / updated_at：这两个字段由数据库默认值生成，
+        // insert 后的内存对象里仍是 null，直接返回会让契约 AuthSession.user 的 createdAt 缺失。
+        SysUser saved = userMapper.selectById(user.id);
+        return issueToken(saved == null ? user : saved);
     }
 
     public AuthResponse login(LoginRequest request) {

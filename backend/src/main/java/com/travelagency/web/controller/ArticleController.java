@@ -1,7 +1,9 @@
 package com.travelagency.web.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.ApiResponse;
+import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.ArticleRequest;
@@ -15,11 +17,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.security.access.prepost.PreAuthorize;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/articles")
@@ -31,10 +33,28 @@ public class ArticleController {
         this.articleMapper = articleMapper;
     }
 
+    /**
+     * 公开攻略分页查询，对齐契约 GET /articles（ArticlePageEnvelope + keyword/destination 筛选）。
+     * 此前返回裸数组，前端按 data.items 取值会拿到 undefined。
+     */
     @GetMapping
-    public ApiResponse<List<TravelGuideArticle>> publicList() {
-        return ApiResponse.ok(articleMapper.selectList(new QueryWrapper<TravelGuideArticle>()
-                .eq("status", "PUBLISHED").orderByDesc("published_at")));
+    public ApiResponse<PageResponse<TravelGuideArticle>> publicList(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String destination) {
+        QueryWrapper<TravelGuideArticle> query = new QueryWrapper<TravelGuideArticle>()
+                .eq("status", "PUBLISHED");
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.trim();
+            query.and(w -> w.like("title", kw).or().like("summary", kw));
+        }
+        if (destination != null && !destination.isBlank()) {
+            query.eq("destination", destination.trim());
+        }
+        Page<TravelGuideArticle> result = articleMapper.selectPage(
+                new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)), query.orderByDesc("published_at"));
+        return ApiResponse.ok(PageResponse.from(result));
     }
 
     @GetMapping("/{id}")

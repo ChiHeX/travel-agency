@@ -225,6 +225,7 @@ CREATE TABLE IF NOT EXISTS order_traveler (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     order_id BIGINT NOT NULL,
     traveler_id BIGINT,
+    traveler_type VARCHAR(16) NOT NULL DEFAULT 'ADULT',
     name VARCHAR(64) NOT NULL,
     gender VARCHAR(16) NOT NULL,
     birth_date DATE,

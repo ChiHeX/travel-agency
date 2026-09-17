@@ -10,9 +10,14 @@ import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
-import com.travelagency.domain.dto.AdminDecisionRequest;
 import com.travelagency.domain.dto.AdminUserView;
 import com.travelagency.domain.dto.GuideAccountRequest;
+import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderSummaryView;
+import com.travelagency.domain.dto.RefundDecisionRequest;
+import com.travelagency.domain.dto.RefundView;
+import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
+import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.dto.StaffAccountRequest;
 import com.travelagency.domain.dto.StatusRequest;
 import com.travelagency.domain.entity.Attraction;
@@ -357,17 +362,28 @@ public class AdminController {
     }
 
     @GetMapping("/orders")
-    public ApiResponse<PageResponse<TravelOrder>> orders(
+    public ApiResponse<PageResponse<OrderSummaryView>> orders(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<TravelOrder> query = new QueryWrapper<>();
         if (status != null && !status.isBlank()) {
             query.eq("status", status);
         }
+        if (keyword != null && !keyword.isBlank()) {
+            query.and(wrapper -> wrapper.like("order_no", keyword)
+                    .or().like("contact_name", keyword)
+                    .or().like("contact_phone", keyword));
+        }
         query.orderByDesc("created_at");
-        return ApiResponse.ok(PageResponse.from(orderMapper.selectPage(
+        return ApiResponse.ok(orderService.toSummaryPage(orderMapper.selectPage(
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size), query)));
+    }
+
+    @GetMapping("/orders/{orderNo}")
+    public ApiResponse<OrderDetailResponse> orderDetail(@PathVariable String orderNo) {
+        return ApiResponse.ok(orderService.detail(orderNo, CurrentUser.required()));
     }
 
     @PostMapping("/orders/{orderNo}/confirm")
@@ -378,20 +394,49 @@ public class AdminController {
     }
 
     @GetMapping("/refunds")
-    public ApiResponse<List<Refund>> refunds(@RequestParam(required = false) String status) {
-        QueryWrapper<Refund> query = new QueryWrapper<Refund>().orderByDesc("created_at");
-        if (status != null && !status.isBlank()) {
-            query.eq("status", status);
-        }
-        return ApiResponse.ok(refundMapper.selectList(query));
+    public ApiResponse<PageResponse<RefundView>> refunds(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status) {
+        return ApiResponse.ok(orderService.listRefunds(status, page, size));
     }
 
-    @PostMapping("/refunds/{id}/decision")
-    public ApiResponse<Void> refundDecision(
-            @PathVariable Long id, @Valid @RequestBody AdminDecisionRequest request) {
-        orderService.processRefund(id, request.action(), request.comment(), CurrentUser.required().userId());
-        log("退款", request.action(), "REFUND", id, "SUCCESS", request.comment());
+    @GetMapping("/refunds/{id}")
+    public ApiResponse<RefundView> refundDetail(@PathVariable Long id) {
+        return ApiResponse.ok(orderService.refundDetail(id));
+    }
+
+    @PostMapping("/refunds/{id}/approve")
+    public ApiResponse<Void> approveRefund(
+            @PathVariable Long id, @RequestBody(required = false) RefundDecisionRequest request) {
+        String comment = request == null ? null : request.comment();
+        orderService.approveRefund(id, comment, CurrentUser.required().userId());
+        log("退款", "APPROVE", "REFUND", id, "SUCCESS", comment);
         return ApiResponse.ok();
+    }
+
+    @PostMapping("/refunds/{id}/reject")
+    public ApiResponse<Void> rejectRefund(
+            @PathVariable Long id, @Valid @RequestBody RefundDecisionRequest request) {
+        orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId());
+        log("退款", "REJECT", "REFUND", id, "SUCCESS", request.comment());
+        return ApiResponse.ok();
+    }
+
+    @GetMapping("/reviews")
+    public ApiResponse<PageResponse<ReviewView>> reviews(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status) {
+        return ApiResponse.ok(orderService.listReviews(status, page, size));
+    }
+
+    @PatchMapping("/reviews/{id}/status")
+    public ApiResponse<ReviewView> updateReviewStatus(
+            @PathVariable Long id, @Valid @RequestBody ReviewStatusUpdateRequest request) {
+        ReviewView view = orderService.updateReviewStatus(id, request.status(), CurrentUser.required().userId());
+        log("评价", "STATUS", "REVIEW", id, "SUCCESS", "评价状态变更为 " + request.status());
+        return ApiResponse.ok(view);
     }
 
     @GetMapping("/users")
@@ -405,7 +450,7 @@ public class AdminController {
                 .map(user -> new AdminUserView(user.id, user.username, user.nickname, user.realName,
                         user.phone, user.email, user.avatar, user.status, user.createdAt))
                 .toList();
-        return ApiResponse.ok(new PageResponse<>(records, result.getCurrent(), result.getSize(), result.getTotal(), result.getPages()));
+        return ApiResponse.ok(new PageResponse<>(records, (int) result.getCurrent(), (int) result.getSize(), (int) result.getTotal(), (int) result.getPages()));
     }
 
     @PatchMapping("/users/{id}/status")

@@ -9,6 +9,8 @@ import java.time.LocalDate;
 public class OrderTraveler extends BaseEntity {
     public Long orderId;
     public Long travelerId;
+    /** ADULT / CHILD，对齐契约 OrderTraveler.travelerType（必填）。 */
+    public String travelerType;
     public String name;
     public String gender;
     public LocalDate birthDate;

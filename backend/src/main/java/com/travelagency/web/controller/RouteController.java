@@ -2,8 +2,10 @@ package com.travelagency.web.controller;
 
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.dto.RouteDetailResponse;
 import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,9 +20,11 @@ import java.math.BigDecimal;
 public class RouteController {
 
     private final RouteService routeService;
+    private final OrderService orderService;
 
-    public RouteController(RouteService routeService) {
+    public RouteController(RouteService routeService, OrderService orderService) {
         this.routeService = routeService;
+        this.orderService = orderService;
     }
 
     @GetMapping
@@ -42,5 +46,16 @@ public class RouteController {
     @GetMapping("/{id}")
     public ApiResponse<RouteDetailResponse> detail(@PathVariable Long id) {
         return ApiResponse.ok(routeService.detail(id));
+    }
+
+    /**
+     * 公开线路可见评价分页，对齐契约 GET /routes/{routeId}/reviews（无需登录，仅 VISIBLE）。
+     */
+    @GetMapping("/{id}/reviews")
+    public ApiResponse<PageResponse<ReviewView>> reviews(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(orderService.listRouteReviews(id, page, size));
     }
 }

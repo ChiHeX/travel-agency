@@ -14,7 +14,9 @@ import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.service.OrderService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,7 +30,15 @@ import java.net.URI;
 
 @RestController
 @RequestMapping("/api/orders")
+@Validated
 public class OrderController {
+
+    /**
+     * 契约把 Idempotency-Key 限定为 8..128 个字符。
+     * 不加长度校验时，超长键会一路走到 idempotency_record.idem_key（VARCHAR(128)）才由数据库报错，
+     * 对调用方表现为 500，而契约期望的是请求不合法（422）。
+     */
+    private static final String IDEMPOTENCY_KEY_CONSTRAINT = "Idempotency-Key 长度必须在 8 到 128 个字符之间";
 
     private final OrderService orderService;
 
@@ -43,7 +53,8 @@ public class OrderController {
      */
     @PostMapping
     public ResponseEntity<ApiResponse<OrderView>> create(
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("Idempotency-Key")
+            @Size(min = 8, max = 128, message = IDEMPOTENCY_KEY_CONSTRAINT) String idempotencyKey,
             @Valid @RequestBody CreateOrderRequest request) {
         OrderView order = orderService.create(CurrentUser.required().userId(), request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/orders/" + order.orderNo())).body(ApiResponse.ok(order));
@@ -82,7 +93,8 @@ public class OrderController {
     @PostMapping("/{orderNo}/refunds")
     public ResponseEntity<ApiResponse<RefundView>> refund(
             @PathVariable String orderNo,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("Idempotency-Key")
+            @Size(min = 8, max = 128, message = IDEMPOTENCY_KEY_CONSTRAINT) String idempotencyKey,
             @Valid @RequestBody RefundRequest request) {
         RefundView refund = orderService.applyRefund(orderNo, CurrentUser.required().userId(), request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/orders/" + orderNo + "/refunds")).body(ApiResponse.ok(refund));

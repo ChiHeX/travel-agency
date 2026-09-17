@@ -79,6 +79,10 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(origin -> !origin.isBlank()).toList());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        // Idempotency-Key 必须列入白名单：契约把它定义为 POST /orders 与 /orders/{orderNo}/refunds
+        // 的必填请求头，属于非简单头，浏览器会先发 CORS 预检。
+        // 漏掉它时预检返回的 Access-Control-Allow-Headers 不含该头，浏览器会直接拦截真实请求
+        // （dev 默认走 Vite 代理属同源，会把这个问题掩盖掉，一旦直连后端或异源部署就必然触发）。
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With", "Idempotency-Key"));
         configuration.setExposedHeaders(List.of("Location"));
         configuration.setAllowCredentials(true);

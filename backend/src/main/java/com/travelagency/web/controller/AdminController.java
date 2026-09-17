@@ -13,6 +13,8 @@ import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.AdminUserView;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
+import com.travelagency.domain.dto.GuideView;
+import com.travelagency.domain.dto.OperationLogView;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.RefundDecisionRequest;
@@ -72,6 +74,8 @@ import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/admin")
@@ -372,17 +376,30 @@ public class AdminController {
     }
 
     /**
-     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + keyword 筛选）。
+     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status 筛选）。
+     *
+     * <p>返回 {@link GuideView}：契约 Guide 把 {@code username} 列为 required，
+     * 而实体只有 {@code userId}，直出实体拿不到账号名。</p>
      */
     @GetMapping("/guides")
-    public ApiResponse<PageResponse<Guide>> guides(
+    public ApiResponse<PageResponse<GuideView>> guides(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status) {
         QueryWrapper<Guide> query = new QueryWrapper<>();
+        if (status != null && !status.isBlank()) {
+            query.eq("status", status.trim());
+        }
         appendKeyword(query, keyword, "name", "phone", "intro");
-        return ApiResponse.ok(PageResponse.from(guideMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
+        Page<Guide> result = guideMapper.selectPage(pageOf(page, size), query.orderByDesc("created_at"));
+        Map<Long, String> usernames = usernamesOf(result.getRecords().stream()
+                .map(guide -> guide.userId).toList());
+        List<GuideView> items = result.getRecords().stream()
+                .map(guide -> GuideView.from(guide, usernames.get(guide.userId)))
+                .toList();
+        return ApiResponse.ok(new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages()));
     }
 
     /**
@@ -390,28 +407,32 @@ public class AdminController {
      * 此前仅有列表映射，前端 adminApi.guide 调用时命中缺失的 GET 映射而 404。
      */
     @GetMapping("/guides/{guideId}")
-    public ApiResponse<Guide> guideDetail(@PathVariable Long guideId) {
+    public ApiResponse<GuideView> guideDetail(@PathVariable Long guideId) {
         Guide guide = guideMapper.selectById(guideId);
         if (guide == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "导游不存在");
         }
-        return ApiResponse.ok(guide);
+        return ApiResponse.ok(GuideView.from(guide, usernameOf(guide.userId)));
     }
 
     @PostMapping("/guides")
-    public ApiResponse<Guide> createGuide(@RequestBody Guide guide) {
+    public ApiResponse<GuideView> createGuide(@RequestBody Guide guide) {
         if (guide.status == null) {
             guide.status = "ACTIVE";
         }
         guideMapper.insert(guide);
-        return ApiResponse.ok(guide);
+        Guide saved = guideMapper.selectById(guide.id);
+        Guide result = saved == null ? guide : saved;
+        return ApiResponse.ok(GuideView.from(result, usernameOf(result.userId)));
     }
 
     @PutMapping("/guides/{id}")
-    public ApiResponse<Guide> updateGuide(@PathVariable Long id, @RequestBody Guide guide) {
+    public ApiResponse<GuideView> updateGuide(@PathVariable Long id, @RequestBody Guide guide) {
         guide.id = id;
         guideMapper.updateById(guide);
-        return ApiResponse.ok(guide);
+        // 回查带回 created_at / updated_at（契约 Guide 要求），并补齐 username。
+        Guide saved = guideMapper.selectById(id);
+        return ApiResponse.ok(GuideView.from(saved == null ? guide : saved, usernameOf(guide.userId)));
     }
 
     @PatchMapping("/guides/{id}/status")
@@ -556,7 +577,7 @@ public class AdminController {
     @PostMapping("/guides/account")
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional
-    public ApiResponse<Guide> createGuideAccount(@Valid @RequestBody GuideAccountRequest request) {
+    public ApiResponse<GuideView> createGuideAccount(@Valid @RequestBody GuideAccountRequest request) {
         SysUser user = createAccount(request.username(), request.password(), request.name(), request.phone(), RoleCode.GUIDE);
         Guide guide = new Guide();
         guide.userId = user.id;
@@ -565,15 +586,20 @@ public class AdminController {
         guide.intro = request.intro();
         guide.status = "ACTIVE";
         guideMapper.insert(guide);
-        return ApiResponse.ok(guide);
+        Guide saved = guideMapper.selectById(guide.id);
+        return ApiResponse.ok(GuideView.from(saved == null ? guide : saved, user.username));
     }
 
     /**
      * 操作日志分页查询，对齐契约 GET /admin/logs（分页信封 + module/operatorId 筛选）。
+     *
+     * <p>返回 {@link OperationLogView}：实体缺契约 required 的 {@code operatorName}，
+     * 且继承 {@code BaseEntity} 多带出 {@code updatedAt}，在 {@code additionalProperties: false}
+     * 下两头都不合规。</p>
      */
     @GetMapping("/logs")
     @PreAuthorize("hasRole('ADMIN')")
-    public ApiResponse<PageResponse<OperationLog>> logs(
+    public ApiResponse<PageResponse<OperationLogView>> logs(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false) String module,
@@ -585,8 +611,15 @@ public class AdminController {
         if (operatorId != null) {
             query.eq("operator_id", operatorId);
         }
-        return ApiResponse.ok(PageResponse.from(operationLogMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
+        Page<OperationLog> result = operationLogMapper.selectPage(pageOf(page, size),
+                query.orderByDesc("created_at"));
+        Map<Long, String> operatorNames = displayNamesOf(result.getRecords().stream()
+                .map(log -> log.operatorId).toList());
+        List<OperationLogView> items = result.getRecords().stream()
+                .map(log -> OperationLogView.from(log, operatorNames.get(log.operatorId)))
+                .toList();
+        return ApiResponse.ok(new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages()));
     }
 
     private SysUser createAccount(String username, String password, String realName, String phone, String roleCode) {
@@ -629,6 +662,43 @@ public class AdminController {
     /** 归一化分页参数：page 下限 1，size 限制在 1..100，避免非法分页参数直接透传给数据库。 */
     private static <T> Page<T> pageOf(long page, long size) {
         return new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100));
+    }
+
+    /** 取单个账号的登录名，供 GuideView.username 使用。 */
+    private String usernameOf(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        SysUser user = userMapper.selectById(userId);
+        return user == null ? null : user.username;
+    }
+
+    /** 批量取登录名，避免逐行查询造成 N+1。 */
+    private Map<Long, String> usernamesOf(List<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(user -> user.id, user -> user.username, (a, b) -> a));
+    }
+
+    /** 批量取显示名（昵称优先，缺失时退回登录名），供 OperationLogView.operatorName 使用。 */
+    private Map<Long, String> displayNamesOf(List<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(user -> user.id, AdminController::displayName, (a, b) -> a));
+    }
+
+    private static String displayName(SysUser user) {
+        return user.nickname == null || user.nickname.isBlank() ? user.username : user.nickname;
+    }
+
+    private static List<Long> distinctIds(List<Long> ids) {
+        return ids.stream().filter(Objects::nonNull).distinct().toList();
     }
 
     /** 对给定列做 OR 模糊匹配；keyword 为空时不追加任何条件。 */

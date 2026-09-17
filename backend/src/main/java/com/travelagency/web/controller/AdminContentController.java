@@ -140,8 +140,11 @@ public class AdminContentController {
         }
         Page<TravelGuideArticle> result = articleMapper.selectPage(pageOf(page, size),
                 query.orderByDesc("created_at"));
+        // 批量取回本页作者名，避免逐行 displayNameOf 造成 N+1。
+        Map<Long, String> authorNames = namesOf(result.getRecords().stream()
+                .map(article -> article.authorId).toList());
         List<ArticleView> items = result.getRecords().stream()
-                .map(a -> ArticleView.from(a, displayNameOf(a.authorId)))
+                .map(a -> ArticleView.from(a, authorNames.get(a.authorId)))
                 .toList();
         return ApiResponse.ok(new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
                 (int) result.getTotal(), (int) result.getPages()));
@@ -183,12 +186,26 @@ public class AdminContentController {
             updated.publishedAt = article.publishedAt;
         }
         articleMapper.updateById(updated);
-        return ApiResponse.ok(ArticleView.from(updated, displayNameOf(updated.authorId)));
+        // 回查以带回 created_at / updated_at：fromRequest 新建的对象只有请求里的字段，
+        // 直接返回会让契约 Article 的两个 required 时间字段为 null。
+        TravelGuideArticle saved = articleMapper.selectById(articleId);
+        TravelGuideArticle result = saved == null ? updated : saved;
+        return ApiResponse.ok(ArticleView.from(result, displayNameOf(result.authorId)));
     }
 
-    /** 删除攻略，对齐契约 DELETE /admin/articles/{articleId}（204）。 */
+    /**
+     * 删除攻略，对齐契约 DELETE /admin/articles/{articleId}（204；已发布返回 409）。
+     *
+     * <p>契约的语义是"删除<b>未发布</b>攻略"，因此先判存在（404）再判状态（409）。
+     * 此前直接 deleteById：不存在的 id 也回 204，已发布的线上攻略也会被物理删除，
+     * 公开攻略页随即 404，且永远不会返回契约约定的 409。</p>
+     */
     @DeleteMapping("/articles/{articleId}")
     public ResponseEntity<Void> deleteArticle(@PathVariable Long articleId) {
+        TravelGuideArticle article = requireArticle(articleId);
+        if ("PUBLISHED".equals(article.status)) {
+            throw new BusinessException(409, "ARTICLE_STATE_CONFLICT", "已发布的攻略不能直接删除，请先下线");
+        }
         articleMapper.deleteById(articleId);
         return ResponseEntity.noContent().build();
     }
@@ -245,13 +262,14 @@ public class AdminContentController {
         if (consultation == null) {
             return null;
         }
-        List<ConsultationReplyView> replies = replyMapper.selectList(
-                        new QueryWrapper<ConsultationReply>().eq("consultation_id", consultation.id)
-                                .orderByAsc("created_at"))
-                .stream()
-                .map(r -> ConsultationReplyView.from(r, displayNameOf(r.staffId)))
+        List<ConsultationReply> replies = replyMapper.selectList(
+                new QueryWrapper<ConsultationReply>().eq("consultation_id", consultation.id)
+                        .orderByAsc("created_at"));
+        Map<Long, String> staffNames = namesOf(replies.stream().map(reply -> reply.staffId).toList());
+        List<ConsultationReplyView> replyViews = replies.stream()
+                .map(r -> ConsultationReplyView.from(r, staffNames.get(r.staffId)))
                 .toList();
-        return ConsultationView.from(consultation, displayNameOf(consultation.userId), replies);
+        return ConsultationView.from(consultation, displayNameOf(consultation.userId), replyViews);
     }
 
     private PageResponse<ConsultationView> toViewPage(Page<Consultation> result) {
@@ -274,9 +292,11 @@ public class AdminContentController {
         }
         List<ConsultationReply> replies = replyMapper.selectList(new QueryWrapper<ConsultationReply>()
                 .in("consultation_id", consultationIds).orderByAsc("created_at"));
+        // 批量取回回复人姓名，避免逐条 displayNameOf 造成 N+1。
+        Map<Long, String> staffNames = namesOf(replies.stream().map(reply -> reply.staffId).toList());
         return replies.stream().collect(Collectors.groupingBy(
                 r -> r.consultationId, LinkedHashMap::new,
-                Collectors.mapping(r -> ConsultationReplyView.from(r, displayNameOf(r.staffId)),
+                Collectors.mapping(r -> ConsultationReplyView.from(r, staffNames.get(r.staffId)),
                         Collectors.toList())));
     }
 

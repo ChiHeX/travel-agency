@@ -11,6 +11,7 @@ import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
@@ -64,13 +65,16 @@ class OrderServiceRefundTest {
     private MessageMapper messageMapper;
     @Mock
     private SysUserMapper sysUserMapper;
+    @Mock
+    private IdempotencyRecordMapper idempotencyRecordMapper;
 
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper,
-                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper);
+                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
+                idempotencyRecordMapper);
     }
 
     private static TravelOrder order(long id, String status, String originalStatus) {
@@ -122,6 +126,8 @@ class OrderServiceRefundTest {
         when(refundMapper.selectById(70L)).thenReturn(r);
         when(orderMapper.selectById(55L)).thenReturn(o);
         when(paymentMapper.selectOne(any())).thenReturn(p);
+        // 抢占 APPLYING → PROCESSING 成功
+        when(refundMapper.update(any(), any())).thenReturn(1);
 
         orderService.processRefund(70L, "APPROVE", "同意退款", 1L);
 
@@ -149,6 +155,7 @@ class OrderServiceRefundTest {
         when(refundMapper.selectById(71L)).thenReturn(r);
         when(orderMapper.selectById(56L)).thenReturn(o);
         when(paymentMapper.selectOne(any())).thenReturn(payment(56L, PaymentStatus.PAID));
+        when(refundMapper.update(any(), any())).thenReturn(1);
 
         orderService.processRefund(71L, "APPROVE", "同意", 1L);
 
@@ -167,6 +174,7 @@ class OrderServiceRefundTest {
         TravelOrder o = order(57L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
         when(refundMapper.selectById(72L)).thenReturn(r);
         when(orderMapper.selectById(57L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
 
         orderService.processRefund(72L, "REJECT", "不符合退款条件", 1L);
 
@@ -203,6 +211,27 @@ class OrderServiceRefundTest {
         assertEquals(409, ex.getStatus());
         assertEquals("REFUND_STATE_CONFLICT", ex.getCode());
         verify(orderMapper, never()).updateById(any(TravelOrder.class));
+    }
+
+    @Test
+    @DisplayName("并发审批：没抢到 APPLYING→PROCESSING 的请求被拒绝，名额只释放一次")
+    void rejectsConcurrentApproveThatLosesTheClaim() {
+        Refund r = refund(76L, 60L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(60L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(76L)).thenReturn(r);
+        when(orderMapper.selectById(60L)).thenReturn(o);
+        // 条件更新影响 0 行 = 另一个审核人已经先完成了状态抢占
+        when(refundMapper.update(any(), any())).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.processRefund(76L, "APPROVE", "同意", 1L));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("REFUND_STATE_CONFLICT", ex.getCode());
+        // 关键：名额与线路有效报名数都不得被释放
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(messageMapper, never()).insert(any(Message.class));
     }
 
     @Test

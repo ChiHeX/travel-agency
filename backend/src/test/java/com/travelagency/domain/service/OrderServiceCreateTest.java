@@ -8,10 +8,13 @@ import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.OrderTraveler;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.TravelOrder;
+import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
@@ -29,6 +32,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -72,13 +76,16 @@ class OrderServiceCreateTest {
     private MessageMapper messageMapper;
     @Mock
     private SysUserMapper sysUserMapper;
+    @Mock
+    private IdempotencyRecordMapper idempotencyRecordMapper;
 
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper,
-                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper);
+                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
+                idempotencyRecordMapper);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -98,12 +105,17 @@ class OrderServiceCreateTest {
         return d;
     }
 
+    private static CreateOrderRequest.TravelerSnapshotRequest traveler(String name, String travelerType) {
+        return new CreateOrderRequest.TravelerSnapshotRequest(
+                name, "MALE", LocalDate.of(1990, 1, 1), "CHINESE_ID_CARD",
+                "320100199001011234", "13800000000", "紧急联系人", "13900000000", travelerType);
+    }
+
     private static CreateOrderRequest request(long departureId, int adults, int children, int travelerCount) {
         List<CreateOrderRequest.TravelerSnapshotRequest> travelers = new ArrayList<>();
         for (int i = 0; i < travelerCount; i++) {
-            travelers.add(new CreateOrderRequest.TravelerSnapshotRequest(
-                    "出行人" + i, "MALE", LocalDate.of(1990, 1, 1), "CHINESE_ID_CARD",
-                    "320100199001011234", "13800000000", "紧急联系人", "13900000000"));
+            // 契约要求请求体显式给出 travelerType，这里按「前 adultCount 位为成人」构造
+            travelers.add(traveler("出行人" + i, i < adults ? TravelerType.ADULT : TravelerType.CHILD));
         }
         return new CreateOrderRequest(departureId, adults, children, "联系人", "13800000000",
                 "contact@example.com", travelers, "备注");
@@ -154,6 +166,84 @@ class OrderServiceCreateTest {
         // 支付单与订单同额
         verify(paymentMapper).insert(paymentCaptor.capture());
         assertEquals(new BigDecimal("2500.00"), paymentCaptor.getValue().amount);
+    }
+
+    @Test
+    @DisplayName("显式类型：顺序被调换时仍按调用方指定的 travelerType 落快照")
+    void honorsExplicitTravelerTypeRegardlessOfOrder() {
+        when(departureMapper.selectById(7L)).thenReturn(departure(7L, 10, 0, 0, DepartureStatus.OPEN));
+        when(departureMapper.update(any(), any())).thenReturn(1);
+        stubInsertReturningId(57L);
+
+        // 第 1 位是儿童、第 2 位是成人：按下标推断会写反
+        CreateOrderRequest mixed = new CreateOrderRequest(7L, 1, 1, "联系人", "13800000000",
+                "contact@example.com",
+                List.of(traveler("小孩", TravelerType.CHILD), traveler("大人", TravelerType.ADULT)),
+                "备注");
+
+        orderService.create(9L, mixed, null);
+
+        ArgumentCaptor<OrderTraveler> captor = ArgumentCaptor.forClass(OrderTraveler.class);
+        verify(orderTravelerMapper, times(2)).insert(captor.capture());
+        assertEquals(TravelerType.CHILD, captor.getAllValues().get(0).travelerType);
+        assertEquals(TravelerType.ADULT, captor.getAllValues().get(1).travelerType);
+    }
+
+    @Test
+    @DisplayName("显式类型：标记为成人的人数与 adultCount 不一致时拒绝下单")
+    void rejectsExplicitTypeCountMismatch() {
+        CreateOrderRequest mismatch = new CreateOrderRequest(7L, 1, 1, "联系人", "13800000000",
+                "contact@example.com",
+                List.of(traveler("小孩", TravelerType.CHILD), traveler("大人", TravelerType.CHILD)),
+                "备注");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.create(9L, mismatch, null));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(orderMapper, never()).insert(any(TravelOrder.class));
+    }
+
+    // ---------------------------------------------------------------- 幂等键
+
+    @Test
+    @DisplayName("幂等键：同一键重复提交时返回首次订单，不再占用名额")
+    void replaysFirstOrderForSameIdempotencyKey() {
+        IdempotencyRecord record = new IdempotencyRecord();
+        record.userId = 9L;
+        record.scope = "CREATE_ORDER";
+        record.idemKey = "idem-key-0001";
+        record.resourceType = "ORDER";
+        record.resourceNo = "TA20270301000001ABCD1234";
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class)))
+                .thenThrow(new DuplicateKeyException("uk_idempotency_user_scope_key"));
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(record);
+
+        TravelOrder existing = new TravelOrder();
+        existing.id = 88L;
+        existing.orderNo = record.resourceNo;
+        existing.userId = 9L;
+        existing.routeId = 100L;
+        existing.departureId = 7L;
+        existing.adultCount = 1;
+        existing.childCount = 0;
+        existing.totalAmount = new BigDecimal("1000.00");
+        existing.status = OrderStatus.WAIT_PAY;
+        existing.paymentStatus = PaymentStatus.UNPAID;
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        TravelRoute route = new TravelRoute();
+        route.id = 100L;
+        when(routeMapper.selectById(100L)).thenReturn(route);
+        when(departureMapper.selectById(7L)).thenReturn(departure(7L, 10, 0, 0, DepartureStatus.OPEN));
+
+        OrderView view = orderService.create(9L, request(7L, 1, 0, 1), "idem-key-0001");
+
+        assertEquals(record.resourceNo, view.orderNo());
+        // 重放请求不得再占名额、不得再落订单与支付单
+        verify(departureMapper, never()).update(any(), any());
+        verify(orderMapper, never()).insert(any(TravelOrder.class));
+        verify(paymentMapper, never()).insert(any(Payment.class));
     }
 
     // ---------------------------------------------------------------- 防超卖

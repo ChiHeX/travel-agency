@@ -34,6 +34,16 @@ public record CreateOrderRequest(
             @Size(min = 3, max = 64, message = "证件号码长度应为 3-64 位") String idNo,
             @Pattern(regexp = "^$|^1[3-9]\\d{9}$", message = "手机号格式不正确") String phone,
             @NotBlank(message = "紧急联系人姓名不能为空") @Size(max = 64, message = "紧急联系人姓名不能超过 64 字") String emergencyName,
-            @Pattern(regexp = "^$|^1[3-9]\\d{9}$", message = "紧急联系人电话格式不正确") String emergencyPhone) {
+            @Pattern(regexp = "^$|^1[3-9]\\d{9}$", message = "紧急联系人电话格式不正确") String emergencyPhone,
+            /**
+             * 出行人类型，取值 ADULT / CHILD。
+             *
+             * <p>契约 {@code OrderTravelerRequest} 的 required 中列有该字段，前端
+             * OrderCreateView 也一直在提交它；此前请求模型缺少该字段，导致 Jackson
+             * 静默丢弃调用方的真实意图，服务端只能按「前 adultCount 位为成人」猜，
+             * “第 1 位是儿童、第 2 位是成人”这类顺序会被写错快照。</p>
+             */
+            @NotBlank(message = "出行人类型不能为空")
+            @Pattern(regexp = "ADULT|CHILD", message = "出行人类型取值不合法") String travelerType) {
     }
 }

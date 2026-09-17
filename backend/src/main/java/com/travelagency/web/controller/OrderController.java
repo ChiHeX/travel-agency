@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -35,9 +36,16 @@ public class OrderController {
         this.orderService = orderService;
     }
 
+    /**
+     * 创建订单。
+     * 契约把 Idempotency-Key 标为必填：同一用户携带同一键重试时只会真正下单一次，
+     * 不会重复占用团期名额或产生第二张支付单。
+     */
     @PostMapping
-    public ResponseEntity<ApiResponse<OrderView>> create(@Valid @RequestBody CreateOrderRequest request) {
-        OrderView order = orderService.create(CurrentUser.required().userId(), request);
+    public ResponseEntity<ApiResponse<OrderView>> create(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody CreateOrderRequest request) {
+        OrderView order = orderService.create(CurrentUser.required().userId(), request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/orders/" + order.orderNo())).body(ApiResponse.ok(order));
     }
 
@@ -59,16 +67,24 @@ public class OrderController {
         return ApiResponse.ok(orderService.startPayment(orderNo, CurrentUser.required().userId()));
     }
 
+    /**
+     * 取消待支付订单。契约的 200 响应是 OrderEnvelope（data 为取消后的订单），
+     * 而不是空 data。
+     */
     @PostMapping("/{orderNo}/cancel")
-    public ApiResponse<Void> cancel(@PathVariable String orderNo) {
-        orderService.cancel(orderNo, CurrentUser.required().userId());
-        return ApiResponse.ok();
+    public ApiResponse<OrderView> cancel(@PathVariable String orderNo) {
+        return ApiResponse.ok(orderService.cancel(orderNo, CurrentUser.required().userId()));
     }
 
+    /**
+     * 申请退款。契约同样把 Idempotency-Key 标为必填。
+     */
     @PostMapping("/{orderNo}/refunds")
     public ResponseEntity<ApiResponse<RefundView>> refund(
-            @PathVariable String orderNo, @Valid @RequestBody RefundRequest request) {
-        RefundView refund = orderService.applyRefund(orderNo, CurrentUser.required().userId(), request);
+            @PathVariable String orderNo,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody RefundRequest request) {
+        RefundView refund = orderService.applyRefund(orderNo, CurrentUser.required().userId(), request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/orders/" + orderNo + "/refunds")).body(ApiResponse.ok(refund));
     }
 

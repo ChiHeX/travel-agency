@@ -7,6 +7,7 @@ import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
@@ -60,13 +61,16 @@ class OrderServicePaymentTest {
     private MessageMapper messageMapper;
     @Mock
     private SysUserMapper sysUserMapper;
+    @Mock
+    private IdempotencyRecordMapper idempotencyRecordMapper;
 
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper,
-                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper);
+                orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
+                idempotencyRecordMapper);
     }
 
     private static TravelOrder order(long id, String status, String paymentStatus) {
@@ -104,6 +108,8 @@ class OrderServicePaymentTest {
         Payment p = payment(55L, PaymentStatus.PENDING);
         when(orderMapper.selectOne(any())).thenReturn(o);
         when(paymentMapper.selectOne(any())).thenReturn(p);
+        // 条件更新抢到「非 PAID → PAID」的一次转换
+        when(paymentMapper.update(any(), any())).thenReturn(1);
 
         orderService.markPaid(o.orderNo, "ALI-TRADE-0001");
 
@@ -138,6 +144,39 @@ class OrderServicePaymentTest {
         verify(orderMapper, never()).updateById(any(TravelOrder.class));
         verify(messageMapper, never()).insert(any(Message.class));
         assertEquals(OrderStatus.PAID_WAIT_CONFIRM, o.status);
+    }
+
+    @Test
+    @DisplayName("幂等：并发重复投递时，没抢到原子闸门的回调不再推进订单")
+    void markPaidSkipsWhenConcurrentCallbackWonTheClaim() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        // 条件更新影响 0 行 = 另一个并发回调已经先完成了转换
+        when(paymentMapper.update(any(), any())).thenReturn(0);
+
+        orderService.markPaid(o.orderNo, "ALI-TRADE-0001");
+
+        verify(orderMapper, never()).updateById(any(TravelOrder.class));
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("金额核对：回调金额与订单应付金额不一致时拒绝入账")
+    void markPaidRejectsAmountMismatch() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.markPaid(o.orderNo, "ALI-TRADE-0001", new BigDecimal("0.01")));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("PAYMENT_AMOUNT_MISMATCH", ex.getCode());
+        verify(orderMapper, never()).updateById(any(TravelOrder.class));
+        verify(messageMapper, never()).insert(any(Message.class));
     }
 
     // ---------------------------------------------------------------- 状态冲突

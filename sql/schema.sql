@@ -387,3 +387,21 @@ CREATE TABLE IF NOT EXISTS data_source (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 幂等记录：承载契约要求的 Idempotency-Key 请求头（POST /orders、POST /orders/{orderNo}/refunds）。
+-- 唯一键 (user_id, scope, idem_key) 是并发下的原子闸门：同一用户在同一业务动作下携带同一幂等键时，
+-- 只有一个请求能插入成功并真正执行业务，其余请求读到资源单号后返回同一结果，
+-- 避免重复下单占名额、重复生成退款申请。
+-- 存量库升级请执行 sql/migrations/001-add-idempotency-record.sql。
+CREATE TABLE IF NOT EXISTS idempotency_record (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    scope VARCHAR(64) NOT NULL,
+    idem_key VARCHAR(128) NOT NULL,
+    resource_type VARCHAR(32),
+    resource_no VARCHAR(64),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_idempotency_user_scope_key (user_id, scope, idem_key),
+    CONSTRAINT fk_idempotency_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -43,7 +43,9 @@ app:
     alipay:
       sandbox: ${ALIPAY_SANDBOX:true}
       enabled: ${ALIPAY_ENABLED:false}
-      callback-secret: ${ALIPAY_CALLBACK_SECRET:travel-agency-sandbox-callback-secret}
+      # 必填：回调共享密钥。未配置时支付回调一律被拒绝（fail-closed），
+      # 避免退回到源码里公开可见的默认值（见 CONTRIBUTING §14：禁止提交密钥）。
+      callback-secret: ${ALIPAY_CALLBACK_SECRET:}
 
 management:
   endpoints:

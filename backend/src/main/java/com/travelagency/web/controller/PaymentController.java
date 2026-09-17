@@ -41,7 +41,11 @@ public class PaymentController {
         this.callbackSecret = callbackSecret;
     }
 
-    @PostMapping(value = "/alipay/notify", produces = MediaType.TEXT_PLAIN_VALUE)
+    /**
+     * 契约约定回调返回 text/plain 的 success/failure。
+     * 同时声明 ALL_VALUE，避免第三方网关或调用方携带 Accept 头时被内容协商拒成 406。
+     */
+    @PostMapping(value = "/alipay/notify", produces = {MediaType.TEXT_PLAIN_VALUE, MediaType.ALL_VALUE})
     public ResponseEntity<String> notify(@RequestParam Map<String, String> params) {
         String orderNo = firstNonBlank(params.get("orderNo"), params.get("out_trade_no"));
         String tradeNo = firstNonBlank(params.get("tradeNo"), params.get("trade_no"));

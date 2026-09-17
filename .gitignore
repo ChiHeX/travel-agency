@@ -28,6 +28,9 @@ Thumbs.db
 # AGENTS
 AGENTS.md
 
+# WorkBuddy (project-local agent state, never commit)
+.workbuddy/
+
 # Tmp
 *.tmp
 *.temp

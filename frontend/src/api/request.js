@@ -56,6 +56,9 @@ request.interceptors.response.use(
       traceId: body?.traceId
     })
     if (apiError.status !== 401) ElMessage.error(apiError.message)
+    if (apiError.status === 401 && error.config?.headers?.Authorization === `Bearer ${localStorage.getItem('travel_agency_token')}`) {
+      window.dispatchEvent(new Event('travel-auth-expired'))
+    }
     return Promise.reject(apiError)
   }
 )

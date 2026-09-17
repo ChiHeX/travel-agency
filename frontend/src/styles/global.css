@@ -309,3 +309,48 @@ a {
   background: #ffffff;
   font-size: 13px;
 }
+
+/* Shared user-facing states and narrow-screen behavior. */
+.form-error { color: var(--status-red); margin: 10px 0; overflow-wrap: anywhere; }
+.account-pagination { justify-content: center; margin: 22px 0; }
+.app-layout-shell button:disabled { cursor: not-allowed; opacity: .55; }
+.app-layout-shell :focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 3px; }
+.app-layout-shell .route-view-body > * { min-width: 0; }
+.app-layout-shell .section-head { gap: 16px; }
+.app-layout-shell .form-field textarea { padding: 10px 12px; resize: vertical; }
+.app-layout-shell .order-meta-chips,
+.app-layout-shell .order-no-meta,
+.app-layout-shell .order-id-meta,
+.app-layout-shell .dep-meta-row,
+.app-layout-shell .day-meta-tags { flex-wrap: wrap; }
+.app-layout-shell .sheet-hero-media { flex-shrink: 0; }
+.app-layout-shell .sheet-sticky-footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.app-layout-shell .drawer-scroll-body,
+.app-layout-shell .sheet-scroll-body { min-height: 0; }
+.review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }
+.el-dialog { max-width: calc(100vw - 32px); }
+.el-message-box { max-width: calc(100vw - 32px); }
+@media (max-width: 640px) {
+  .app-layout-shell .container { width: calc(100% - 28px); }
+  .app-layout-shell .section-head,
+  .app-layout-shell .order-hero-top,
+  .app-layout-shell .card-head { flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+  .app-layout-shell .account-content-main,
+  .app-layout-shell .consultation-form-col,
+  .app-layout-shell .consultation-history-col { min-width: 0; }
+  .app-layout-shell .form-card,
+  .app-layout-shell .detail-card,
+  .app-layout-shell .order-hero-card { padding: 18px; }
+  .app-layout-shell .sticky-checkout-bar { position: static; padding: 16px; margin-bottom: env(safe-area-inset-bottom); }
+  .app-layout-shell .bottom-actions-row,
+  .app-layout-shell .order-actions { flex-wrap: wrap; }
+  .app-layout-shell .responsive-cards,
+  .app-layout-shell .responsive-cards tbody { display: block; width: 100%; }
+  .app-layout-shell .responsive-cards thead { display: none; }
+  .app-layout-shell .responsive-cards tr { display: block; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border-divider); border-radius: 12px; }
+  .app-layout-shell .responsive-cards td { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 8px 0; text-align: right; overflow-wrap: anywhere; }
+  .app-layout-shell .responsive-cards td::before { content: attr(data-label); flex: 0 0 76px; color: var(--text-secondary); text-align: left; }
+  .app-layout-shell .form-field input,
+  .app-layout-shell .form-field select,
+  .app-layout-shell .form-field textarea { min-width: 0; width: 100%; }
+}

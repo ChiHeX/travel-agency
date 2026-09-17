@@ -7,53 +7,111 @@ const props = defineProps({
 
 const mapElement = ref(null)
 const hasAmapKey = Boolean(import.meta.env.VITE_AMAP_KEY)
+const mapLoadError = ref('')
 let mapInstance
+let overlays = []
+let infoWindow
+let amapLoader
+
+function loadAmap(key) {
+  if (window.AMap) return Promise.resolve(window.AMap)
+  if (amapLoader) return amapLoader
+
+  amapLoader = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-travel-amap]')
+    const script = existing || document.createElement('script')
+    if (!existing) {
+      script.dataset.travelAmap = 'true'
+      script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`
+    }
+    script.addEventListener('load', () => resolve(window.AMap), { once: true })
+    script.addEventListener('error', () => reject(new Error('高德地图脚本加载失败')), { once: true })
+    if (!existing) document.head.appendChild(script)
+  })
+  return amapLoader
+}
 
 function points() {
   return props.itinerary
     .flatMap((day) => day.items || [])
     .filter((item) => item.longitude != null && item.latitude != null)
-    .map((item) => [Number(item.longitude), Number(item.latitude), item.name])
+    .map((item, index) => ({
+      position: [Number(item.longitude), Number(item.latitude)],
+      name: item.name,
+      order: index + 1
+    }))
+    .filter((item) => item.position.every(Number.isFinite))
 }
 
 function renderMap() {
   const key = import.meta.env.VITE_AMAP_KEY
   if (!key || !mapElement.value || !window.AMap) return
   const data = points()
-  mapInstance?.destroy()
-  if (!data.length) return
-  mapInstance = new window.AMap.Map(mapElement.value, {
-    zoom: 6,
-    center: data[0].slice(0, 2),
-    mapStyle: 'amap://styles/whitesmoke'
-  })
-  const markers = data.map(([lng, lat, name]) => new window.AMap.Marker({ position: [lng, lat], title: name }))
-  if (markers.length) mapInstance.add(markers)
-  if (data.length > 1) {
-    mapInstance.add(
-      new window.AMap.Polyline({
-        path: data.map(([lng, lat]) => [lng, lat]),
-        strokeColor: '#0071e3',
-        strokeWeight: 4,
-        strokeOpacity: 0.85
-      })
-    )
+  if (!data.length) {
+    if (mapInstance && overlays.length) mapInstance.remove(overlays)
+    overlays = []
+    return
   }
+  if (!mapInstance) {
+    mapInstance = new window.AMap.Map(mapElement.value, {
+      zoom: 6,
+      center: data[0].position,
+      mapStyle: 'amap://styles/whitesmoke'
+    })
+  }
+  if (overlays.length) mapInstance.remove(overlays)
+
+  const markers = data.map((point) => {
+    const marker = new window.AMap.Marker({
+      position: point.position,
+      title: point.name,
+      label: { content: String(point.order), direction: 'center' }
+    })
+    marker.on('click', () => {
+      infoWindow ||= new window.AMap.InfoWindow({ offset: new window.AMap.Pixel(0, -28) })
+      infoWindow.setContent(`<div class="amap-route-info"><strong>${point.order}. ${escapeHtml(point.name)}</strong></div>`)
+      infoWindow.open(mapInstance, point.position)
+    })
+    return marker
+  })
+  overlays = [...markers]
+  if (data.length > 1) {
+    overlays.push(new window.AMap.Polyline({
+      path: data.map((point) => point.position),
+      strokeColor: '#0071e3',
+      strokeWeight: 5,
+      strokeOpacity: 0.82,
+      lineJoin: 'round',
+      lineCap: 'round',
+      showDir: true
+    }))
+  }
+  mapInstance.add(overlays)
+  mapInstance.setFitView(overlays, false, [42, 42, 42, 42], 15)
+}
+
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>'"]/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  })[char])
 }
 
 onMounted(() => {
   const key = import.meta.env.VITE_AMAP_KEY
   if (!key) return
   window._AMapSecurityConfig = { securityJsCode: import.meta.env.VITE_AMAP_SECURITY_CODE || '' }
-  if (window.AMap) return renderMap()
-  const script = document.createElement('script')
-  script.src = `https://webapi.amap.com/maps?v=2.0&key=${key}`
-  script.onload = renderMap
-  document.head.appendChild(script)
+  loadAmap(key).then(renderMap).catch((error) => {
+    mapLoadError.value = error.message
+  })
 })
 
 watch(() => props.itinerary, renderMap, { deep: true })
-onBeforeUnmount(() => mapInstance?.destroy())
+onBeforeUnmount(() => {
+  infoWindow?.close()
+  mapInstance?.destroy()
+  mapInstance = undefined
+  overlays = []
+})
 </script>
 
 <template>
@@ -65,6 +123,12 @@ onBeforeUnmount(() => mapInstance?.destroy())
         <p>配置 VITE_AMAP_KEY 后，此处将根据行程项目的真实经纬度显示景点与路线。</p>
       </div>
       <div class="map-badge-tag">地图数据来自行程项目坐标 · 高德地图开放平台</div>
+    </div>
+    <div v-else-if="mapLoadError" class="map-fallback-view no-coords">
+      <div class="sheet-text">
+        <strong>地图服务加载失败</strong>
+        <p>{{ mapLoadError }}，请稍后刷新页面。</p>
+      </div>
     </div>
     <div v-else-if="!points().length" class="map-fallback-view no-coords">
       <div class="sheet-text">
@@ -89,6 +153,26 @@ onBeforeUnmount(() => mapInstance?.destroy())
 .map-canvas {
   width: 100%;
   height: 100%;
+}
+
+.map-canvas :deep(.amap-marker-label) {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #0071e3;
+  box-shadow: 0 2px 7px rgba(0, 72, 153, 0.3);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.map-canvas :deep(.amap-route-info) {
+  padding: 2px 4px;
+  color: #1d1d1f;
+  font-size: 12px;
 }
 
 .map-fallback-view {

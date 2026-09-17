@@ -7,20 +7,47 @@ import AppIcon from '@/components/AppIcon.vue'
 
 const routes = ref([])
 const loading = ref(false)
+const page = ref(1)
+const pageSize = 12
+const total = ref(0)
+const errorMessage = ref('')
+const removing = ref(false)
 
 async function load() {
   loading.value = true
+  errorMessage.value = ''
   try {
-    routes.value = (await accountApi.favorites())?.items || []
+    const data = await accountApi.favorites({ page: page.value, size: pageSize })
+    routes.value = data?.items || []
+    total.value = data?.total || 0
+  } catch (error) {
+    routes.value = []
+    total.value = 0
+    errorMessage.value = error.message || '收藏列表加载失败'
   } finally {
     loading.value = false
   }
 }
 
 async function remove(id) {
+  if (removing.value) return
+  removing.value = true
+  try {
   await accountApi.removeFavorite(id)
   routes.value = routes.value.filter((item) => item.id !== id)
+  total.value = Math.max(0, total.value - 1)
   ElMessage.success('已从心愿收藏中移除')
+  if (!routes.value.length && page.value > 1) {
+    page.value -= 1
+    load()
+  }
+  } catch (cause) { errorMessage.value = cause.message || '取消收藏失败' }
+  finally { removing.value = false }
+}
+
+function changePage(nextPage) {
+  page.value = nextPage
+  load()
 }
 
 onMounted(load)
@@ -43,6 +70,12 @@ onMounted(load)
         </div>
       </div>
 
+      <div v-else-if="errorMessage" class="empty-box favorite-error">
+        <strong>收藏暂时无法加载</strong>
+        <span>{{ errorMessage }}</span>
+        <button type="button" class="secondary-button" @click="load">重新加载</button>
+      </div>
+
       <div v-else-if="routes.length" class="favorites-grid">
         <div v-for="item in routes" :key="item.id" class="favorite-item-wrapper">
           <RouteCard :route="item" />
@@ -50,6 +83,7 @@ onMounted(load)
             type="button"
             class="remove-fav-btn"
             title="取消收藏"
+            :disabled="removing"
             @click.stop="remove(item.id)"
           >
             <AppIcon name="heart-filled" size="13" color="#ff3b30" />
@@ -60,6 +94,10 @@ onMounted(load)
 
       <div v-else class="empty-box">
         暂无收藏路线，在线路详情页点击收藏按钮即可添加至此。
+      </div>
+
+      <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+        <el-pagination background layout="prev, pager, next" :current-page="page" :page-size="pageSize" :total="total" @current-change="changePage" />
       </div>
     </div>
   </div>
@@ -80,6 +118,10 @@ onMounted(load)
 .favorite-item-wrapper {
   position: relative;
 }
+
+.favorite-error { display: grid; justify-items: center; gap: 9px; }
+.favorite-error span { color: var(--text-secondary); font-size: 12px; }
+.pagination-wrap { display: flex; justify-content: center; padding: 24px 0 4px; }
 
 .remove-fav-btn {
   position: absolute;

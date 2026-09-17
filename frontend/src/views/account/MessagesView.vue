@@ -1,26 +1,55 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { inject, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { accountApi } from '@/api/modules'
+import RequestState from '@/components/RequestState.vue'
 
 const messages = ref([])
 const loading = ref(false)
+const error = ref('')
+const page = ref(1)
+const total = ref(0)
+const unreadOnly = ref(false)
+const pending = ref(false)
+const refreshUnread = inject('refreshUnread', () => {})
 
 async function load() {
   loading.value = true
+  error.value = ''
   try {
-    messages.value = (await accountApi.messages())?.items || []
+    const data = await accountApi.messages({ page: page.value, size: 10, unreadOnly: unreadOnly.value })
+    messages.value = data.items
+    total.value = data.total
+  } catch (cause) {
+    error.value = cause.message || '消息加载失败'
   } finally {
     loading.value = false
   }
 }
 
 async function read(item) {
-  if (item.read) return
-  await accountApi.readMessage(item.id)
-  item.read = true
-  ElMessage.success('已标记为已读')
+  if (item.read || pending.value) return
+  pending.value = true
+  try {
+    Object.assign(item, await accountApi.readMessage(item.id))
+    await refreshUnread()
+    if (unreadOnly.value) await load()
+  } catch (cause) { error.value = cause.message || '标记失败' }
+  finally { pending.value = false }
 }
+
+async function readAll() {
+  if (pending.value) return
+  pending.value = true
+  try {
+    await accountApi.readAllMessages()
+    await refreshUnread()
+    await load()
+    ElMessage.success('已全部标为已读')
+  } catch (cause) { error.value = cause.message || '标记失败' }
+  finally { pending.value = false }
+}
+function changePage(value) { page.value = value; load() }
 
 onMounted(load)
 </script>
@@ -36,7 +65,13 @@ onMounted(load)
         </div>
       </div>
 
-      <div v-if="loading" class="admin-panel">
+      <div class="message-toolbar">
+        <el-checkbox v-model="unreadOnly" :disabled="loading" @change="changePage(1)">只看未读</el-checkbox>
+        <button class="secondary-button" :disabled="pending || loading" @click="readAll">{{ pending ? '处理中…' : '全部已读' }}</button>
+      </div>
+
+      <RequestState v-if="error" :error="error" @retry="load" />
+      <div v-else-if="loading" class="admin-panel">
         <el-skeleton :rows="6" animated />
       </div>
 
@@ -46,7 +81,6 @@ onMounted(load)
           :key="item.id"
           class="message-card-item"
           :class="{ unread: !item.read }"
-          @click="read(item)"
         >
           <div class="msg-status-indicator">
             <span class="dot-dot" :class="{ unread: !item.read }"></span>
@@ -58,9 +92,11 @@ onMounted(load)
               <span class="msg-time">{{ item.createdAt }}</span>
             </div>
             <p class="msg-body-text">{{ item.content }}</p>
+            <button v-if="!item.read" class="text-button" :disabled="pending" @click="read(item)">标为已读</button>
           </div>
         </article>
       </div>
+      <el-pagination v-if="!loading && !error && total > 10" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="10" :total="total" @current-change="changePage" />
 
       <div v-else class="empty-box">
         暂无任何通知消息，当您的订单产生状态变更时将在此呈现。
@@ -70,6 +106,9 @@ onMounted(load)
 </template>
 
 <style scoped>
+.message-toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.msg-head-row { flex-wrap: wrap; }
+.msg-content-wrap { min-width: 0; overflow-wrap: anywhere; }
 .account-page {
   background: var(--bg-canvas);
   min-height: calc(100vh - 64px);

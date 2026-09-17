@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- 后端：Java 25、Spring Boot 4.0.8、Maven、MyBatis-Plus 3.5.17、MySQL 9.7
+- 后端：Java 21、Spring Boot 4.0.8、Maven、MyBatis-Plus 3.5.17、MySQL 9.7
 - 前端：Vue 3、JavaScript、Vite、Vue Router、Pinia、Element Plus、npm
 - 第三方适配：高德地图 JS API、支付宝沙箱回调适配点
 
@@ -51,7 +51,7 @@ sql/test-data.sql
 
 ### 2. 启动后端
 
-请确认本机已安装并配置 JDK 25 和 Maven，并确保以下命令可用：
+请确认本机已安装并配置 JDK 21 和 Maven，并确保以下命令可用：
 
 ```powershell
 java -version
@@ -121,7 +121,7 @@ ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_CALLBACK_SECRET
 ## 验证命令
 
 ```powershell
-# backend（需确保本机 JDK 25 已配置，或 java 已加入 PATH）
+# backend（需确保本机 JDK 21 已配置，或 java 已加入 PATH）
 cd backend
 mvn -ntp test
 

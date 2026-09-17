@@ -42,7 +42,7 @@ public class AccountController {
         user.phone = request.phone();
         user.email = request.email();
         user.realName = request.realName();
-        user.avatar = request.avatar();
+        user.avatar = request.avatarUrl();
         userMapper.updateById(user);
         return ApiResponse.ok(authService.view(CurrentUser.required()));
     }

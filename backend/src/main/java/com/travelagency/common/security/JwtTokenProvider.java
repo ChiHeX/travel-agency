@@ -44,6 +44,13 @@ public class JwtTokenProvider {
         return content + "." + encodeBytes(sign(content));
     }
 
+    /**
+     * 令牌有效期秒数，用于契约 AuthSession.expiresIn。
+     */
+    public long expireSeconds() {
+        return expireHours * 3600;
+    }
+
     public Claims parse(String token) {
         try {
             String[] pieces = token.split("\\.");

@@ -5,6 +5,7 @@ import com.travelagency.auth.dto.AuthResponse;
 import com.travelagency.auth.dto.LoginRequest;
 import com.travelagency.auth.dto.RegisterRequest;
 import com.travelagency.auth.dto.UserView;
+import com.travelagency.common.enums.AccountStatus;
 import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.JwtTokenProvider;
@@ -108,12 +109,13 @@ public class AuthService {
 
     public UserView toView(SysUser user, Set<String> roles) {
         return new UserView(user.id, user.username, user.nickname, user.realName,
-                user.phone, user.email, user.avatar, roles.stream().toList());
+                user.phone, user.email, user.avatar, roles.stream().toList(),
+                AccountStatus.of(user.status), user.createdAt);
     }
 
     private AuthResponse issueToken(SysUser user) {
         Set<String> roles = rolesFor(user.id);
         String token = tokenProvider.createToken(user.id, user.username, roles);
-        return new AuthResponse(token, "Bearer", toView(user, roles));
+        return new AuthResponse(token, "Bearer", tokenProvider.expireSeconds(), toView(user, roles));
     }
 }

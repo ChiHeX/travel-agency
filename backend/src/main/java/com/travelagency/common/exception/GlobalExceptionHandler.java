@@ -18,6 +18,7 @@ import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -71,12 +72,17 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * JSON 解析失败、参数类型错误、缺少必填参数：请求格式错误 → 400。
+     * JSON 解析失败、参数类型错误、缺少必填参数或必填请求头：请求格式错误 → 400。
+     *
+     * <p>MissingRequestHeaderException 必须显式列出：它继承自 ServletException 而非
+     * ErrorResponseException，不会被下面的 Spring MVC 分支接住，漏掉就会掉进兜底变成 500。
+     * 典型场景是契约要求的 Idempotency-Key 请求头缺失。</p>
      */
     @ExceptionHandler({
             HttpMessageNotReadableException.class,
             MethodArgumentTypeMismatchException.class,
-            MissingServletRequestParameterException.class
+            MissingServletRequestParameterException.class,
+            MissingRequestHeaderException.class
     })
     public ResponseEntity<ApiResponse<Void>> handleBadRequest(Exception ex) {
         return ResponseEntity.badRequest()

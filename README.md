@@ -62,6 +62,7 @@ mvn -version
 
 ```powershell
 cd backend
+$env:JWT_SECRET = Read-Host "请输入至少 32 个 UTF-8 字节的随机 JWT 密钥"
 mvn -ntp spring-boot:run
 ```
 

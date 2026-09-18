@@ -18,16 +18,13 @@
 
 ## 复测
 
-使用项目配置的 MySQL，或通过 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD` 指定开发数据库。WSL Docker MySQL 需保持运行，Windows 后端默认访问 `localhost:3306`。
+使用项目配置的测试数据库，或通过 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD` 指定数据库连接。
 
 ```powershell
 cd backend
 $env:TRAVEL_MYSQL_TEST = 'true'
 mvn -ntp test package
 Remove-Item Env:TRAVEL_MYSQL_TEST
-
-cd ../frontend
-pnpm build
 ```
 
 `AuthContractIntegrationTest` 使用真实 Spring HTTP 处理链、JWT 和 MyBatis-Plus/MySQL。每个测试事务结束后回滚新建的测试账号及其修改，不重置数据库、不重跑初始化脚本。未设置 `TRAVEL_MYSQL_TEST=true` 时跳过该集成测试，普通单元测试仍执行。

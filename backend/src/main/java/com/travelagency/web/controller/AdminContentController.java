@@ -20,6 +20,7 @@ import com.travelagency.domain.mapper.ConsultationMapper;
 import com.travelagency.domain.mapper.ConsultationReplyMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelGuideArticleMapper;
+import com.travelagency.domain.service.ArticleService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,7 +36,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
-import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,13 +63,16 @@ public class AdminContentController {
     private final ConsultationReplyMapper replyMapper;
     private final TravelGuideArticleMapper articleMapper;
     private final SysUserMapper sysUserMapper;
+    private final ArticleService articleService;
 
     public AdminContentController(ConsultationMapper consultationMapper, ConsultationReplyMapper replyMapper,
-                                  TravelGuideArticleMapper articleMapper, SysUserMapper sysUserMapper) {
+                                  TravelGuideArticleMapper articleMapper, SysUserMapper sysUserMapper,
+                                  ArticleService articleService) {
         this.consultationMapper = consultationMapper;
         this.replyMapper = replyMapper;
         this.articleMapper = articleMapper;
         this.sysUserMapper = sysUserMapper;
+        this.articleService = articleService;
     }
 
     // ---------------- 咨询管理 ----------------
@@ -160,15 +163,7 @@ public class AdminContentController {
     /** 创建攻略，对齐契约 POST /admin/articles（201 + Location + ArticleEnvelope）。 */
     @PostMapping("/articles")
     public ResponseEntity<ApiResponse<ArticleView>> createArticle(@Valid @RequestBody ArticleRequest request) {
-        TravelGuideArticle article = fromRequest(request);
-        article.authorId = CurrentUser.required().userId();
-        if ("PUBLISHED".equals(article.status)) {
-            article.publishedAt = LocalDateTime.now();
-        }
-        articleMapper.insert(article);
-        TravelGuideArticle saved = articleMapper.selectById(article.id);
-        ArticleView view = ArticleView.from(saved == null ? article : saved,
-                displayNameOf(article.authorId));
+        ArticleView view = articleService.create(request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/articles/" + view.id())).body(ApiResponse.ok(view));
     }
 
@@ -176,21 +171,7 @@ public class AdminContentController {
     @PutMapping("/articles/{articleId}")
     public ApiResponse<ArticleView> updateArticle(
             @PathVariable Long articleId, @Valid @RequestBody ArticleRequest request) {
-        TravelGuideArticle article = requireArticle(articleId);
-        TravelGuideArticle updated = fromRequest(request);
-        updated.id = articleId;
-        updated.authorId = article.authorId;
-        if ("PUBLISHED".equals(updated.status) && article.publishedAt == null) {
-            updated.publishedAt = LocalDateTime.now();
-        } else {
-            updated.publishedAt = article.publishedAt;
-        }
-        articleMapper.updateById(updated);
-        // 回查以带回 created_at / updated_at：fromRequest 新建的对象只有请求里的字段，
-        // 直接返回会让契约 Article 的两个 required 时间字段为 null。
-        TravelGuideArticle saved = articleMapper.selectById(articleId);
-        TravelGuideArticle result = saved == null ? updated : saved;
-        return ApiResponse.ok(ArticleView.from(result, displayNameOf(result.authorId)));
+        return ApiResponse.ok(articleService.update(articleId, request));
     }
 
     /**
@@ -202,11 +183,7 @@ public class AdminContentController {
      */
     @DeleteMapping("/articles/{articleId}")
     public ResponseEntity<Void> deleteArticle(@PathVariable Long articleId) {
-        TravelGuideArticle article = requireArticle(articleId);
-        if ("PUBLISHED".equals(article.status)) {
-            throw new BusinessException(409, "ARTICLE_STATE_CONFLICT", "已发布的攻略不能直接删除，请先下线");
-        }
-        articleMapper.deleteById(articleId);
+        articleService.delete(articleId);
         return ResponseEntity.noContent().build();
     }
 
@@ -214,17 +191,7 @@ public class AdminContentController {
     @PatchMapping("/articles/{articleId}/status")
     public ApiResponse<ArticleView> updateArticleStatus(
             @PathVariable Long articleId, @Valid @RequestBody StatusRequest request) {
-        String status = request.status();
-        if (!List.of("PUBLISHED", "OFFLINE").contains(status)) {
-            throw new BusinessException(422, "VALIDATION_ERROR", "攻略状态仅支持 PUBLISHED 或 OFFLINE");
-        }
-        TravelGuideArticle article = requireArticle(articleId);
-        article.status = status;
-        if ("PUBLISHED".equals(status) && article.publishedAt == null) {
-            article.publishedAt = LocalDateTime.now();
-        }
-        articleMapper.updateById(article);
-        return ApiResponse.ok(ArticleView.from(article, displayNameOf(article.authorId)));
+        return ApiResponse.ok(articleService.updateStatus(articleId, request.status()));
     }
 
     // ---------------- 私有辅助 ----------------
@@ -242,19 +209,6 @@ public class AdminContentController {
         if (article == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "攻略不存在");
         }
-        return article;
-    }
-
-    private TravelGuideArticle fromRequest(ArticleRequest request) {
-        TravelGuideArticle article = new TravelGuideArticle();
-        article.title = request.title();
-        article.summary = request.summary();
-        article.content = request.content();
-        article.city = request.city();
-        article.destination = request.destination();
-        article.attractionId = request.attractionId();
-        article.coverUrl = request.coverUrl();
-        article.status = request.status() == null || request.status().isBlank() ? "DRAFT" : request.status();
         return article;
     }
 

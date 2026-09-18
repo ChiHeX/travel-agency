@@ -5,6 +5,7 @@ import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.TravelerRequest;
+import com.travelagency.domain.dto.TravelerUpdateRequest;
 import com.travelagency.domain.dto.TravelerView;
 import com.travelagency.domain.entity.Traveler;
 import com.travelagency.domain.mapper.TravelerMapper;
@@ -52,9 +53,14 @@ public class TravelerController {
     }
 
     @PutMapping("/{id}")
-    public ApiResponse<TravelerView> update(@PathVariable Long id, @Valid @RequestBody TravelerRequest request) {
+    public ApiResponse<TravelerView> update(@PathVariable Long id, @Valid @RequestBody TravelerUpdateRequest request) {
         Traveler traveler = owned(id);
         Traveler updated = fromRequest(request);
+        // 契约 TravelerUpdateRequest：省略 idNo 表示保留原值。
+        // 列表接口按最小必要原则只返回 idNoMasked，前端编辑弹窗拿不到原文，提交时必然省略该字段。
+        if (request.idNo() == null) {
+            updated.idNo = traveler.idNo;
+        }
         updated.id = traveler.id;
         updated.userId = traveler.userId;
         travelerMapper.updateById(updated);
@@ -77,6 +83,20 @@ public class TravelerController {
     }
 
     private Traveler fromRequest(TravelerRequest request) {
+        Traveler traveler = new Traveler();
+        traveler.name = request.name();
+        traveler.gender = request.gender();
+        traveler.birthDate = request.birthDate();
+        traveler.idType = request.idType();
+        traveler.idNo = request.idNo();
+        traveler.phone = request.phone();
+        traveler.emergencyName = request.emergencyName();
+        traveler.emergencyPhone = request.emergencyPhone();
+        return traveler;
+    }
+
+    /** 更新请求与新增请求的唯一差别是 idNo 可省略，这里先原样拷贝，是否回填由调用方决定。 */
+    private Traveler fromRequest(TravelerUpdateRequest request) {
         Traveler traveler = new Traveler();
         traveler.name = request.name();
         traveler.gender = request.gender();

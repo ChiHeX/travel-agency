@@ -1,5 +1,6 @@
 package com.travelagency.web.controller;
 
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.domain.service.OrderService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,12 +24,17 @@ import java.util.Map;
  * 支付宝异步通知入口，对齐契约 POST /payments/alipay/notify：
  * 接收 application/x-www-form-urlencoded，按第三方交易号幂等处理，返回 text/plain 的 success/failure。
  *
- * <p>当前为 HMAC 沙箱验签适配点：调用方用共享密钥对 orderNo|tradeNo|result 计算 HmacSHA256 并 Base64。
- * 共享密钥必须通过 {@code ALIPAY_CALLBACK_SECRET} 注入，未配置时一律拒绝（fail-closed）。
- * 回调金额会与订单应付金额比对，不一致即拒绝。</p>
+ * <p><b>验签有两条路径，按配置自动选择：</b></p>
+ * <ol>
+ *   <li><b>官方路径（配置了 {@code ALIPAY_PUBLIC_KEY} 时）</b>：用支付宝公钥做 RSA2 验签，
+ *       并核对通知声明的 {@code app_id} 与本应用一致。这是契约与架构文档要求的口径，
+ *       规则与 {@code alipay-sdk-java} 的 {@code rsaCheckV1} 一致（剔除 sign、sign_type，其余按 key 字典序拼串）。</li>
+ *   <li><b>本地开发回退路径（未配置支付宝公钥时）</b>：沿用自建 HMAC 适配点，共享密钥由
+ *       {@code ALIPAY_CALLBACK_SECRET} 注入，未配置时一律拒绝（fail-closed）。
+ *       它只用于本地没有沙箱密钥时把链路跑通，<b>不代表支付宝官方验签</b>。</li>
+ * </ol>
  *
- * <p>接入真实支付宝沙箱 SDK 时，应在适配器层替换为官方签名校验（校验 app_id 与支付宝公钥），
- * 业务层只接受验签后的结果；金额核对逻辑可继续保留。</p>
+ * <p>两条路径都保留金额核对：回调金额会与订单应付金额比对，不一致即拒绝。</p>
  */
 @RestController
 @RequestMapping("/api/payments")
@@ -37,12 +43,15 @@ public class PaymentController {
     private static final Logger log = LoggerFactory.getLogger(PaymentController.class);
 
     private final OrderService orderService;
+    private final AlipayGatewayClient alipayGatewayClient;
     private final String callbackSecret;
 
     public PaymentController(
             OrderService orderService,
+            AlipayGatewayClient alipayGatewayClient,
             @Value("${app.integrations.alipay.callback-secret:}") String callbackSecret) {
         this.orderService = orderService;
+        this.alipayGatewayClient = alipayGatewayClient;
         this.callbackSecret = callbackSecret;
     }
 
@@ -52,16 +61,17 @@ public class PaymentController {
      */
     @PostMapping(value = "/alipay/notify", produces = {MediaType.TEXT_PLAIN_VALUE, MediaType.ALL_VALUE})
     public ResponseEntity<String> notify(@RequestParam Map<String, String> params) {
-        String orderNo = firstNonBlank(params.get("orderNo"), params.get("out_trade_no"));
-        String tradeNo = firstNonBlank(params.get("tradeNo"), params.get("trade_no"));
-        String result = firstNonBlank(params.get("result"), params.get("trade_status"));
-        String signature = firstNonBlank(params.get("signature"), params.get("sign"));
+        String orderNo = firstNonBlank(params.get("out_trade_no"), params.get("orderNo"));
+        String tradeNo = firstNonBlank(params.get("trade_no"), params.get("tradeNo"));
+        String result = firstNonBlank(params.get("trade_status"), params.get("result"));
 
         if (orderNo == null || tradeNo == null || result == null) {
             return ResponseEntity.ok("failure");
         }
-        if (!isSuccessResult(result) || !verify(orderNo, tradeNo, result, signature)) {
-            log.warn("支付宝回调验签失败或结果非成功：orderNo={}, result={}", orderNo, result);
+        if (!isSuccessResult(result)) {
+            return ResponseEntity.ok("failure");
+        }
+        if (!verified(params, orderNo, tradeNo, result)) {
             return ResponseEntity.ok("failure");
         }
         // 金额是支付宝异步通知的必带字段。缺失或无法解析时直接拒绝，
@@ -87,16 +97,31 @@ public class PaymentController {
     }
 
     /**
-     * 回调验签。
+     * 按配置选择验签路径：配置了支付宝公钥走官方 RSA2 验签，否则回退到自建 HMAC 适配点。
+     */
+    private boolean verified(Map<String, String> params, String orderNo, String tradeNo, String result) {
+        if (alipayGatewayClient.canVerifyNotifySignature()) {
+            boolean ok = alipayGatewayClient.verifyNotifySignature(params);
+            if (!ok) {
+                log.warn("支付回调未通过支付宝 RSA2 验签，已拒绝：orderNo={}", orderNo);
+            }
+            return ok;
+        }
+        return verifySharedSecret(orderNo, tradeNo, result,
+                firstNonBlank(params.get("signature"), params.get("sign")));
+    }
+
+    /**
+     * 自建 HMAC 适配点（本地开发回退路径）。
      *
      * <p>密钥未配置时一律拒绝（fail-closed）。此前该密钥在 {@code @Value} 里带有一个写死在
      * 源码中的默认值，等于把共享密钥随仓库公开：任何读到代码的人都能自行算出合法签名，
      * 伪造回调把任意订单标记为已支付。现在强制要求通过
      * {@code ALIPAY_CALLBACK_SECRET} 环境变量 / 配置项注入，缺失即拒绝。</p>
      */
-    private boolean verify(String orderNo, String tradeNo, String result, String signature) {
+    private boolean verifySharedSecret(String orderNo, String tradeNo, String result, String signature) {
         if (callbackSecret == null || callbackSecret.isBlank()) {
-            log.error("未配置 app.integrations.alipay.callback-secret，已拒绝该支付回调（fail-closed）");
+            log.error("既未配置支付宝公钥，也未配置 app.integrations.alipay.callback-secret，已拒绝该支付回调（fail-closed）");
             return false;
         }
         if (signature == null || signature.isBlank()) {

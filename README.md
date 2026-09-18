@@ -114,14 +114,40 @@ npm run dev:mock
 DB_URL / DB_USERNAME / DB_PASSWORD
 JWT_SECRET
 AMAP_ENABLED / AMAP_WEB_KEY
-ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_CALLBACK_SECRET
+ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
+ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
+ALIPAY_CALLBACK_SECRET
 ```
 
 `JWT_SECRET` 是后端启动必填项，必须通过运行环境注入至少 32 个 UTF-8 字节的随机强密钥；
-缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥。
-`ALIPAY_CALLBACK_SECRET` 在启用支付回调时必须配置；缺失时应用仍可启动，但所有支付回调都会被拒绝（fail-closed）。
+缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥（启动命令见上文「本地启动」）。
 
-目标支付宝异步通知入口为 `POST /api/payments/alipay/notify`。后端正式实现时必须接入支付宝沙箱官方签名校验，并核对商户、订单号和金额，业务层只接受验签后的结果；浏览器跳转不能作为支付成功依据。
+### 支付宝沙箱
+
+沙箱密钥从开放平台沙箱应用页获取（`应用信息 → 开发信息 → 接口加签方式`），登录即得，无需申请资质：
+
+```powershell
+$env:ALIPAY_APP_ID          = "沙箱应用 APPID"
+$env:ALIPAY_APP_PRIVATE_KEY = "应用私钥（PKCS#8，可只填 Base64 主体）"
+$env:ALIPAY_PUBLIC_KEY      = "支付宝公钥（用于验签通知）"
+# $env:ALIPAY_GATEWAY_URL 默认已指向沙箱新版网关，无需设置
+```
+
+**密钥一律通过环境变量注入，禁止提交到仓库**（见 CONTRIBUTING §14）。
+
+支付链路按配置自动降级，缺项不会把接口打成 500：
+
+| 配置情况 | 下单支付 | 异步通知验签 |
+| --- | --- | --- |
+| 配齐 `ALIPAY_APP_ID` + `ALIPAY_APP_PRIVATE_KEY` | 生成真实沙箱收银台链接 | — |
+| 配齐 `ALIPAY_PUBLIC_KEY` | — | 官方 **RSA2** 验签，并核对 `app_id` |
+| 未配 `ALIPAY_PUBLIC_KEY` | — | 回退自建 HMAC（`ALIPAY_CALLBACK_SECRET`），未配置则一律拒绝 |
+
+异步通知入口为 `POST /api/payments/alipay/notify`。回调**只认验签后的结果**，并核对商户、
+订单号与金额，业务层只接受验签通过且金额一致的支付；浏览器跳转结果不作为支付成功依据。
+
+> 本地自建 HMAC 那条路径只用于「手上还没有沙箱密钥」时把链路跑通，**不代表支付宝官方验签**；
+> 联调与验收请务必配置 `ALIPAY_PUBLIC_KEY`，让回调走官方 RSA2。
 
 ## 验证命令
 

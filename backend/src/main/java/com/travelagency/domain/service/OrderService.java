@@ -3,6 +3,7 @@ package com.travelagency.domain.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
@@ -49,7 +50,6 @@ import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.mapper.TravelerMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -81,14 +81,12 @@ public class OrderService {
     private final SysUserMapper sysUserMapper;
     private final IdempotencyRecordMapper idempotencyRecordMapper;
     private final TravelerMapper travelerMapper;
+    private final AlipayGatewayClient alipayGatewayClient;
 
     /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
     /** 申请退款动作的幂等作用域。 */
     private static final String SCOPE_APPLY_REFUND = "APPLY_REFUND";
-
-    @Value("${app.integrations.alipay.gateway-url:https://openapi-sandbox.dl.alipaydev.com/gateway.do}")
-    private String alipayGatewayUrl;
 
     public OrderService(
             TravelOrderMapper orderMapper,
@@ -102,7 +100,8 @@ public class OrderService {
             MessageMapper messageMapper,
             SysUserMapper sysUserMapper,
             IdempotencyRecordMapper idempotencyRecordMapper,
-            TravelerMapper travelerMapper) {
+            TravelerMapper travelerMapper,
+            AlipayGatewayClient alipayGatewayClient) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
@@ -115,6 +114,7 @@ public class OrderService {
         this.sysUserMapper = sysUserMapper;
         this.idempotencyRecordMapper = idempotencyRecordMapper;
         this.travelerMapper = travelerMapper;
+        this.alipayGatewayClient = alipayGatewayClient;
     }
 
     @Transactional
@@ -356,7 +356,23 @@ public class OrderService {
         paymentMapper.updateById(payment);
         LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(30);
         return new PaymentStartResponse(order.orderNo, payment.paymentNo, payment.channel,
-                order.totalAmount, alipayGatewayUrl, expiresAt);
+                order.totalAmount, cashierUrl(order), expiresAt);
+    }
+
+    /**
+     * 生成收银台地址。
+     *
+     * <p>配置了支付宝沙箱密钥（{@code ALIPAY_APP_ID} + {@code ALIPAY_APP_PRIVATE_KEY}）时，
+     * 返回的是支付宝 {@code alipay.trade.page.pay} 的<b>真实收银台链接</b>，可直接在浏览器打开付款；
+     * 未配置时回退到网关占位地址，让未接入沙箱的本地环境仍能走通前端流程
+     * （占位地址不可付款，这一点在 README 与测试报告里都写明了）。</p>
+     */
+    private String cashierUrl(TravelOrder order) {
+        if (alipayGatewayClient.canBuildCashierUrl()) {
+            return alipayGatewayClient.buildCashierUrl(
+                    order.orderNo, order.totalAmount, "旅行社团购订单 " + order.orderNo);
+        }
+        return alipayGatewayClient.gatewayUrl();
     }
 
     /**

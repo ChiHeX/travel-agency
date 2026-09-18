@@ -199,6 +199,8 @@ public class OrderService {
         for (CreateOrderRequest.TravelerSnapshotRequest requestTraveler : request.travelers()) {
             OrderTraveler snapshot = new OrderTraveler();
             snapshot.orderId = order.id;
+            // 记录来源常用出行人，对应契约请求字段 sourceTravelerId。
+            snapshot.travelerId = requestTraveler.sourceTravelerId();
             // 优先采用调用方显式指定的类型；未指定时按「前 adultCount 位为成人，其余为儿童」兜底推断。
             snapshot.travelerType = allExplicit
                     ? requestTraveler.travelerType()

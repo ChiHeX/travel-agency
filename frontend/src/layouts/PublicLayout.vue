@@ -10,6 +10,10 @@ import AccountNav from '@/components/AccountNav.vue'
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const loginLocation = computed(() => ({
+  name: 'login',
+  query: route.path.startsWith('/auth/') ? route.query : { redirect: route.fullPath }
+}))
 const unreadCount = ref(0)
 const sheetSize = ref(['latest-guides', 'city-guides', 'article-publishers', 'publisher-guides', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
 let dragStart = null
@@ -126,7 +130,7 @@ function logout() {
       <button @click="handleTabClick('search')">搜索</button>
       <button @click="handleTabClick('routes')">线路</button>
       <button @click="handleTabClick('articles')">指南</button>
-      <RouterLink :to="auth.isLoggedIn ? '/account/profile' : '/auth/login'">{{ auth.isLoggedIn ? '我的' : '登录' }}</RouterLink>
+      <RouterLink :to="auth.isLoggedIn ? '/account/profile' : loginLocation">{{ auth.isLoggedIn ? '我的' : '登录' }}</RouterLink>
     </nav>
     <!-- ==========================================================================
          1. Full-Screen 360° Infinite Continuous World Map Canvas (Underneath)
@@ -241,7 +245,7 @@ function logout() {
           </div>
         </div>
 
-        <RouterLink v-else to="/auth/login" class="login-action-btn" :class="{ 'icon-only': !isSidebarExpanded }">
+        <RouterLink v-else :to="loginLocation" class="login-action-btn" :class="{ 'icon-only': !isSidebarExpanded }">
           <span v-if="isSidebarExpanded">登录 / 注册</span>
           <span v-else>登录</span>
         </RouterLink>

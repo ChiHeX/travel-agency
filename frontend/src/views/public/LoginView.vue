@@ -19,7 +19,7 @@ async function submit() {
     await auth.login(form)
     ElMessage.success('登录成功，欢迎回来')
     const target = route.query.redirect
-    router.replace(typeof target === 'string' && target.startsWith('/') && !target.startsWith('//') ? target : '/')
+    await router.replace(typeof target === 'string' && target.startsWith('/') && !target.startsWith('//') ? target : '/')
   } catch (error) {
     errorMessage.value = error.message || '登录失败'
   } finally {

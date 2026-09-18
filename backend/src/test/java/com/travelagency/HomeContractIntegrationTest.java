@@ -1,5 +1,6 @@
 package com.travelagency;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.domain.entity.Departure;
@@ -46,6 +47,8 @@ class HomeContractIntegrationTest {
 
     @Test
     void homeIsPublicAndReturnsAllFrozenContractSections() throws Exception {
+        routes.update(null, new UpdateWrapper<TravelRoute>().set("deleted", 1));
+
         TravelRoute route = new TravelRoute();
         route.name = "Contract home route";
         route.departureCity = "Contract departure";
@@ -67,16 +70,28 @@ class HomeContractIntegrationTest {
         assertTrue(home.popularDestinations().stream()
                 .anyMatch(item -> "Contract destination".equals(item.destination())
                         && item.validBookingCount() == 2));
-        assertEquals(route.id, home.upcomingRoutes().getFirst().id());
-        assertEquals(new BigDecimal("100.00"), home.upcomingRoutes().getFirst().minAdultPrice());
-        assertEquals(nextDeparture.startDate, home.upcomingRoutes().getFirst().nextDepartureDate());
+        var upcomingRoute = home.upcomingRoutes().stream()
+                .filter(item -> route.id.equals(item.id()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(new BigDecimal("100.00"), upcomingRoute.minAdultPrice());
+        assertEquals(nextDeparture.startDate, upcomingRoute.nextDepartureDate());
         mvc.perform(get("/api/home"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.popularDestinations").isArray())
+                .andExpect(jsonPath("$.data.popularDestinations[0].destination").value("Contract destination"))
+                .andExpect(jsonPath("$.data.popularDestinations[0].validBookingCount").value(2))
                 .andExpect(jsonPath("$.data.popularRoutes").isArray())
                 .andExpect(jsonPath("$.data.recommendedRoutes").isArray())
-                .andExpect(jsonPath("$.data.upcomingRoutes").isArray());
+                .andExpect(jsonPath("$.data.upcomingRoutes").isArray())
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].id").value(route.id.toString()))
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].minAdultPrice").value("100.00"))
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].nextDepartureDate")
+                        .value(nextDeparture.startDate.toString()))
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].ratingAvg").value("5.00"))
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].validBookingCount").value(2))
+                .andExpect(jsonPath("$.data.upcomingRoutes[0].status").value(RouteStatus.PUBLISHED));
     }
 
     private Departure departure(Long routeId, LocalDate startDate, BigDecimal adultPrice) {

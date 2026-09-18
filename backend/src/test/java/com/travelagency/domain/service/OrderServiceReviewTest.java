@@ -9,6 +9,7 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
@@ -52,6 +53,8 @@ class OrderServiceReviewTest {
     @Mock
     private TravelRouteMapper routeMapper;
     @Mock
+    private GuideMapper guideMapper;
+    @Mock
     private OrderTravelerMapper orderTravelerMapper;
     @Mock
     private PaymentMapper paymentMapper;
@@ -70,7 +73,7 @@ class OrderServiceReviewTest {
 
     @BeforeEach
     void setUp() {
-        orderService = new OrderService(orderMapper, departureMapper, routeMapper,
+        orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
                 idempotencyRecordMapper);
     }

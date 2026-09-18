@@ -13,6 +13,7 @@ import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
+import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.OrderTravelerView;
@@ -23,7 +24,9 @@ import com.travelagency.domain.dto.RefundRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
@@ -34,6 +37,7 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
@@ -65,6 +69,7 @@ public class OrderService {
     private final TravelOrderMapper orderMapper;
     private final DepartureMapper departureMapper;
     private final TravelRouteMapper routeMapper;
+    private final GuideMapper guideMapper;
     private final OrderTravelerMapper orderTravelerMapper;
     private final PaymentMapper paymentMapper;
     private final RefundMapper refundMapper;
@@ -85,6 +90,7 @@ public class OrderService {
             TravelOrderMapper orderMapper,
             DepartureMapper departureMapper,
             TravelRouteMapper routeMapper,
+            GuideMapper guideMapper,
             OrderTravelerMapper orderTravelerMapper,
             PaymentMapper paymentMapper,
             RefundMapper refundMapper,
@@ -95,6 +101,7 @@ public class OrderService {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
+        this.guideMapper = guideMapper;
         this.orderTravelerMapper = orderTravelerMapper;
         this.paymentMapper = paymentMapper;
         this.refundMapper = refundMapper;
@@ -745,8 +752,20 @@ public class OrderService {
                 : ReviewView.from(review, order.orderNo, nicknameOf(review.userId));
         TravelRoute route = routeMapper.selectById(order.routeId);
         Departure departure = departureMapper.selectById(order.departureId);
-        return new OrderDetailResponse(OrderView.from(order, route, departure), route,
-                departure, travelers, paymentView, refunds, reviewView);
+        String routeName = route == null ? null : route.name;
+        return new OrderDetailResponse(OrderView.from(order, route, departure),
+                RouteSummaryView.from(route),
+                DepartureView.from(departure, routeName, guideNameOf(departure)),
+                travelers, paymentView, refunds, reviewView);
+    }
+
+    /** 团期所属导游姓名，供 DepartureView 补齐契约必填的 guideName；无团期或无导游时返回 null。 */
+    private String guideNameOf(Departure departure) {
+        if (departure == null || departure.guideId == null) {
+            return null;
+        }
+        Guide guide = guideMapper.selectById(departure.guideId);
+        return guide == null ? null : guide.name;
     }
 
     private Map<Long, TravelRoute> batchRoutes(List<TravelOrder> orders) {

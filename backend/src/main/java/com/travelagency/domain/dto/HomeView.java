@@ -7,7 +7,7 @@ import java.util.List;
 
 public record HomeView(List<Destination> popularDestinations, List<Route> popularRoutes,
                        List<Route> recommendedRoutes, List<Route> upcomingRoutes) {
-    public record Destination(String destination, int validBookingCount) {}
+    public record Destination(String destination, long validBookingCount) {}
 
     public record Route(Long id, String name, String departureCity, String destination, Integer durationDays,
                         String description, String coverUrl, BigDecimal minAdultPrice, LocalDate nextDepartureDate,

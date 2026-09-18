@@ -106,8 +106,13 @@ class OrderServiceCreateTest {
     }
 
     private static CreateOrderRequest.TravelerSnapshotRequest traveler(String name, String travelerType) {
+        return traveler(name, travelerType, null);
+    }
+
+    private static CreateOrderRequest.TravelerSnapshotRequest traveler(
+            String name, String travelerType, Long sourceTravelerId) {
         return new CreateOrderRequest.TravelerSnapshotRequest(
-                name, "MALE", LocalDate.of(1990, 1, 1), "CHINESE_ID_CARD",
+                sourceTravelerId, name, "MALE", LocalDate.of(1990, 1, 1), "CHINESE_ID_CARD",
                 "320100199001011234", "13800000000", "紧急联系人", "13900000000", travelerType);
     }
 
@@ -187,6 +192,25 @@ class OrderServiceCreateTest {
         verify(orderTravelerMapper, times(2)).insert(captor.capture());
         assertEquals(TravelerType.CHILD, captor.getAllValues().get(0).travelerType);
         assertEquals(TravelerType.ADULT, captor.getAllValues().get(1).travelerType);
+    }
+
+    @Test
+    @DisplayName("来源常用出行人：sourceTravelerId 落库到 order_traveler.traveler_id")
+    void persistsSourceTravelerIdOnSnapshot() {
+        when(departureMapper.selectById(7L)).thenReturn(departure(7L, 10, 0, 0, DepartureStatus.OPEN));
+        when(departureMapper.update(any(), any())).thenReturn(1);
+        stubInsertReturningId(58L);
+
+        CreateOrderRequest withSource = new CreateOrderRequest(7L, 1, 0, "联系人", "13800000000",
+                "contact@example.com",
+                List.of(traveler("大人", TravelerType.ADULT, 42L)),
+                "备注");
+
+        orderService.create(9L, withSource, null);
+
+        ArgumentCaptor<OrderTraveler> captor = ArgumentCaptor.forClass(OrderTraveler.class);
+        verify(orderTravelerMapper, times(1)).insert(captor.capture());
+        assertEquals(Long.valueOf(42L), captor.getValue().travelerId);
     }
 
     @Test

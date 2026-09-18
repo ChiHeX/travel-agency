@@ -24,6 +24,16 @@ public record CreateOrderRequest(
         String remark) {
 
     public record TravelerSnapshotRequest(
+            /**
+             * 来源常用出行人 ID（可空）。契约 {@code OrderTravelerRequest} 明确列有该字段
+             * （且 additionalProperties 为 false），前端 OrderCreateView 每次提交都会带上
+             * {@code sourceTravelerId}（即使为 null 也会被序列化）。
+             *
+             * <p>此前请求模型缺少该字段：在 Jackson 允许未知字段时被静默丢弃，仅表现为
+             * 「快照丢掉了来源关联」；而一旦开启 FAIL_ON_UNKNOWN_PROPERTIES，它就从静默丢弃
+             * 变成硬报错 —— 前端下单会直接返回 400，整个下单流程不可用。</p>
+             */
+            Long sourceTravelerId,
             @NotBlank(message = "出行人姓名不能为空") @Size(max = 64, message = "出行人姓名不能超过 64 字") String name,
             @NotBlank(message = "性别不能为空")
             @Pattern(regexp = "MALE|FEMALE|OTHER", message = "性别取值不合法") String gender,

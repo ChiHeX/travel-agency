@@ -23,6 +23,7 @@ import com.travelagency.domain.mapper.ReviewMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import com.travelagency.domain.mapper.TravelerMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,8 @@ class OrderServiceCreateTest {
     private SysUserMapper sysUserMapper;
     @Mock
     private IdempotencyRecordMapper idempotencyRecordMapper;
+    @Mock
+    private TravelerMapper travelerMapper;
 
     private OrderService orderService;
 
@@ -85,7 +88,7 @@ class OrderServiceCreateTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper);
+                idempotencyRecordMapper, travelerMapper);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -197,6 +200,7 @@ class OrderServiceCreateTest {
     @Test
     @DisplayName("来源常用出行人：sourceTravelerId 落库到 order_traveler.traveler_id")
     void persistsSourceTravelerIdOnSnapshot() {
+        when(travelerMapper.selectCount(any())).thenReturn(1L);
         when(departureMapper.selectById(7L)).thenReturn(departure(7L, 10, 0, 0, DepartureStatus.OPEN));
         when(departureMapper.update(any(), any())).thenReturn(1);
         stubInsertReturningId(58L);
@@ -211,6 +215,25 @@ class OrderServiceCreateTest {
         ArgumentCaptor<OrderTraveler> captor = ArgumentCaptor.forClass(OrderTraveler.class);
         verify(orderTravelerMapper, times(1)).insert(captor.capture());
         assertEquals(Long.valueOf(42L), captor.getValue().travelerId);
+    }
+
+    @Test
+    @DisplayName("来源常用出行人：不属于当前用户时拒绝且不占用名额")
+    void rejectsUnownedSourceTravelerBeforeReservingCapacity() {
+        when(travelerMapper.selectCount(any())).thenReturn(0L);
+        CreateOrderRequest withUnownedSource = new CreateOrderRequest(7L, 1, 0, "联系人", "13800000000",
+                "contact@example.com",
+                List.of(traveler("大人", TravelerType.ADULT, 42L)),
+                "备注");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.create(9L, withUnownedSource, null));
+
+        assertEquals(404, ex.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+        verify(orderMapper, never()).insert(any(TravelOrder.class));
+        verify(orderTravelerMapper, never()).insert(any(OrderTraveler.class));
     }
 
     @Test

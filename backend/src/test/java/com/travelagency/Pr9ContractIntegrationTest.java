@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
+// JwtTokenProvider 会在容器启动时校验签名密钥（缺失即启动失败），
+// 这里为测试上下文注入固定密钥，避免集成测试依赖开发者本机的 JWT_SECRET 环境变量。
+@TestPropertySource(properties = "app.jwt.secret=integration-test-secret-with-at-least-32-bytes-entropy")
 @Transactional
 @EnabledIfEnvironmentVariable(named = "TRAVEL_MYSQL_TEST", matches = "true")
 class Pr9ContractIntegrationTest {

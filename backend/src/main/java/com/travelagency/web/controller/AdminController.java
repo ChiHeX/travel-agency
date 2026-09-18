@@ -14,6 +14,7 @@ import com.travelagency.domain.dto.AdminUserView;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.GuideView;
+import com.travelagency.domain.dto.GuideUpdateRequest;
 import com.travelagency.domain.dto.OperationLogView;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
@@ -52,9 +53,11 @@ import com.travelagency.domain.mapper.SysUserRoleMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.service.DepartureService;
 import com.travelagency.domain.service.OrderService;
+import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,6 +73,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -100,6 +104,7 @@ public class AdminController {
     private final SysUserRoleMapper userRoleMapper;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
+    private final GuideService guideService;
 
     public AdminController(
             RouteService routeService,
@@ -119,7 +124,7 @@ public class AdminController {
             SysRoleMapper roleMapper,
             SysUserRoleMapper userRoleMapper,
             PasswordEncoder passwordEncoder,
-            AuthService authService) {
+            AuthService authService, GuideService guideService) {
         this.routeService = routeService;
         this.departureService = departureService;
         this.orderService = orderService;
@@ -138,6 +143,7 @@ public class AdminController {
         this.userRoleMapper = userRoleMapper;
         this.passwordEncoder = passwordEncoder;
         this.authService = authService;
+        this.guideService = guideService;
     }
 
     @GetMapping("/dashboard")
@@ -416,30 +422,21 @@ public class AdminController {
     }
 
     @PostMapping("/guides")
-    public ApiResponse<GuideView> createGuide(@RequestBody Guide guide) {
-        if (guide.status == null) {
-            guide.status = "ACTIVE";
-        }
-        guideMapper.insert(guide);
-        Guide saved = guideMapper.selectById(guide.id);
-        Guide result = saved == null ? guide : saved;
-        return ApiResponse.ok(GuideView.from(result, usernameOf(result.userId)));
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<ApiResponse<GuideView>> createGuide(@Valid @RequestBody GuideAccountRequest request) {
+        GuideView guide = guideService.create(request);
+        return ResponseEntity.created(URI.create("/api/admin/guides/" + guide.id())).body(ApiResponse.ok(guide));
     }
 
     @PutMapping("/guides/{id}")
-    public ApiResponse<GuideView> updateGuide(@PathVariable Long id, @RequestBody Guide guide) {
-        guide.id = id;
-        guideMapper.updateById(guide);
-        // 回查带回 created_at / updated_at（契约 Guide 要求），并补齐 username。
-        Guide saved = guideMapper.selectById(id);
-        return ApiResponse.ok(GuideView.from(saved == null ? guide : saved, usernameOf(guide.userId)));
+    public ApiResponse<GuideView> updateGuide(@PathVariable Long id, @Valid @RequestBody GuideUpdateRequest request) {
+        return ApiResponse.ok(guideService.update(id, request));
     }
 
     @PatchMapping("/guides/{id}/status")
-    public ApiResponse<Void> updateGuideStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
-        guideMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Guide>()
-                .eq("id", id).set("status", request.status()));
-        return ApiResponse.ok();
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<GuideView> updateGuideStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
+        return ApiResponse.ok(guideService.updateStatus(id, request.status()));
     }
 
     @GetMapping("/orders")
@@ -572,22 +569,6 @@ public class AdminController {
         staff.position = request.position();
         staffMapper.insert(staff);
         return ApiResponse.ok(staff);
-    }
-
-    @PostMapping("/guides/account")
-    @PreAuthorize("hasRole('ADMIN')")
-    @Transactional
-    public ApiResponse<GuideView> createGuideAccount(@Valid @RequestBody GuideAccountRequest request) {
-        SysUser user = createAccount(request.username(), request.password(), request.name(), request.phone(), RoleCode.GUIDE);
-        Guide guide = new Guide();
-        guide.userId = user.id;
-        guide.name = request.name();
-        guide.phone = request.phone();
-        guide.intro = request.intro();
-        guide.status = "ACTIVE";
-        guideMapper.insert(guide);
-        Guide saved = guideMapper.selectById(guide.id);
-        return ApiResponse.ok(GuideView.from(saved == null ? guide : saved, user.username));
     }
 
     /**

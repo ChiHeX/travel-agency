@@ -1,6 +1,8 @@
 package com.travelagency.domain.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.travelagency.common.enums.DepartureStatus;
+import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.domain.dto.HomeView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.TravelRoute;
@@ -29,26 +31,31 @@ public class HomeService {
                 .orderByDesc("valid_booking_count").orderByAsc("id").last("LIMIT 8"));
         var recommended = routes.selectList(published().orderByDesc("rating_avg", "rating_count", "created_at")
                 .orderByAsc("id").last("LIMIT 8"));
-        var upcoming = routes.selectList(published().apply("EXISTS (SELECT 1 FROM departure d "
-                + "WHERE d.route_id = travel_route.id AND d.status = 'OPEN' AND d.start_date >= CURRENT_DATE() "
-                + "AND d.reserved_people + d.confirmed_people < d.max_people)")
-                .orderByAsc("(SELECT MIN(d.start_date) FROM departure d WHERE d.route_id = travel_route.id "
-                        + "AND d.status = 'OPEN' AND d.start_date >= CURRENT_DATE() "
-                        + "AND d.reserved_people + d.confirmed_people < d.max_people)", "id").last("LIMIT 8"));
-        return new HomeView(routes.popularDestinations(), views(popular), views(recommended), views(upcoming));
+        var upcoming = routes.selectUpcomingRoutes(RouteStatus.PUBLISHED, DepartureStatus.OPEN);
+        var routeIds = List.of(popular, recommended, upcoming).stream()
+                .flatMap(List::stream)
+                .map(route -> route.id)
+                .distinct()
+                .toList();
+        Map<Long, List<Departure>> departuresByRoute = availableDepartures(routeIds);
+        return new HomeView(routes.popularDestinations(), views(popular, departuresByRoute),
+                views(recommended, departuresByRoute), views(upcoming, departuresByRoute));
     }
 
     private QueryWrapper<TravelRoute> published() {
-        return new QueryWrapper<TravelRoute>().eq("status", "PUBLISHED").eq("deleted", 0);
+        return new QueryWrapper<TravelRoute>().eq("status", RouteStatus.PUBLISHED).eq("deleted", 0);
     }
 
-    private List<HomeView.Route> views(List<TravelRoute> items) {
-        if (items.isEmpty()) return List.of();
-        Map<Long, List<Departure>> byRoute = departures.selectList(new QueryWrapper<Departure>()
-                .in("route_id", items.stream().map(route -> route.id).toList())
-                .eq("status", "OPEN").ge("start_date", LocalDate.now())
+    private Map<Long, List<Departure>> availableDepartures(List<Long> routeIds) {
+        if (routeIds.isEmpty()) return Map.of();
+        return departures.selectList(new QueryWrapper<Departure>()
+                .in("route_id", routeIds)
+                .eq("status", DepartureStatus.OPEN).ge("start_date", LocalDate.now())
                 .apply("reserved_people + confirmed_people < max_people"))
                 .stream().collect(Collectors.groupingBy(departure -> departure.routeId));
+    }
+
+    private List<HomeView.Route> views(List<TravelRoute> items, Map<Long, List<Departure>> byRoute) {
         return items.stream().map(route -> {
             var available = byRoute.getOrDefault(route.id, List.of());
             BigDecimal price = available.stream().map(d -> d.adultPrice).min(BigDecimal::compareTo).orElse(null);

@@ -30,4 +30,15 @@ class JwtTokenProviderTest {
 
         assertThrows(IllegalArgumentException.class, () -> provider.parse(tampered));
     }
+
+    @Test
+    void refusesMissingSecret() {
+        assertThrows(IllegalStateException.class, () -> new JwtTokenProvider("", 1));
+        assertThrows(IllegalStateException.class, () -> new JwtTokenProvider(null, 1));
+    }
+
+    @Test
+    void refusesShortSecret() {
+        assertThrows(IllegalStateException.class, () -> new JwtTokenProvider("too-short", 1));
+    }
 }

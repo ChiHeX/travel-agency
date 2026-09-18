@@ -116,6 +116,15 @@ AMAP_ENABLED / AMAP_WEB_KEY
 ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_CALLBACK_SECRET
 ```
 
+其中 `JWT_SECRET` 与 `ALIPAY_CALLBACK_SECRET` 为必填：不提供默认值，缺失时应用会在启动阶段失败（fail-fast），
+不会静默退回到源码里的占位密钥。本地开发请注入至少 32 字节的随机字符串，例如：
+
+```powershell
+# PowerShell
+$env:JWT_SECRET = "请替换为至少32字节的随机字符串"
+$env:ALIPAY_CALLBACK_SECRET = "请替换为回调共享密钥"
+```
+
 目标支付宝异步通知入口为 `POST /api/payments/alipay/notify`。后端正式实现时必须接入支付宝沙箱官方签名校验，并核对商户、订单号和金额，业务层只接受验签后的结果；浏览器跳转不能作为支付成功依据。
 
 ## 验证命令

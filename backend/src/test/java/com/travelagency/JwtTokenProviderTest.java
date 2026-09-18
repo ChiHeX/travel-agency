@@ -26,7 +26,10 @@ class JwtTokenProviderTest {
     @Test
     void rejectsTamperedToken() {
         String token = provider.createToken(7L, "alice", Set.of("USER"));
-        String tampered = token.substring(0, token.length() - 1) + (token.endsWith("a") ? "b" : "a");
+        int signatureStart = token.lastIndexOf('.') + 1;
+        char original = token.charAt(signatureStart);
+        String tampered = token.substring(0, signatureStart) + (original == 'a' ? 'b' : 'a')
+                + token.substring(signatureStart + 1);
 
         assertThrows(IllegalArgumentException.class, () -> provider.parse(tampered));
     }

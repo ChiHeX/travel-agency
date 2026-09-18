@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.DepartureView;
@@ -62,6 +63,10 @@ import java.util.stream.Collectors;
  *   <li>同一线路的 dayNumber、同一日行程的 sortNo 都必须唯一；</li>
  *   <li>行程引用的酒店、景点必须真实存在，避免外键约束报错或产生脏数据。</li>
  * </ol></p>
+ *
+ * <p>写操作同时负责记录操作日志：业务数据与 {@code operation_log} 在同一个
+ * {@code @Transactional} 方法内提交，两者要么一起成功、要么一起回滚，
+ * 不会出现"接口报错但线路已经创建"的情况。操作人由调用方显式传入。</p>
  */
 @Service
 public class AdminRouteService {
@@ -80,6 +85,7 @@ public class AdminRouteService {
     private final HotelMapper hotelMapper;
     private final AttractionMapper attractionMapper;
     private final OrderService orderService;
+    private final OperationLogRecorder operationLog;
 
     public AdminRouteService(
             TravelRouteMapper routeMapper,
@@ -89,7 +95,8 @@ public class AdminRouteService {
             GuideMapper guideMapper,
             HotelMapper hotelMapper,
             AttractionMapper attractionMapper,
-            OrderService orderService) {
+            OrderService orderService,
+            OperationLogRecorder operationLog) {
         this.routeMapper = routeMapper;
         this.departureMapper = departureMapper;
         this.dayMapper = dayMapper;
@@ -98,6 +105,7 @@ public class AdminRouteService {
         this.hotelMapper = hotelMapper;
         this.attractionMapper = attractionMapper;
         this.orderService = orderService;
+        this.operationLog = operationLog;
     }
 
     // ------------------------------------------------------------------
@@ -172,6 +180,8 @@ public class AdminRouteService {
         route.createdBy = operatorId;
         route.deleted = 0;
         routeMapper.insert(route);
+        // 日志与业务写入同事务：日志写失败会连同线路一起回滚，不会留下"报错但已创建"的数据。
+        operationLog.record(operatorId, "线路", "CREATE", "ROUTE", route.id, "创建线路：" + route.name);
         // 回查以带回数据库默认值（created_at / updated_at）并保证响应与契约一致。
         return toRouteView(requireRoute(route.id));
     }
@@ -183,7 +193,7 @@ public class AdminRouteService {
      * 状态、评分、报名人次不在请求契约内，不会被这次修改影响。</p>
      */
     @Transactional
-    public RouteView update(Long routeId, RouteUpsertRequest request) {
+    public RouteView update(Long routeId, RouteUpsertRequest request, Long operatorId) {
         requireRoute(routeId);
         routeMapper.update(null, new UpdateWrapper<TravelRoute>().eq("id", routeId)
                 .set("name", trimToNull(request.name()))
@@ -195,6 +205,7 @@ public class AdminRouteService {
                 .set("included", trimToNull(request.included()))
                 .set("excluded", trimToNull(request.excluded()))
                 .set("booking_notice", trimToNull(request.bookingNotice())));
+        operationLog.record(operatorId, "线路", "UPDATE", "ROUTE", routeId, "编辑线路：" + request.name());
         return toRouteView(requireRoute(routeId));
     }
 
@@ -205,7 +216,7 @@ public class AdminRouteService {
      * 避免上架一条无法销售的线路。重复上架/下架是幂等的，直接返回当前线路。</p>
      */
     @Transactional
-    public RouteView updateStatus(Long routeId, String status) {
+    public RouteView updateStatus(Long routeId, String status, Long operatorId) {
         if (status == null || (!RouteStatus.PUBLISHED.equals(status) && !RouteStatus.OFFLINE.equals(status))) {
             throw new BusinessException(422, "VALIDATION_ERROR", "线路状态只能是 PUBLISHED 或 OFFLINE");
         }
@@ -216,6 +227,7 @@ public class AdminRouteService {
         }
         if (!status.equals(route.status)) {
             routeMapper.update(null, new UpdateWrapper<TravelRoute>().eq("id", routeId).set("status", status));
+            operationLog.record(operatorId, "线路", "STATUS", "ROUTE", routeId, "线路状态变更为 " + status);
         }
         return toRouteView(requireRoute(routeId));
     }
@@ -241,7 +253,7 @@ public class AdminRouteService {
 
     /** 新增每日行程，对齐契约 POST /admin/routes/{routeId}/itinerary-days（201 + Location）。 */
     @Transactional
-    public ItineraryDayView createDay(Long routeId, ItineraryDayRequest request) {
+    public ItineraryDayView createDay(Long routeId, ItineraryDayRequest request, Long operatorId) {
         TravelRoute route = requireRoute(routeId);
         if (RouteStatus.PUBLISHED.equals(route.status)) {
             throw new BusinessException(409, "ROUTE_STATE_CONFLICT", "线路已上架，请先下架再调整行程结构");
@@ -260,12 +272,14 @@ public class AdminRouteService {
         day.meals = trimToNull(request.meals());
         day.hotelId = request.hotelId();
         dayMapper.insert(day);
+        operationLog.record(operatorId, "行程", "CREATE", "ITINERARY_DAY", day.id,
+                "线路 " + routeId + " 新增第 " + day.dayNumber + " 天行程");
         return toDayView(dayMapper.selectById(day.id), List.of(), hotel == null ? null : hotel.name);
     }
 
     /** 修改每日行程，对齐契约 PUT /admin/itinerary-days/{dayId}。 */
     @Transactional
-    public ItineraryDayView updateDay(Long dayId, ItineraryDayRequest request) {
+    public ItineraryDayView updateDay(Long dayId, ItineraryDayRequest request, Long operatorId) {
         RouteItineraryDay day = requireDay(dayId);
         Hotel hotel = requireHotel(request.hotelId());
         if (dayNumberExists(day.routeId, request.dayNumber(), dayId)) {
@@ -281,6 +295,8 @@ public class AdminRouteService {
                 .set("transportation", trimToNull(request.transportation()))
                 .set("meals", trimToNull(request.meals()))
                 .set("hotel_id", request.hotelId()));
+        operationLog.record(operatorId, "行程", "UPDATE", "ITINERARY_DAY", dayId,
+                "修改第 " + request.dayNumber() + " 天行程");
         return toDayView(requireDay(dayId), itemsOf(dayId), hotel == null ? null : hotel.name);
     }
 
@@ -290,7 +306,7 @@ public class AdminRouteService {
      * <p>已上架线路的行程结构不允许删除（409），避免改动正在销售的产品。</p>
      */
     @Transactional
-    public void deleteDay(Long dayId) {
+    public void deleteDay(Long dayId, Long operatorId) {
         RouteItineraryDay day = requireDay(dayId);
         TravelRoute route = requireRoute(day.routeId);
         if (RouteStatus.PUBLISHED.equals(route.status)) {
@@ -299,6 +315,8 @@ public class AdminRouteService {
         // 先删项目再删当天，避免留下悬挂的行程项目（外键要求先删子记录）。
         itemMapper.delete(new QueryWrapper<RouteItineraryItem>().eq("day_id", dayId));
         dayMapper.deleteById(dayId);
+        operationLog.record(operatorId, "行程", "DELETE", "ITINERARY_DAY", dayId,
+                "删除线路 " + day.routeId + " 的第 " + day.dayNumber + " 天行程及其项目");
     }
 
     // ------------------------------------------------------------------
@@ -313,7 +331,7 @@ public class AdminRouteService {
 
     /** 新增行程项目，对齐契约 POST /admin/itinerary-days/{dayId}/items（201 + Location）。 */
     @Transactional
-    public ItineraryItemView createItem(Long dayId, ItineraryItemRequest request) {
+    public ItineraryItemView createItem(Long dayId, ItineraryItemRequest request, Long operatorId) {
         RouteItineraryDay day = requireDay(dayId);
         requireItemType(request.itemType());
         Attraction attraction = requireAttraction(request.attractionId());
@@ -324,13 +342,15 @@ public class AdminRouteService {
         item.dayId = dayId;
         applyItemFields(item, request, attraction);
         itemMapper.insert(item);
+        operationLog.record(operatorId, "行程", "CREATE", "ITINERARY_ITEM", item.id,
+                "第 " + day.dayNumber + " 天新增行程项目：" + item.name);
         // 回查以带回数据库默认值，返回与契约一致的视图。
         return ItineraryItemView.from(itemMapper.selectById(item.id));
     }
 
     /** 修改行程项目，对齐契约 PUT /admin/itinerary-items/{itemId}。 */
     @Transactional
-    public ItineraryItemView updateItem(Long itemId, ItineraryItemRequest request) {
+    public ItineraryItemView updateItem(Long itemId, ItineraryItemRequest request, Long operatorId) {
         RouteItineraryItem item = requireItem(itemId);
         requireItemType(request.itemType());
         Attraction attraction = requireAttraction(request.attractionId());
@@ -345,14 +365,18 @@ public class AdminRouteService {
                 .set("attraction_id", request.attractionId())
                 .set("longitude", coordinates(request.longitude(), attraction == null ? null : attraction.longitude))
                 .set("latitude", coordinates(request.latitude(), attraction == null ? null : attraction.latitude)));
+        operationLog.record(operatorId, "行程", "UPDATE", "ITINERARY_ITEM", itemId,
+                "修改行程项目：" + trimToNull(request.name()));
         return ItineraryItemView.from(requireItem(itemId));
     }
 
     /** 删除行程项目，对齐契约 DELETE /admin/itinerary-items/{itemId}（204）。 */
     @Transactional
-    public void deleteItem(Long itemId) {
-        requireItem(itemId);
+    public void deleteItem(Long itemId, Long operatorId) {
+        RouteItineraryItem item = requireItem(itemId);
         itemMapper.deleteById(itemId);
+        operationLog.record(operatorId, "行程", "DELETE", "ITINERARY_ITEM", itemId,
+                "删除第 " + item.dayId + " 天的行程项目：" + item.name);
     }
 
     // ------------------------------------------------------------------

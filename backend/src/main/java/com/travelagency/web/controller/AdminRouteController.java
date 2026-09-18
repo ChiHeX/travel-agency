@@ -2,7 +2,6 @@ package com.travelagency.web.controller;
 
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
-import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.ItineraryDayRequest;
 import com.travelagency.domain.dto.ItineraryDayView;
@@ -54,11 +53,9 @@ import java.util.List;
 public class AdminRouteController {
 
     private final AdminRouteService adminRouteService;
-    private final OperationLogRecorder operationLog;
 
-    public AdminRouteController(AdminRouteService adminRouteService, OperationLogRecorder operationLog) {
+    public AdminRouteController(AdminRouteService adminRouteService) {
         this.adminRouteService = adminRouteService;
-        this.operationLog = operationLog;
     }
 
     // ------------------------------------------------------------------
@@ -79,7 +76,6 @@ public class AdminRouteController {
     @PostMapping("/routes")
     public ResponseEntity<ApiResponse<RouteView>> createRoute(@Valid @RequestBody RouteUpsertRequest request) {
         RouteView route = adminRouteService.create(request, CurrentUser.required().userId());
-        operationLog.record("线路", "CREATE", "ROUTE", route.id(), "创建线路：" + route.name());
         return ResponseEntity.created(URI.create("/api/admin/routes/" + route.id())).body(ApiResponse.ok(route));
     }
 
@@ -93,8 +89,7 @@ public class AdminRouteController {
     @PutMapping("/routes/{routeId}")
     public ApiResponse<RouteView> updateRoute(
             @PathVariable Long routeId, @Valid @RequestBody RouteUpsertRequest request) {
-        RouteView route = adminRouteService.update(routeId, request);
-        operationLog.record("线路", "UPDATE", "ROUTE", routeId, "编辑线路：" + route.name());
+        RouteView route = adminRouteService.update(routeId, request, CurrentUser.required().userId());
         return ApiResponse.ok(route);
     }
 
@@ -102,8 +97,7 @@ public class AdminRouteController {
     @PatchMapping("/routes/{routeId}/status")
     public ApiResponse<RouteView> updateRouteStatus(
             @PathVariable Long routeId, @Valid @RequestBody RouteStatusUpdateRequest request) {
-        RouteView route = adminRouteService.updateStatus(routeId, request.status());
-        operationLog.record("线路", "STATUS", "ROUTE", routeId, "线路状态变更为 " + route.status());
+        RouteView route = adminRouteService.updateStatus(routeId, request.status(), CurrentUser.required().userId());
         return ApiResponse.ok(route);
     }
 
@@ -121,9 +115,7 @@ public class AdminRouteController {
     @PostMapping("/routes/{routeId}/itinerary-days")
     public ResponseEntity<ApiResponse<ItineraryDayView>> createItineraryDay(
             @PathVariable Long routeId, @Valid @RequestBody ItineraryDayRequest request) {
-        ItineraryDayView day = adminRouteService.createDay(routeId, request);
-        operationLog.record("行程", "CREATE", "ITINERARY_DAY", day.id(),
-                "线路 " + routeId + " 新增第 " + day.dayNumber() + " 天行程");
+        ItineraryDayView day = adminRouteService.createDay(routeId, request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/itinerary-days/" + day.id()))
                 .body(ApiResponse.ok(day));
     }
@@ -132,16 +124,14 @@ public class AdminRouteController {
     @PutMapping("/itinerary-days/{dayId}")
     public ApiResponse<ItineraryDayView> updateItineraryDay(
             @PathVariable Long dayId, @Valid @RequestBody ItineraryDayRequest request) {
-        ItineraryDayView day = adminRouteService.updateDay(dayId, request);
-        operationLog.record("行程", "UPDATE", "ITINERARY_DAY", dayId, "修改第 " + day.dayNumber() + " 天行程");
+        ItineraryDayView day = adminRouteService.updateDay(dayId, request, CurrentUser.required().userId());
         return ApiResponse.ok(day);
     }
 
     /** 删除每日行程及其项目，对齐契约 DELETE /admin/itinerary-days/{dayId}（204）。 */
     @DeleteMapping("/itinerary-days/{dayId}")
     public ResponseEntity<Void> deleteItineraryDay(@PathVariable Long dayId) {
-        adminRouteService.deleteDay(dayId);
-        operationLog.record("行程", "DELETE", "ITINERARY_DAY", dayId, "删除每日行程及其项目");
+        adminRouteService.deleteDay(dayId, CurrentUser.required().userId());
         return ResponseEntity.noContent().build();
     }
 
@@ -159,8 +149,7 @@ public class AdminRouteController {
     @PostMapping("/itinerary-days/{dayId}/items")
     public ResponseEntity<ApiResponse<ItineraryItemView>> createItineraryItem(
             @PathVariable Long dayId, @Valid @RequestBody ItineraryItemRequest request) {
-        ItineraryItemView item = adminRouteService.createItem(dayId, request);
-        operationLog.record("行程", "CREATE", "ITINERARY_ITEM", item.id(), "新增行程项目：" + item.name());
+        ItineraryItemView item = adminRouteService.createItem(dayId, request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/itinerary-items/" + item.id()))
                 .body(ApiResponse.ok(item));
     }
@@ -169,16 +158,14 @@ public class AdminRouteController {
     @PutMapping("/itinerary-items/{itemId}")
     public ApiResponse<ItineraryItemView> updateItineraryItem(
             @PathVariable Long itemId, @Valid @RequestBody ItineraryItemRequest request) {
-        ItineraryItemView item = adminRouteService.updateItem(itemId, request);
-        operationLog.record("行程", "UPDATE", "ITINERARY_ITEM", itemId, "修改行程项目：" + item.name());
+        ItineraryItemView item = adminRouteService.updateItem(itemId, request, CurrentUser.required().userId());
         return ApiResponse.ok(item);
     }
 
     /** 删除行程项目，对齐契约 DELETE /admin/itinerary-items/{itemId}（204）。 */
     @DeleteMapping("/itinerary-items/{itemId}")
     public ResponseEntity<Void> deleteItineraryItem(@PathVariable Long itemId) {
-        adminRouteService.deleteItem(itemId);
-        operationLog.record("行程", "DELETE", "ITINERARY_ITEM", itemId, "删除行程项目");
+        adminRouteService.deleteItem(itemId, CurrentUser.required().userId());
         return ResponseEntity.noContent().build();
     }
 }

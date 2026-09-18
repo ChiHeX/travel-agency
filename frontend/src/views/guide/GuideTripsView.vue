@@ -10,10 +10,16 @@ const rows = ref([])
 const data = ref(null)
 const loading = ref(false)
 
+const itemTypeNames = {
+  ATTRACTION: '景点', TRANSPORT: '交通', MEAL: '餐食', ACTIVITY: '活动', OTHER: '其他'
+}
+
 async function load() {
   loading.value = true
   try {
     if (props.detail) {
+      // 契约：GET /guide/departures/{id} 返回 { departure, route, itinerary }；
+      // 游客名单由 /passengers 独立接口提供，两者并行请求。
       const [detail, passengers] = await Promise.all([
         guideApi.detail(currentRoute.params.id),
         guideApi.passengers(currentRoute.params.id)
@@ -61,11 +67,61 @@ onMounted(load)
       <template v-else-if="data">
         <div class="admin-panel trip-hero-card">
           <span class="eyebrow">SCHEDULE #{{ data.departure.id }}</span>
-          <h3>跟团线路编号 #{{ data.departure.routeId }}</h3>
+          <h3>{{ data.route?.name || `跟团线路 #${data.departure.routeId}` }}</h3>
           <div class="trip-meta-tags">
+            <span v-if="data.route">{{ data.route.departureCity }} → {{ data.route.destination }} · {{ data.route.durationDays }} 天</span>
+            <span>·</span>
             <span>出团日期：{{ data.departure.startDate }} 至 {{ data.departure.endDate }}</span>
             <span>·</span>
             <span>当前状态：<strong class="tag success">{{ data.departure.status }}</strong></span>
+          </div>
+        </div>
+
+        <div class="admin-panel">
+          <div class="panel-head-flex">
+            <div>
+              <span class="eyebrow">ITINERARY</span>
+              <h3>出团每日行程 (共 {{ data.itinerary?.length || 0 }} 天)</h3>
+            </div>
+            <span class="privacy-hint">按线路维护的行程安排，供带团执行时核对</span>
+          </div>
+
+          <div v-if="data.itinerary?.length" class="day-list">
+            <article v-for="day in data.itinerary" :key="day.id" class="day-card">
+              <header class="day-head">
+                <strong>第 {{ day.dayNumber }} 天 · {{ day.title }}</strong>
+                <div class="day-meta">
+                  <span>交通：{{ day.transportation || '未填写' }}</span>
+                  <span>餐食：{{ day.meals || '未填写' }}</span>
+                  <span>酒店：{{ day.hotelName || '未安排' }}</span>
+                </div>
+              </header>
+              <p v-if="day.description" class="day-description">{{ day.description }}</p>
+
+              <table v-if="day.items?.length" class="data-table inner-table">
+                <thead>
+                  <tr>
+                    <th style="width: 70px;">排序</th>
+                    <th style="width: 90px;">类型</th>
+                    <th>名称</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in day.items" :key="item.id">
+                    <td>{{ item.sortNo }}</td>
+                    <td><span class="tag">{{ itemTypeNames[item.itemType] || item.itemType }}</span></td>
+                    <td><strong>{{ item.name }}</strong></td>
+                    <td>{{ item.description || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="empty-inline">该天暂未配置行程项目。</p>
+            </article>
+          </div>
+
+          <div v-else class="empty-box">
+            该线路暂未维护每日行程，请联系旅行社运营人员补充后再出团。
           </div>
         </div>
 
@@ -181,6 +237,49 @@ onMounted(load)
 }
 
 .privacy-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.day-list {
+  display: grid;
+  gap: 14px;
+}
+
+.day-card {
+  border: 1px solid var(--border-divider);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--bg-subtle, #fafafa);
+}
+
+.day-head strong {
+  font-size: 14px;
+}
+
+.day-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.day-description {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.inner-table {
+  margin-top: 12px;
+  background: white;
+  border-radius: 10px;
+}
+
+.empty-inline {
+  margin: 10px 0 0;
   font-size: 12px;
   color: var(--text-tertiary);
 }

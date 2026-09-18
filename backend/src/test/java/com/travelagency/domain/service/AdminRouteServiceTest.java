@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.ItineraryDayRequest;
@@ -58,6 +59,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -80,6 +82,9 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class AdminRouteServiceTest {
 
+    /** 模拟登录后台操作人（Controller 传入 CurrentUser.required().userId()）。 */
+    private static final long ACTOR = 99L;
+
     @Mock private TravelRouteMapper routeMapper;
     @Mock private DepartureMapper departureMapper;
     @Mock private RouteItineraryDayMapper dayMapper;
@@ -88,13 +93,14 @@ class AdminRouteServiceTest {
     @Mock private HotelMapper hotelMapper;
     @Mock private AttractionMapper attractionMapper;
     @Mock private OrderService orderService;
+    @Mock private OperationLogRecorder operationLog;
 
     private AdminRouteService service;
 
     @BeforeEach
     void setUp() {
         service = new AdminRouteService(routeMapper, departureMapper, dayMapper, itemMapper,
-                guideMapper, hotelMapper, attractionMapper, orderService);
+                guideMapper, hotelMapper, attractionMapper, orderService, operationLog);
     }
 
     // ------------------------------------------------------------------
@@ -202,7 +208,7 @@ class AdminRouteServiceTest {
         when(departureMapper.selectMaps(any())).thenReturn(List.of());
         when(departureMapper.selectList(any())).thenReturn(List.of());
 
-        RouteView view = service.create(upsert("  云南 6 日  ", "上海", "云南", 6), 99L);
+        RouteView view = service.create(upsert("  云南 6 日  ", "上海", "云南", 6), ACTOR);
 
         ArgumentCaptor<TravelRoute> captor = ArgumentCaptor.forClass(TravelRoute.class);
         verify(routeMapper).insert(captor.capture());
@@ -232,7 +238,7 @@ class AdminRouteServiceTest {
 
         RouteUpsertRequest request = new RouteUpsertRequest(
                 "线路", "上海", "云南", 3, "   ", "  ", "", null, " 须知 ");
-        service.create(request, 1L);
+        service.create(request, ACTOR);
 
         ArgumentCaptor<TravelRoute> captor = ArgumentCaptor.forClass(TravelRoute.class);
         verify(routeMapper).insert(captor.capture());
@@ -250,7 +256,7 @@ class AdminRouteServiceTest {
         when(departureMapper.selectMaps(any())).thenReturn(List.of());
         when(departureMapper.selectList(any())).thenReturn(List.of());
 
-        service.update(3L, new RouteUpsertRequest("新名称", "北京", "新疆", 8, null, null, null, null, null));
+        service.update(3L, new RouteUpsertRequest("新名称", "北京", "新疆", 8, null, null, null, null, null), ACTOR);
 
         ArgumentCaptor<Wrapper<TravelRoute>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(routeMapper).update(isNull(), captor.capture());
@@ -270,7 +276,7 @@ class AdminRouteServiceTest {
         when(routeMapper.selectById(4L)).thenReturn(deleted);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.update(4L, upsert("线路", "上海", "云南", 3)));
+                () -> service.update(4L, upsert("线路", "上海", "云南", 3), ACTOR));
 
         assertEquals(404, ex.getStatus());
         verify(routeMapper, never()).update(any(), any());
@@ -284,7 +290,7 @@ class AdminRouteServiceTest {
     @DisplayName("上下架：只接受 PUBLISHED / OFFLINE，非法值 422 且不访问数据库")
     void updateStatusRejectsOtherStatuses() {
         for (String invalid : new String[]{null, "DRAFT", "ON_SALE", ""}) {
-            BusinessException ex = assertThrows(BusinessException.class, () -> service.updateStatus(1L, invalid));
+            BusinessException ex = assertThrows(BusinessException.class, () -> service.updateStatus(1L, invalid, ACTOR));
             assertEquals(422, ex.getStatus());
             assertEquals("VALIDATION_ERROR", ex.getCode());
         }
@@ -297,7 +303,7 @@ class AdminRouteServiceTest {
         when(routeMapper.selectById(5L)).thenReturn(route(5L, "空线路", "DRAFT"));
         when(dayMapper.selectCount(any())).thenReturn(0L);
 
-        BusinessException ex = assertThrows(BusinessException.class, () -> service.updateStatus(5L, "PUBLISHED"));
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.updateStatus(5L, "PUBLISHED", ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("ROUTE_STATE_CONFLICT", ex.getCode());
@@ -314,7 +320,7 @@ class AdminRouteServiceTest {
         when(departureMapper.selectMaps(any())).thenReturn(List.of());
         when(departureMapper.selectList(any())).thenReturn(List.of());
 
-        RouteView view = service.updateStatus(6L, "PUBLISHED");
+        RouteView view = service.updateStatus(6L, "PUBLISHED", ACTOR);
 
         ArgumentCaptor<Wrapper<TravelRoute>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(routeMapper).update(isNull(), captor.capture());
@@ -329,7 +335,7 @@ class AdminRouteServiceTest {
         when(departureMapper.selectMaps(any())).thenReturn(List.of());
         when(departureMapper.selectList(any())).thenReturn(List.of());
 
-        RouteView view = service.updateStatus(7L, "PUBLISHED");
+        RouteView view = service.updateStatus(7L, "PUBLISHED", ACTOR);
 
         assertEquals("PUBLISHED", view.status());
         verify(routeMapper, never()).update(any(), any());
@@ -344,7 +350,7 @@ class AdminRouteServiceTest {
         when(departureMapper.selectMaps(any())).thenReturn(List.of());
         when(departureMapper.selectList(any())).thenReturn(List.of());
 
-        assertEquals("OFFLINE", service.updateStatus(8L, "OFFLINE").status());
+        assertEquals("OFFLINE", service.updateStatus(8L, "OFFLINE", ACTOR).status());
         verify(dayMapper, never()).selectCount(any());
     }
 
@@ -393,7 +399,7 @@ class AdminRouteServiceTest {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "已上架", "PUBLISHED"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null)));
+                () -> service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("ROUTE_STATE_CONFLICT", ex.getCode());
@@ -406,12 +412,12 @@ class AdminRouteServiceTest {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
         when(hotelMapper.selectById(999L)).thenReturn(null);
         BusinessException hotelMissing = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 999L)));
+                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 999L), ACTOR));
         assertEquals(422, hotelMissing.getStatus());
 
         when(dayMapper.selectCount(any())).thenReturn(1L);
         BusinessException duplicated = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, null)));
+                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, null), ACTOR));
         assertEquals(409, duplicated.getStatus());
         verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
     }
@@ -433,7 +439,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, " 上海 → 昆明 ", 5L));
 
         ItineraryDayView view = service.createDay(21L,
-                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ", 5L));
+                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ", 5L), ACTOR);
 
         ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
         verify(dayMapper).insert(captor.capture());
@@ -452,7 +458,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(1L);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.updateDay(11L, new ItineraryDayRequest(2, "冲突", null, null, null, null)));
+                () -> service.updateDay(11L, new ItineraryDayRequest(2, "冲突", null, null, null, null), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -466,7 +472,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(itemMapper.selectList(any())).thenReturn(List.of());
 
-        service.updateDay(11L, new ItineraryDayRequest(2, "第二天", null, null, null, null));
+        service.updateDay(11L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
 
         ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(dayMapper).update(isNull(), captor.capture());
@@ -481,7 +487,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
 
-        service.deleteDay(11L);
+        service.deleteDay(11L, ACTOR);
 
         InOrder order = inOrder(itemMapper, dayMapper);
         order.verify(itemMapper).delete(any());
@@ -494,7 +500,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "已上架", "PUBLISHED"));
 
-        BusinessException ex = assertThrows(BusinessException.class, () -> service.deleteDay(11L));
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.deleteDay(11L, ACTOR));
 
         assertEquals(409, ex.getStatus());
         verify(itemMapper, never()).delete(any());
@@ -522,12 +528,12 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
 
         BusinessException badType = assertThrows(BusinessException.class,
-                () -> service.createItem(11L, itemRequest(1, "SHOPPING", "购物店", null, null, null)));
+                () -> service.createItem(11L, itemRequest(1, "SHOPPING", "购物店", null, null, null), ACTOR));
         assertEquals(422, badType.getStatus());
 
         when(attractionMapper.selectById(999L)).thenReturn(null);
         BusinessException badAttraction = assertThrows(BusinessException.class,
-                () -> service.createItem(11L, itemRequest(1, "ATTRACTION", "大理古城", 999L, null, null)));
+                () -> service.createItem(11L, itemRequest(1, "ATTRACTION", "大理古城", 999L, null, null), ACTOR));
         assertEquals(422, badAttraction.getStatus());
 
         verify(itemMapper, never()).insert(any(RouteItineraryItem.class));
@@ -540,7 +546,7 @@ class AdminRouteServiceTest {
         when(itemMapper.selectCount(any())).thenReturn(1L);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.createItem(11L, itemRequest(1, "MEAL", "午餐", null, null, null)));
+                () -> service.createItem(11L, itemRequest(1, "MEAL", "午餐", null, null, null), ACTOR));
 
         assertEquals(422, ex.getStatus());
         verify(itemMapper, never()).insert(any(RouteItineraryItem.class));
@@ -564,7 +570,7 @@ class AdminRouteServiceTest {
         });
         when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "ATTRACTION", "大理古城"));
 
-        service.createItem(11L, itemRequest(1, "ATTRACTION", "大理古城", 5L, null, null));
+        service.createItem(11L, itemRequest(1, "ATTRACTION", "大理古城", 5L, null, null), ACTOR);
 
         ArgumentCaptor<RouteItineraryItem> captor = ArgumentCaptor.forClass(RouteItineraryItem.class);
         verify(itemMapper).insert(captor.capture());
@@ -585,7 +591,7 @@ class AdminRouteServiceTest {
         });
         when(itemMapper.selectById(32L)).thenReturn(item(32L, 11L, 1, "OTHER", "自由活动"));
 
-        service.createItem(11L, itemRequest(1, "OTHER", "自由活动", null, 121.4737, 31.2304));
+        service.createItem(11L, itemRequest(1, "OTHER", "自由活动", null, 121.4737, 31.2304), ACTOR);
 
         ArgumentCaptor<RouteItineraryItem> captor = ArgumentCaptor.forClass(RouteItineraryItem.class);
         verify(itemMapper).insert(captor.capture());
@@ -600,12 +606,12 @@ class AdminRouteServiceTest {
         when(itemMapper.selectCount(any())).thenReturn(1L);
 
         BusinessException conflict = assertThrows(BusinessException.class,
-                () -> service.updateItem(31L, itemRequest(9, "ATTRACTION", "大理古城", null, null, null)));
+                () -> service.updateItem(31L, itemRequest(9, "ATTRACTION", "大理古城", null, null, null), ACTOR));
         assertEquals(422, conflict.getStatus());
         verify(itemMapper, never()).update(any(), any());
 
         when(itemMapper.selectCount(any())).thenReturn(0L);
-        service.updateItem(31L, itemRequest(2, "ACTIVITY", "洱海骑行", null, null, null));
+        service.updateItem(31L, itemRequest(2, "ACTIVITY", "洱海骑行", null, null, null), ACTOR);
 
         ArgumentCaptor<Wrapper<RouteItineraryItem>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(itemMapper).update(isNull(), captor.capture());
@@ -618,10 +624,10 @@ class AdminRouteServiceTest {
     @DisplayName("删除项目：不存在返回 404，存在则按 id 删除")
     void deleteItemRequiresExistence() {
         when(itemMapper.selectById(404L)).thenReturn(null);
-        assertEquals(404, assertThrows(BusinessException.class, () -> service.deleteItem(404L)).getStatus());
+        assertEquals(404, assertThrows(BusinessException.class, () -> service.deleteItem(404L, ACTOR)).getStatus());
 
         when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "MEAL", "午餐"));
-        service.deleteItem(31L);
+        service.deleteItem(31L, ACTOR);
         verify(itemMapper).deleteById(31L);
     }
 
@@ -681,6 +687,90 @@ class AdminRouteServiceTest {
 
         assertEquals(1, detail.reviews().size());
         assertEquals("HIDDEN", detail.reviews().get(0).status());
+    }
+
+    // ------------------------------------------------------------------
+    // 操作日志（与业务写入同一事务）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("操作日志：创建线路在业务方法内记录，且带操作人与对象主键")
+    void createRecordsOperationLogInsideBusinessMethod() {
+        when(routeMapper.insert(any(TravelRoute.class))).thenAnswer(invocation -> {
+            TravelRoute inserted = invocation.getArgument(0);
+            inserted.id = 77L;
+            return 1;
+        });
+        when(routeMapper.selectById(77L)).thenReturn(route(77L, "日志线路", "DRAFT"));
+        when(departureMapper.selectMaps(any())).thenReturn(List.of());
+        when(departureMapper.selectList(any())).thenReturn(List.of());
+
+        service.create(upsert("日志线路", "上海", "云南", 3), ACTOR);
+
+        verify(operationLog).record(ACTOR, "线路", "CREATE", "ROUTE", 77L, "创建线路：日志线路");
+    }
+
+    @Test
+    @DisplayName("操作日志：上架、行程与项目的增删改都记录在 service 内（控制器不再负责日志）")
+    void everyWriteOperationRecordsItsOwnLog() {
+        when(routeMapper.selectById(6L)).thenReturn(route(6L, "可售线路", "DRAFT"), route(6L, "可售线路", "PUBLISHED"));
+        when(dayMapper.selectCount(any())).thenReturn(1L);
+        when(departureMapper.selectMaps(any())).thenReturn(List.of());
+        when(departureMapper.selectList(any())).thenReturn(List.of());
+        service.updateStatus(6L, "PUBLISHED", ACTOR);
+        verify(operationLog).record(ACTOR, "线路", "STATUS", "ROUTE", 6L, "线路状态变更为 PUBLISHED");
+
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 2, "第二天", null));
+        service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
+        verify(operationLog).record(ACTOR, "行程", "CREATE", "ITINERARY_DAY", 11L,
+                "线路 21 新增第 2 天行程");
+
+        when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "MEAL", "午餐"));
+        service.deleteItem(31L, ACTOR);
+        verify(operationLog).record(ACTOR, "行程", "DELETE", "ITINERARY_ITEM", 31L,
+                "删除第 11 天的行程项目：午餐");
+    }
+
+    @Test
+    @DisplayName("操作日志：幂等请求不产生日志（没有实际写入就不留审计噪音）")
+    void idempotentOperationsDoNotLog() {
+        when(routeMapper.selectById(7L)).thenReturn(route(7L, "已上架", "PUBLISHED"));
+        when(departureMapper.selectMaps(any())).thenReturn(List.of());
+        when(departureMapper.selectList(any())).thenReturn(List.of());
+
+        service.updateStatus(7L, "PUBLISHED", ACTOR);
+
+        verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * 日志写入失败时必须把异常抛出去，让外层事务回滚业务写入；
+     * 这正是把日志放进 Service 事务方法（而不是 Controller）的目的。
+     */
+    @Test
+    @DisplayName("操作日志：日志写入失败时异常向上抛出，业务写入随事务回滚")
+    void logFailurePropagatesSoBusinessWriteRollsBack() {
+        when(routeMapper.insert(any(TravelRoute.class))).thenAnswer(invocation -> {
+            TravelRoute inserted = invocation.getArgument(0);
+            inserted.id = 88L;
+            return 1;
+        });
+        doThrow(new RuntimeException("operation_log 写入失败"))
+                .when(operationLog).record(any(), any(), any(), any(), any(), any());
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> service.create(upsert("日志失败线路", "上海", "云南", 3), ACTOR));
+
+        assertEquals("operation_log 写入失败", ex.getMessage());
+        // 业务写入已经发生，但因为与日志同事务，异常会触发整体回滚（集成测试里用真实事务验证）。
+        verify(routeMapper).insert(any(TravelRoute.class));
     }
 
     // ------------------------------------------------------------------

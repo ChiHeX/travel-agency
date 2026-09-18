@@ -29,6 +29,13 @@ public record RouteSummaryView(
         String status,
         boolean favorite) {
 
+    /**
+     * 不需要用户态收藏信息和团期聚合字段的场景使用该重载，例如订单详情中的线路快照展示。
+     */
+    public static RouteSummaryView from(TravelRoute route) {
+        return from(route, route == null ? null : route.minAdultPrice, null, null, false);
+    }
+
     public static RouteSummaryView from(TravelRoute route,
                                         BigDecimal minAdultPrice,
                                         LocalDate nextDepartureDate,

@@ -13,6 +13,7 @@ import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
+import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.OrderTravelerView;
@@ -23,7 +24,9 @@ import com.travelagency.domain.dto.RefundRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
@@ -35,6 +38,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.entity.Traveler;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
@@ -68,6 +72,7 @@ public class OrderService {
     private final TravelOrderMapper orderMapper;
     private final DepartureMapper departureMapper;
     private final TravelRouteMapper routeMapper;
+    private final GuideMapper guideMapper;
     private final OrderTravelerMapper orderTravelerMapper;
     private final PaymentMapper paymentMapper;
     private final RefundMapper refundMapper;
@@ -89,6 +94,7 @@ public class OrderService {
             TravelOrderMapper orderMapper,
             DepartureMapper departureMapper,
             TravelRouteMapper routeMapper,
+            GuideMapper guideMapper,
             OrderTravelerMapper orderTravelerMapper,
             PaymentMapper paymentMapper,
             RefundMapper refundMapper,
@@ -100,6 +106,7 @@ public class OrderService {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
+        this.guideMapper = guideMapper;
         this.orderTravelerMapper = orderTravelerMapper;
         this.paymentMapper = paymentMapper;
         this.refundMapper = refundMapper;
@@ -434,8 +441,15 @@ public class OrderService {
         return left.compareTo(right) == 0;
     }
 
+    /**
+     * 确认已支付订单的报名，返回确认后的订单。
+     *
+     * <p>契约 {@code POST /admin/orders/{orderNo}/confirm} 的 200 响应是 {@code OrderEnvelope}，
+     * 即 data 为确认后的订单对象；此前实现返回 void，实际响应 data 为 null 且类型不符
+     * （与 {@code cancel}、{@code approveRefund} 同类的遗漏）。</p>
+     */
     @Transactional
-    public void confirm(String orderNo, Long operatorId) {
+    public OrderView confirm(String orderNo, Long operatorId) {
         TravelOrder order = findByNo(orderNo);
         if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以审核");
@@ -461,6 +475,8 @@ public class OrderService {
                 .eq("id", order.routeId)
                 .setSql("valid_booking_count = COALESCE(valid_booking_count, 0) + 1"));
         notify(order.userId, "报名已确认", "订单 " + order.orderNo + " 已通过旅行社审核。", "ORDER_CONFIRMED");
+        // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）
+        return loadOrderView(order);
     }
 
     @Transactional
@@ -648,12 +664,19 @@ public class OrderService {
         return refundDetail(refundId);
     }
 
+    /**
+     * 拒绝退款申请，返回审核后的退款记录。
+     *
+     * <p>契约 {@code POST /admin/refunds/{refundId}/reject} 的 200 响应是 {@code RefundEnvelope}，
+     * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。</p>
+     */
     @Transactional
-    public void rejectRefund(Long refundId, String comment, Long reviewerId) {
+    public RefundView rejectRefund(Long refundId, String comment, Long reviewerId) {
         if (comment == null || comment.isBlank()) {
             throw new BusinessException(422, "VALIDATION_ERROR", "拒绝退款必须填写审核意见");
         }
         processRefund(refundId, "REJECT", comment, reviewerId);
+        return refundDetail(refundId);
     }
 
     // ------------------------------------------------------------------
@@ -776,8 +799,20 @@ public class OrderService {
                 : ReviewView.from(review, order.orderNo, nicknameOf(review.userId));
         TravelRoute route = routeMapper.selectById(order.routeId);
         Departure departure = departureMapper.selectById(order.departureId);
-        return new OrderDetailResponse(OrderView.from(order, route, departure), route,
-                departure, travelers, paymentView, refunds, reviewView);
+        String routeName = route == null ? null : route.name;
+        return new OrderDetailResponse(OrderView.from(order, route, departure),
+                RouteSummaryView.from(route),
+                DepartureView.from(departure, routeName, guideNameOf(departure)),
+                travelers, paymentView, refunds, reviewView);
+    }
+
+    /** 团期所属导游姓名，供 DepartureView 补齐契约必填的 guideName；无团期或无导游时返回 null。 */
+    private String guideNameOf(Departure departure) {
+        if (departure == null || departure.guideId == null) {
+            return null;
+        }
+        Guide guide = guideMapper.selectById(departure.guideId);
+        return guide == null ? null : guide.name;
     }
 
     private Map<Long, TravelRoute> batchRoutes(List<TravelOrder> orders) {

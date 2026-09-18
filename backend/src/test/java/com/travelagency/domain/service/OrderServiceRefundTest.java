@@ -11,6 +11,7 @@ import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
@@ -34,6 +35,7 @@ import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
@@ -55,6 +57,8 @@ class OrderServiceRefundTest {
     @Mock
     private TravelRouteMapper routeMapper;
     @Mock
+    private GuideMapper guideMapper;
+    @Mock
     private OrderTravelerMapper orderTravelerMapper;
     @Mock
     private PaymentMapper paymentMapper;
@@ -75,7 +79,7 @@ class OrderServiceRefundTest {
 
     @BeforeEach
     void setUp() {
-        orderService = new OrderService(orderMapper, departureMapper, routeMapper,
+        orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
                 idempotencyRecordMapper, travelerMapper);
     }
@@ -259,6 +263,29 @@ class OrderServiceRefundTest {
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
+    }
+
+    @Test
+    @DisplayName("拒绝退款：返回契约 RefundEnvelope 所需的退款视图，状态为 REJECTED")
+    void rejectReturnsUpdatedRefundView() {
+        Refund r = refund(77L, 61L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(61L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(77L)).thenReturn(r);
+        when(orderMapper.selectById(61L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
+
+        RefundView view = orderService.rejectRefund(77L, "材料不齐，请补充", 1L);
+
+        assertNotNull(view, "契约要求 data 为退款对象，不能为 null");
+        assertEquals(r.id, view.id());
+        assertEquals(RefundStatus.REJECTED, view.status());
+        assertEquals(o.orderNo, view.orderNo());
+        assertEquals("材料不齐，请补充", view.reviewComment());
+        assertEquals(1L, view.reviewedBy());
+        assertNotNull(view.reviewedAt());
+        // 拒绝不释放名额、不动支付单
+        verify(departureMapper, never()).update(any(), any());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
     }
 
     // ---------------------------------------------------------------- 申请退款

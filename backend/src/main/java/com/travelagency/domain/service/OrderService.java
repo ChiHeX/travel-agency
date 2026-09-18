@@ -434,8 +434,15 @@ public class OrderService {
         return left.compareTo(right) == 0;
     }
 
+    /**
+     * 确认已支付订单的报名，返回确认后的订单。
+     *
+     * <p>契约 {@code POST /admin/orders/{orderNo}/confirm} 的 200 响应是 {@code OrderEnvelope}，
+     * 即 data 为确认后的订单对象；此前实现返回 void，实际响应 data 为 null 且类型不符
+     * （与 {@code cancel}、{@code approveRefund} 同类的遗漏）。</p>
+     */
     @Transactional
-    public void confirm(String orderNo, Long operatorId) {
+    public OrderView confirm(String orderNo, Long operatorId) {
         TravelOrder order = findByNo(orderNo);
         if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以审核");
@@ -461,6 +468,8 @@ public class OrderService {
                 .eq("id", order.routeId)
                 .setSql("valid_booking_count = COALESCE(valid_booking_count, 0) + 1"));
         notify(order.userId, "报名已确认", "订单 " + order.orderNo + " 已通过旅行社审核。", "ORDER_CONFIRMED");
+        // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）
+        return loadOrderView(order);
     }
 
     @Transactional
@@ -648,12 +657,19 @@ public class OrderService {
         return refundDetail(refundId);
     }
 
+    /**
+     * 拒绝退款申请，返回审核后的退款记录。
+     *
+     * <p>契约 {@code POST /admin/refunds/{refundId}/reject} 的 200 响应是 {@code RefundEnvelope}，
+     * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。</p>
+     */
     @Transactional
-    public void rejectRefund(Long refundId, String comment, Long reviewerId) {
+    public RefundView rejectRefund(Long refundId, String comment, Long reviewerId) {
         if (comment == null || comment.isBlank()) {
             throw new BusinessException(422, "VALIDATION_ERROR", "拒绝退款必须填写审核意见");
         }
         processRefund(refundId, "REJECT", comment, reviewerId);
+        return refundDetail(refundId);
     }
 
     // ------------------------------------------------------------------

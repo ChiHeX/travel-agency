@@ -18,6 +18,7 @@ import com.travelagency.domain.dto.GuideUpdateRequest;
 import com.travelagency.domain.dto.OperationLogView;
 import com.travelagency.domain.dto.OrderDetailResponse;
 import com.travelagency.domain.dto.OrderSummaryView;
+import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.RefundDecisionRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
@@ -464,11 +465,16 @@ public class AdminController {
         return ApiResponse.ok(orderService.detail(orderNo, CurrentUser.required()));
     }
 
+    /**
+     * 确认已支付订单报名。
+     *
+     * <p>契约的 200 响应是 OrderEnvelope（data 为确认后的订单），此前返回 void 导致 data 为 null。</p>
+     */
     @PostMapping("/orders/{orderNo}/confirm")
-    public ApiResponse<Void> confirmOrder(@PathVariable String orderNo) {
-        orderService.confirm(orderNo, CurrentUser.required().userId());
+    public ApiResponse<OrderView> confirmOrder(@PathVariable String orderNo) {
+        OrderView order = orderService.confirm(orderNo, CurrentUser.required().userId());
         log("订单", "CONFIRM", "ORDER", orderNo, "SUCCESS", "确认报名");
-        return ApiResponse.ok();
+        return ApiResponse.ok(order);
     }
 
     @GetMapping("/refunds")
@@ -500,12 +506,17 @@ public class AdminController {
         return ApiResponse.ok(refund);
     }
 
+    /**
+     * 拒绝退款申请。
+     *
+     * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。</p>
+     */
     @PostMapping("/refunds/{id}/reject")
-    public ApiResponse<Void> rejectRefund(
+    public ApiResponse<RefundView> rejectRefund(
             @PathVariable Long id, @Valid @RequestBody RefundDecisionRequest request) {
-        orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId());
+        RefundView refund = orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId());
         log("退款", "REJECT", "REFUND", id, "SUCCESS", request.comment());
-        return ApiResponse.ok();
+        return ApiResponse.ok(refund);
     }
 
     @GetMapping("/reviews")

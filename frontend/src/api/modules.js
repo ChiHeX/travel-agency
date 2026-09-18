@@ -110,7 +110,10 @@ export const adminApi = {
   confirmOrder: (orderNo) => request.post(`/admin/orders/${orderNo}/confirm`),
   refunds: (params) => request.get('/admin/refunds', { params }),
   refund: (refundId) => request.get(`/admin/refunds/${refundId}`),
-  approveRefund: (refundId, comment = '') => request.post(`/admin/refunds/${refundId}/approve`, { comment }),
+  // 契约 RefundDecisionRequest 把 comment 列为 required 且 minLength:1，审核意见不能省。
+  // 这里不设 '' 默认值：否则调用方漏传意见时会拿到一个含义不明的 422，不如让缺参在调用侧就暴露。
+  approveRefund: (refundId, comment) =>
+    request.post(`/admin/refunds/${refundId}/approve`, { comment }),
   rejectRefund: (refundId, comment) => request.post(`/admin/refunds/${refundId}/reject`, { comment }),
 
   reviews: (params) => request.get('/admin/reviews', { params }),

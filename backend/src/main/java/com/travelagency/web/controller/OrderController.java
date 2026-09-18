@@ -74,7 +74,10 @@ public class OrderController {
     }
 
     @PostMapping("/{orderNo}/pay")
-    public ApiResponse<PaymentStartResponse> pay(@PathVariable String orderNo) {
+    public ApiResponse<PaymentStartResponse> pay(
+            @PathVariable String orderNo,
+            @RequestHeader("Idempotency-Key")
+            @Size(min = 8, max = 128, message = IDEMPOTENCY_KEY_CONSTRAINT) String idempotencyKey) {
         return ApiResponse.ok(orderService.startPayment(orderNo, CurrentUser.required().userId()));
     }
 

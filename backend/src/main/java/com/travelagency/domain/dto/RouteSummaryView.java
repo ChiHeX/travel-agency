@@ -6,15 +6,11 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
- * 线路摘要视图，对齐契约 RouteSummary（additionalProperties: false）。
+ * 线路列表项视图，对齐契约 {@code RouteSummary}（additionalProperties: false）。
  *
- * <p>不直接序列化持久化实体 {@link TravelRoute}：实体带 included / excluded / bookingNotice /
- * createdBy / deleted 等契约未列出的字段，直接输出既违反 additionalProperties 约束，
- * 又把「逻辑删除标记、创建人」这类内部字段暴露给调用方。</p>
- *
- * <p>本视图未填充的可选字段（minAdultPrice / nextDepartureDate / availableSeats）契约均允许为
- * null；契约中的 favorite 依赖当前登录用户，本视图不输出该字段。
- * ratingAvg / ratingCount / validBookingCount 是契约必填字段，数据库为空时按 0 兜底。</p>
+ * <p>不直接序列化 {@link TravelRoute} 实体：实体额外带 {@code createdBy} / {@code deleted}
+ * 等契约未声明的字段，且缺少 {@code nextDepartureDate} / {@code availableSeats} 这类
+ * 需要联查团期才能得到的计算字段；实体自带的 {@code minAdultPrice} 也需要按最低在售价格重新计算。</p>
  */
 public record RouteSummaryView(
         Long id,
@@ -30,9 +26,21 @@ public record RouteSummaryView(
         BigDecimal ratingAvg,
         Integer ratingCount,
         Integer validBookingCount,
-        String status) {
+        String status,
+        boolean favorite) {
 
+    /**
+     * 不需要用户态收藏信息和团期聚合字段的场景使用该重载，例如订单详情中的线路快照展示。
+     */
     public static RouteSummaryView from(TravelRoute route) {
+        return from(route, route == null ? null : route.minAdultPrice, null, null, false);
+    }
+
+    public static RouteSummaryView from(TravelRoute route,
+                                        BigDecimal minAdultPrice,
+                                        LocalDate nextDepartureDate,
+                                        Integer availableSeats,
+                                        boolean favorite) {
         if (route == null) {
             return null;
         }
@@ -44,12 +52,15 @@ public record RouteSummaryView(
                 route.durationDays,
                 route.description,
                 route.coverUrl,
-                route.minAdultPrice,
-                null,
-                null,
+                minAdultPrice,
+                nextDepartureDate,
+                availableSeats,
+                // 契约把 ratingAvg / ratingCount / validBookingCount 列为 required 且不可空，
+                // 历史数据可能为 NULL，这里统一归零，避免返回 null 破坏契约。
                 route.ratingAvg == null ? BigDecimal.ZERO : route.ratingAvg,
                 route.ratingCount == null ? 0 : route.ratingCount,
                 route.validBookingCount == null ? 0 : route.validBookingCount,
-                route.status);
+                route.status,
+                favorite);
     }
 }

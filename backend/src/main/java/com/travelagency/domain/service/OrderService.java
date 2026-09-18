@@ -700,6 +700,25 @@ public class OrderService {
     }
 
     /**
+     * 线路管理详情使用的线路评价列表。
+     *
+     * <p>与 {@link #listRouteReviews} 的区别：后者是公开接口语义（仅 PUBLISHED 线路 + VISIBLE 评价，
+     * 且必须分页）；后台查看线路时草稿和已下架线路也要能看到评价，并且需要看到被隐藏评价的状态，
+     * 因此这里不做线路状态与评价可见性过滤。</p>
+     */
+    public List<ReviewView> routeReviewsForAdmin(Long routeId) {
+        List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
+                .eq("route_id", routeId).orderByDesc("created_at"));
+        Map<Long, String> orderNos = orderNoMap(reviews.stream().map(r -> r.orderId).toList());
+        // 契约把 Review.userNickname 列为必填且不可空；用户未设置昵称时退回登录名，
+        // 避免后台线路详情返回 null 导致契约校验失败。
+        Map<Long, String> nicknames = displayNameMap(reviews.stream().map(r -> r.userId).toList());
+        return reviews.stream()
+                .map(r -> ReviewView.from(r, orderNos.get(r.orderId), nicknames.get(r.userId)))
+                .toList();
+    }
+
+    /**
      * 后台评价分页查询，对齐契约 GET /admin/reviews。
      */
     public PageResponse<ReviewView> listReviews(String status, int page, int size) {
@@ -840,6 +859,18 @@ public class OrderService {
         }
         return sysUserMapper.selectByIds(ids).stream()
                 .collect(Collectors.toMap(u -> u.id, u -> u.nickname, (a, b) -> a));
+    }
+
+    /** 批量取展示名：昵称为空时退回登录名，保证契约要求的 userNickname 不为 null。 */
+    private Map<Long, String> displayNameMap(Collection<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return sysUserMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(u -> u.id,
+                        u -> u.nickname == null || u.nickname.isBlank() ? u.username : u.nickname,
+                        (a, b) -> a));
     }
 
     private String nicknameOf(Long userId) {

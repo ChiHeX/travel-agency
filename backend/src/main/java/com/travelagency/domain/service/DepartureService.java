@@ -100,6 +100,25 @@ public class DepartureService {
         return DepartureView.from(departure, routeName(departure.routeId), guideName(departure.guideId));
     }
 
+    /**
+     * 某位导游的全部团期（不分页，按出发日期升序），供导游工作台按状态分组。
+     *
+     * <p>复用同一套 routeName / guideName 批量联查与视图映射，
+     * 避免工作台另行拼装字段导致同一团期在不同接口上口径不一致。</p>
+     */
+    public List<DepartureView> listOfGuide(Long guideId) {
+        if (guideId == null) {
+            return List.of();
+        }
+        List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
+                .eq("guide_id", guideId).orderByAsc("start_date"));
+        Map<Long, String> routeNames = routeNameMap(departures);
+        Map<Long, String> guideNames = guideNameMap(departures);
+        return departures.stream()
+                .map(d -> DepartureView.from(d, routeNames.get(d.routeId), guideNames.get(d.guideId)))
+                .toList();
+    }
+
     @Transactional
     public Departure save(Departure departure) {
         if (departure.startDate == null || departure.endDate == null || departure.endDate.isBefore(departure.startDate)) {

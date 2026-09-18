@@ -31,8 +31,8 @@ public class JwtTokenProvider {
     public JwtTokenProvider(
             @Value("${app.jwt.secret}") String secret,
             @Value("${app.jwt.expire-hours:24}") long expireHours) {
-        // fail-fast：密钥缺失或过短时在启动阶段就失败，而不是在运行期静默签发
-        // 可被伪造的令牌。契约要求 JWT_SECRET 必须由部署环境注入（CONTRIBUTING §14）。
+        // fail-fast：密钥缺失或过短时在启动阶段就失败，避免使用公开默认值或弱密钥签发令牌。
+        // JWT_SECRET 必须由部署环境注入（CONTRIBUTING §14）。
         if (secret == null || secret.isBlank()) {
             throw new IllegalStateException("JWT_SECRET 未配置：必须通过环境变量注入至少 32 字节的签名密钥");
         }

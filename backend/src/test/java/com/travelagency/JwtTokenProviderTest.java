@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -26,7 +27,10 @@ class JwtTokenProviderTest {
     @Test
     void rejectsTamperedToken() {
         String token = provider.createToken(7L, "alice", Set.of("USER"));
-        String tampered = token.substring(0, token.length() - 1) + (token.endsWith("a") ? "b" : "a");
+        int signatureStart = token.lastIndexOf('.') + 1;
+        char original = token.charAt(signatureStart);
+        String tampered = token.substring(0, signatureStart) + (original == 'a' ? 'b' : 'a')
+                + token.substring(signatureStart + 1);
 
         assertThrows(IllegalArgumentException.class, () -> provider.parse(tampered));
     }
@@ -38,7 +42,9 @@ class JwtTokenProviderTest {
     }
 
     @Test
-    void refusesShortSecret() {
-        assertThrows(IllegalStateException.class, () -> new JwtTokenProvider("too-short", 1));
+    void enforcesSecretByteLengthBoundary() {
+        assertThrows(IllegalStateException.class,
+                () -> new JwtTokenProvider("1234567890123456789012345678901", 1));
+        assertDoesNotThrow(() -> new JwtTokenProvider("12345678901234567890123456789012", 1));
     }
 }

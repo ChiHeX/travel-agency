@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.databind.SerializationContext;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.module.SimpleModule;
 
@@ -62,6 +63,6 @@ public class JacksonConfig {
                         gen.writeString(value.atOffset(CHINA_OFFSET).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
                     }
                 });
-        return builder -> builder.addModule(module);
+        return builder -> builder.addModule(module).enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 }

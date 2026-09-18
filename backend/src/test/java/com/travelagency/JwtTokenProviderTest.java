@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -29,7 +30,7 @@ class JwtTokenProviderTest {
         // 不能用「改末位字符」的写法：HS256 签名是 32 字节，base64url 编码成 43 个字符，
         // 末位字符只有高 4 bit 参与解码，'a'(011010) 与 'b'(011011) 的高 4 bit 相同 ——
         // 换掉末位后签名可能一个字节都没变，令牌依然合法，用例会随机失败。
-        // 改成首字符：它携带 6 个有效 bit，'A'/'B' 互换必然改变签名。
+        // 改成首字符：它携带 6 个有效 bit，改写后签名必然变化。
         int signatureStart = token.lastIndexOf('.') + 1;
         char original = token.charAt(signatureStart);
         String tampered = token.substring(0, signatureStart)
@@ -46,7 +47,9 @@ class JwtTokenProviderTest {
     }
 
     @Test
-    void refusesShortSecret() {
-        assertThrows(IllegalStateException.class, () -> new JwtTokenProvider("too-short", 1));
+    void enforcesSecretByteLengthBoundary() {
+        assertThrows(IllegalStateException.class,
+                () -> new JwtTokenProvider("1234567890123456789012345678901", 1));
+        assertDoesNotThrow(() -> new JwtTokenProvider("12345678901234567890123456789012", 1));
     }
 }

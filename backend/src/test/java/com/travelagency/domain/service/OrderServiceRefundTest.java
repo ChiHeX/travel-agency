@@ -21,6 +21,7 @@ import com.travelagency.domain.mapper.ReviewMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import com.travelagency.domain.mapper.TravelerMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -71,6 +72,8 @@ class OrderServiceRefundTest {
     private SysUserMapper sysUserMapper;
     @Mock
     private IdempotencyRecordMapper idempotencyRecordMapper;
+    @Mock
+    private TravelerMapper travelerMapper;
 
     private OrderService orderService;
 
@@ -78,7 +81,7 @@ class OrderServiceRefundTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper);
+                idempotencyRecordMapper, travelerMapper);
     }
 
     private static TravelOrder order(long id, String status, String originalStatus) {

@@ -36,6 +36,7 @@ import com.travelagency.domain.entity.Review;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.entity.Traveler;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.IdempotencyRecordMapper;
@@ -47,6 +48,7 @@ import com.travelagency.domain.mapper.ReviewMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import com.travelagency.domain.mapper.TravelerMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -60,6 +62,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -77,6 +80,7 @@ public class OrderService {
     private final MessageMapper messageMapper;
     private final SysUserMapper sysUserMapper;
     private final IdempotencyRecordMapper idempotencyRecordMapper;
+    private final TravelerMapper travelerMapper;
 
     /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
@@ -97,7 +101,8 @@ public class OrderService {
             ReviewMapper reviewMapper,
             MessageMapper messageMapper,
             SysUserMapper sysUserMapper,
-            IdempotencyRecordMapper idempotencyRecordMapper) {
+            IdempotencyRecordMapper idempotencyRecordMapper,
+            TravelerMapper travelerMapper) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
@@ -109,6 +114,7 @@ public class OrderService {
         this.messageMapper = messageMapper;
         this.sysUserMapper = sysUserMapper;
         this.idempotencyRecordMapper = idempotencyRecordMapper;
+        this.travelerMapper = travelerMapper;
     }
 
     @Transactional
@@ -161,6 +167,7 @@ public class OrderService {
                 throw new BusinessException(422, "VALIDATION_ERROR", "标记为成人的出行人数量与成人人数不一致");
             }
         }
+        validateSourceTravelers(userId, request.travelers());
         Departure departure = departureMapper.selectById(request.departureId());
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "团期已关闭或不存在");
@@ -206,7 +213,7 @@ public class OrderService {
         for (CreateOrderRequest.TravelerSnapshotRequest requestTraveler : request.travelers()) {
             OrderTraveler snapshot = new OrderTraveler();
             snapshot.orderId = order.id;
-            // 记录来源常用出行人，对应契约请求字段 sourceTravelerId。
+            // 所有权已在创建订单前校验；这里只记录可选来源，个人信息仍保存为下单时快照。
             snapshot.travelerId = requestTraveler.sourceTravelerId();
             // 优先采用调用方显式指定的类型；未指定时按「前 adultCount 位为成人，其余为儿童」兜底推断。
             snapshot.travelerType = allExplicit
@@ -238,6 +245,27 @@ public class OrderService {
         }
         TravelOrder result = saved == null ? order : saved;
         return OrderView.from(result, routeMapper.selectById(order.routeId), departure);
+    }
+
+    /**
+     * 校验请求引用的常用出行人全部存在且属于当前用户，避免跨用户关联污染订单快照。
+     * 统一返回 404，避免通过错误差异枚举其他用户的资源。
+     */
+    private void validateSourceTravelers(
+            Long userId, List<CreateOrderRequest.TravelerSnapshotRequest> travelers) {
+        Set<Long> sourceTravelerIds = travelers.stream()
+                .map(CreateOrderRequest.TravelerSnapshotRequest::sourceTravelerId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (sourceTravelerIds.isEmpty()) {
+            return;
+        }
+        Long ownedCount = travelerMapper.selectCount(new QueryWrapper<Traveler>()
+                .in("id", sourceTravelerIds)
+                .eq("user_id", userId));
+        if (ownedCount == null || ownedCount != sourceTravelerIds.size()) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "常用出行人不存在");
+        }
     }
 
     /**

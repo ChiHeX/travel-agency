@@ -1,6 +1,8 @@
 package com.travelagency.domain.dto;
 
 import com.travelagency.common.config.JacksonConfig;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -24,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CreateOrderRequestDeserializationTest {
 
     private static final JsonMapper MAPPER = buildMapper();
+    private static final Validator VALIDATOR = Validation.buildDefaultValidatorFactory().getValidator();
 
     private static JsonMapper buildMapper() {
         JsonMapper.Builder builder = JsonMapper.builder();
@@ -74,7 +77,7 @@ class CreateOrderRequestDeserializationTest {
         assertEquals(42L, request.travelers().get(0).sourceTravelerId());
     }
 
-    /** 契约把 travelerType 列为 required，同时确认该字段仍被严格校验。 */
+    /** 契约把 travelerType 列为 required，同时确认该字段仍会被正常反序列化。 */
     @Test
     void keepsTravelerType() {
         CreateOrderRequest request = MAPPER.readValue(payload("\"sourceTravelerId\": null,"),
@@ -94,5 +97,15 @@ class CreateOrderRequestDeserializationTest {
             rejected = true;
         }
         assertTrue(rejected, "契约外的字段应当继续被严格模式拒绝");
+    }
+
+    @Test
+    void rejectsNonPositiveSourceTravelerId() {
+        CreateOrderRequest request = MAPPER.readValue(payload("\"sourceTravelerId\": \"-1\","),
+                CreateOrderRequest.class);
+
+        assertTrue(VALIDATOR.validate(request).stream()
+                .anyMatch(violation -> violation.getPropertyPath().toString()
+                        .equals("travelers[0].sourceTravelerId")));
     }
 }

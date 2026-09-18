@@ -30,22 +30,17 @@ import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.Refund;
-import com.travelagency.domain.entity.RouteItineraryDay;
-import com.travelagency.domain.entity.RouteItineraryItem;
 import com.travelagency.domain.entity.Staff;
 import com.travelagency.domain.entity.SysRole;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.SysUserRole;
 import com.travelagency.domain.entity.TravelOrder;
-import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.AttractionMapper;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.HotelMapper;
 import com.travelagency.domain.mapper.OperationLogMapper;
 import com.travelagency.domain.mapper.RefundMapper;
-import com.travelagency.domain.mapper.RouteItineraryDayMapper;
-import com.travelagency.domain.mapper.RouteItineraryItemMapper;
 import com.travelagency.domain.mapper.StaffMapper;
 import com.travelagency.domain.mapper.SysRoleMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
@@ -95,8 +90,6 @@ public class AdminController {
     private final AttractionMapper attractionMapper;
     private final HotelMapper hotelMapper;
     private final GuideMapper guideMapper;
-    private final RouteItineraryDayMapper dayMapper;
-    private final RouteItineraryItemMapper itemMapper;
     private final OperationLogMapper operationLogMapper;
     private final SysUserMapper userMapper;
     private final StaffMapper staffMapper;
@@ -116,8 +109,6 @@ public class AdminController {
             AttractionMapper attractionMapper,
             HotelMapper hotelMapper,
             GuideMapper guideMapper,
-            RouteItineraryDayMapper dayMapper,
-            RouteItineraryItemMapper itemMapper,
             OperationLogMapper operationLogMapper,
             SysUserMapper userMapper,
             StaffMapper staffMapper,
@@ -134,8 +125,6 @@ public class AdminController {
         this.attractionMapper = attractionMapper;
         this.hotelMapper = hotelMapper;
         this.guideMapper = guideMapper;
-        this.dayMapper = dayMapper;
-        this.itemMapper = itemMapper;
         this.operationLogMapper = operationLogMapper;
         this.userMapper = userMapper;
         this.staffMapper = staffMapper;
@@ -175,42 +164,9 @@ public class AdminController {
                 "grossOrderAmount", revenue));
     }
 
-    @GetMapping("/routes")
-    public ApiResponse<PageResponse<TravelRoute>> routes(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "10") long size,
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String status) {
-        return ApiResponse.ok(PageResponse.from(routeService.pageAll(page, size, keyword, status)));
-    }
-
-    @GetMapping("/routes/{id}")
-    public ApiResponse<?> routeDetail(@PathVariable Long id) {
-        return ApiResponse.ok(routeService.adminDetail(id));
-    }
-
-    @PostMapping("/routes")
-    public ApiResponse<TravelRoute> createRoute(@RequestBody TravelRoute route) {
-        route.createdBy = CurrentUser.required().userId();
-        TravelRoute saved = routeService.save(route);
-        log("线路", "CREATE", "ROUTE", saved.id, "SUCCESS", "创建线路");
-        return ApiResponse.ok(saved);
-    }
-
-    @PutMapping("/routes/{id}")
-    public ApiResponse<TravelRoute> updateRoute(@PathVariable Long id, @RequestBody TravelRoute route) {
-        route.id = id;
-        TravelRoute saved = routeService.save(route);
-        log("线路", "UPDATE", "ROUTE", id, "SUCCESS", "编辑线路");
-        return ApiResponse.ok(saved);
-    }
-
-    @PatchMapping("/routes/{id}/status")
-    public ApiResponse<Void> updateRouteStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
-        routeService.updateStatus(id, request.status());
-        log("线路", "STATUS", "ROUTE", id, "SUCCESS", "线路状态变更为 " + request.status());
-        return ApiResponse.ok();
-    }
+    // 线路与行程管理端点已迁移到 AdminRouteController：此前这里的实现与契约不一致
+    // （返回实体、状态码不是 201/204、行程缺少 items/hotelName、删除不级联），
+    // 迁移后 AdminController 只保留其它后台模块的接口。
 
     /**
      * 后台团期分页查询，对齐契约 GET /admin/departures（分页信封 + routeId/guideId/status/日期区间筛选）。
@@ -256,62 +212,6 @@ public class AdminController {
     public ApiResponse<Void> updateDepartureStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
         departureService.changeStatus(id, request.status());
         log("团期", "STATUS", "DEPARTURE", id, "SUCCESS", "团期状态变更为 " + request.status());
-        return ApiResponse.ok();
-    }
-
-    @GetMapping("/routes/{routeId}/itinerary-days")
-    public ApiResponse<List<RouteItineraryDay>> itineraryDays(@PathVariable Long routeId) {
-        return ApiResponse.ok(dayMapper.selectList(new QueryWrapper<RouteItineraryDay>()
-                .eq("route_id", routeId).orderByAsc("day_number")));
-    }
-
-    @PostMapping("/routes/{routeId}/itinerary-days")
-    public ApiResponse<RouteItineraryDay> createItineraryDay(
-            @PathVariable Long routeId, @RequestBody RouteItineraryDay day) {
-        day.routeId = routeId;
-        dayMapper.insert(day);
-        return ApiResponse.ok(day);
-    }
-
-    @PutMapping("/itinerary-days/{id}")
-    public ApiResponse<RouteItineraryDay> updateItineraryDay(
-            @PathVariable Long id, @RequestBody RouteItineraryDay day) {
-        day.id = id;
-        dayMapper.updateById(day);
-        return ApiResponse.ok(day);
-    }
-
-    @DeleteMapping("/itinerary-days/{id}")
-    public ApiResponse<Void> deleteItineraryDay(@PathVariable Long id) {
-        dayMapper.deleteById(id);
-        return ApiResponse.ok();
-    }
-
-    @GetMapping("/itinerary-days/{dayId}/items")
-    public ApiResponse<List<RouteItineraryItem>> itineraryItems(@PathVariable Long dayId) {
-        return ApiResponse.ok(itemMapper.selectList(new QueryWrapper<RouteItineraryItem>()
-                .eq("day_id", dayId).orderByAsc("sort_no")));
-    }
-
-    @PostMapping("/itinerary-days/{dayId}/items")
-    public ApiResponse<RouteItineraryItem> createItineraryItem(
-            @PathVariable Long dayId, @RequestBody RouteItineraryItem item) {
-        item.dayId = dayId;
-        itemMapper.insert(item);
-        return ApiResponse.ok(item);
-    }
-
-    @PutMapping("/itinerary-items/{id}")
-    public ApiResponse<RouteItineraryItem> updateItineraryItem(
-            @PathVariable Long id, @RequestBody RouteItineraryItem item) {
-        item.id = id;
-        itemMapper.updateById(item);
-        return ApiResponse.ok(item);
-    }
-
-    @DeleteMapping("/itinerary-items/{id}")
-    public ApiResponse<Void> deleteItineraryItem(@PathVariable Long id) {
-        itemMapper.deleteById(id);
         return ApiResponse.ok();
     }
 

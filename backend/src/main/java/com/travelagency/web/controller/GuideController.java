@@ -14,8 +14,8 @@ import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
+import com.travelagency.domain.service.AdminRouteService;
 import com.travelagency.domain.service.OrderService;
-import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,7 +39,7 @@ public class GuideController {
     private final DepartureMapper departureMapper;
     private final TravelOrderMapper orderMapper;
     private final OrderTravelerMapper orderTravelerMapper;
-    private final RouteService routeService;
+    private final AdminRouteService adminRouteService;
     private final com.travelagency.domain.service.DepartureService departureService;
 
     public GuideController(
@@ -47,13 +47,13 @@ public class GuideController {
             DepartureMapper departureMapper,
             TravelOrderMapper orderMapper,
             OrderTravelerMapper orderTravelerMapper,
-            RouteService routeService,
+            AdminRouteService adminRouteService,
             com.travelagency.domain.service.DepartureService departureService) {
         this.guideMapper = guideMapper;
         this.departureMapper = departureMapper;
         this.orderMapper = orderMapper;
         this.orderTravelerMapper = orderTravelerMapper;
-        this.routeService = routeService;
+        this.adminRouteService = adminRouteService;
         this.departureService = departureService;
     }
 
@@ -83,7 +83,7 @@ public class GuideController {
         Departure departure = ownedDeparture(id);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("departure", departure);
-        result.put("route", routeService.adminDetail(departure.routeId));
+        result.put("route", adminRouteService.routeView(departure.routeId));
         result.put("passengers", passengerList(id));
         return ApiResponse.ok(result);
     }

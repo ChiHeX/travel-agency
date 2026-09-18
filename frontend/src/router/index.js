@@ -29,6 +29,7 @@ import MessagesView from '@/views/account/MessagesView.vue'
 import ConsultationView from '@/views/account/ConsultationView.vue'
 import AdminDashboardView from '@/views/admin/AdminDashboardView.vue'
 import AdminRoutesView from '@/views/admin/AdminRoutesView.vue'
+import AdminRouteDetailView from '@/views/admin/AdminRouteDetailView.vue'
 import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
@@ -84,6 +85,7 @@ const routes = [
       { path: '', redirect: { name: 'admin-dashboard' } },
       { path: 'dashboard', name: 'admin-dashboard', component: AdminDashboardView },
       { path: 'routes', name: 'admin-routes', component: AdminRoutesView },
+      { path: 'routes/:id', name: 'admin-route-detail', component: AdminRouteDetailView },
       { path: 'departures', name: 'admin-departures', component: AdminResourcesView, props: { title: '团期管理', resource: 'departures' } },
       { path: 'attractions', name: 'admin-attractions', component: AdminResourcesView, props: { title: '景点管理', resource: 'attractions' } },
       { path: 'hotels', name: 'admin-hotels', component: AdminResourcesView, props: { title: '酒店资料', resource: 'hotels' } },

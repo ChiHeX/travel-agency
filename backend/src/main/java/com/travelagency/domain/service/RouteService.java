@@ -108,60 +108,14 @@ public class RouteService {
         if (route == null || !RouteStatus.PUBLISHED.equals(route.status) || Integer.valueOf(1).equals(route.deleted)) {
             throw new BusinessException(404, "线路不存在或暂未上架");
         }
-        return buildDetail(route, true);
+        return buildDetail(route);
     }
 
-    public RouteDetailResponse adminDetail(Long routeId) {
-        TravelRoute route = routeMapper.selectById(routeId);
-        if (route == null || Integer.valueOf(1).equals(route.deleted)) {
-            throw new BusinessException(404, "线路不存在");
-        }
-        return buildDetail(route, false);
-    }
-
-    @Transactional
-    public TravelRoute save(TravelRoute route) {
-        if (route.status == null || route.status.isBlank()) {
-            route.status = RouteStatus.DRAFT;
-        }
-        if (route.ratingAvg == null) {
-            route.ratingAvg = BigDecimal.ZERO;
-        }
-        if (route.ratingCount == null) {
-            route.ratingCount = 0;
-        }
-        if (route.validBookingCount == null) {
-            route.validBookingCount = 0;
-        }
-        if (route.deleted == null) {
-            route.deleted = 0;
-        }
-        if (route.id == null) {
-            routeMapper.insert(route);
-        } else {
-            routeMapper.updateById(route);
-        }
-        return route;
-    }
-
-    @Transactional
-    public void updateStatus(Long routeId, String status) {
-        TravelRoute route = routeMapper.selectById(routeId);
-        if (route == null) {
-            throw new BusinessException(404, "线路不存在");
-        }
-        routeMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<TravelRoute>()
-                .eq("id", routeId).set("status", status));
-    }
-
-    private RouteDetailResponse buildDetail(TravelRoute route, boolean publicView) {
-        QueryWrapper<Departure> departureQuery = new QueryWrapper<Departure>().eq("route_id", route.id);
-        if (publicView) {
-            departureQuery.eq("status", "OPEN").ge("start_date", java.time.LocalDate.now());
-        } else {
-            departureQuery.notIn("status", "CANCELLED", "FINISHED");
-        }
-        List<Departure> departures = departureMapper.selectList(departureQuery.orderByAsc("start_date"));
+    private RouteDetailResponse buildDetail(TravelRoute route) {
+        // 公开详情只展示仍可报名的团期，避免用户看到已过期或已关闭的团期。
+        List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
+                .eq("route_id", route.id).eq("status", "OPEN").ge("start_date", java.time.LocalDate.now())
+                .orderByAsc("start_date"));
         List<RouteDetailResponse.ItineraryDayView> itinerary = dayMapper.selectList(new QueryWrapper<RouteItineraryDay>()
                         .eq("route_id", route.id).orderByAsc("day_number"))
                 .stream()

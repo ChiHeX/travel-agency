@@ -34,7 +34,10 @@ app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
   jwt:
-    secret: ${JWT_SECRET:travel-agency-dev-secret-change-me-please-256bits}
+    # 必填：JWT 签名密钥。不提供默认值，缺失或过短时应用启动即失败（fail-fast），
+    # 避免退回到源码里公开可见的默认值（见 CONTRIBUTING §14：禁止提交 JWT Secret）。
+    # 本地开发请通过环境变量 JWT_SECRET 注入，例如至少 32 字节的随机字符串。
+    secret: ${JWT_SECRET:}
     expire-hours: ${JWT_EXPIRE_HOURS:24}
   integrations:
     amap:

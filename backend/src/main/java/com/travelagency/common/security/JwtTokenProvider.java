@@ -22,12 +22,23 @@ public class JwtTokenProvider {
 
     private static final String HEADER = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
 
+    /** HS256 下过短的密钥很容易被暴力枚举，低于 32 字节直接拒绝启动。 */
+    private static final int MIN_SECRET_BYTES = 32;
+
     private final byte[] secret;
     private final long expireHours;
 
     public JwtTokenProvider(
             @Value("${app.jwt.secret}") String secret,
             @Value("${app.jwt.expire-hours:24}") long expireHours) {
+        // fail-fast：密钥缺失或过短时在启动阶段就失败，而不是在运行期静默签发
+        // 可被伪造的令牌。契约要求 JWT_SECRET 必须由部署环境注入（CONTRIBUTING §14）。
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET 未配置：必须通过环境变量注入至少 32 字节的签名密钥");
+        }
+        if (secret.getBytes(StandardCharsets.UTF_8).length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException("JWT_SECRET 过短：签名密钥至少需要 " + MIN_SECRET_BYTES + " 字节");
+        }
         this.secret = secret.getBytes(StandardCharsets.UTF_8);
         this.expireHours = expireHours;
     }

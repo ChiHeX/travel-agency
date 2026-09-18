@@ -1,3 +1,4 @@
+SET NAMES utf8mb4;
 USE travel_agency;
 
 -- The following rows are test/demo data only, not real travel agency operating data.

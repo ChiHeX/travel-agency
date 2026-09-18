@@ -20,6 +20,7 @@ import com.travelagency.domain.mapper.ConsultationMapper;
 import com.travelagency.domain.mapper.ConsultationReplyMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelGuideArticleMapper;
+import com.travelagency.domain.service.ArticleService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,7 +36,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
-import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,13 +63,16 @@ public class AdminContentController {
     private final ConsultationReplyMapper replyMapper;
     private final TravelGuideArticleMapper articleMapper;
     private final SysUserMapper sysUserMapper;
+    private final ArticleService articleService;
 
     public AdminContentController(ConsultationMapper consultationMapper, ConsultationReplyMapper replyMapper,
-                                  TravelGuideArticleMapper articleMapper, SysUserMapper sysUserMapper) {
+                                  TravelGuideArticleMapper articleMapper, SysUserMapper sysUserMapper,
+                                  ArticleService articleService) {
         this.consultationMapper = consultationMapper;
         this.replyMapper = replyMapper;
         this.articleMapper = articleMapper;
         this.sysUserMapper = sysUserMapper;
+        this.articleService = articleService;
     }
 
     // ---------------- 咨询管理 ----------------
@@ -140,8 +143,11 @@ public class AdminContentController {
         }
         Page<TravelGuideArticle> result = articleMapper.selectPage(pageOf(page, size),
                 query.orderByDesc("created_at"));
+        // 批量取回本页作者名，避免逐行 displayNameOf 造成 N+1。
+        Map<Long, String> authorNames = namesOf(result.getRecords().stream()
+                .map(article -> article.authorId).toList());
         List<ArticleView> items = result.getRecords().stream()
-                .map(a -> ArticleView.from(a, displayNameOf(a.authorId)))
+                .map(a -> ArticleView.from(a, authorNames.get(a.authorId)))
                 .toList();
         return ApiResponse.ok(new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
                 (int) result.getTotal(), (int) result.getPages()));
@@ -157,15 +163,7 @@ public class AdminContentController {
     /** 创建攻略，对齐契约 POST /admin/articles（201 + Location + ArticleEnvelope）。 */
     @PostMapping("/articles")
     public ResponseEntity<ApiResponse<ArticleView>> createArticle(@Valid @RequestBody ArticleRequest request) {
-        TravelGuideArticle article = fromRequest(request);
-        article.authorId = CurrentUser.required().userId();
-        if ("PUBLISHED".equals(article.status)) {
-            article.publishedAt = LocalDateTime.now();
-        }
-        articleMapper.insert(article);
-        TravelGuideArticle saved = articleMapper.selectById(article.id);
-        ArticleView view = ArticleView.from(saved == null ? article : saved,
-                displayNameOf(article.authorId));
+        ArticleView view = articleService.create(request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/articles/" + view.id())).body(ApiResponse.ok(view));
     }
 
@@ -173,23 +171,19 @@ public class AdminContentController {
     @PutMapping("/articles/{articleId}")
     public ApiResponse<ArticleView> updateArticle(
             @PathVariable Long articleId, @Valid @RequestBody ArticleRequest request) {
-        TravelGuideArticle article = requireArticle(articleId);
-        TravelGuideArticle updated = fromRequest(request);
-        updated.id = articleId;
-        updated.authorId = article.authorId;
-        if ("PUBLISHED".equals(updated.status) && article.publishedAt == null) {
-            updated.publishedAt = LocalDateTime.now();
-        } else {
-            updated.publishedAt = article.publishedAt;
-        }
-        articleMapper.updateById(updated);
-        return ApiResponse.ok(ArticleView.from(updated, displayNameOf(updated.authorId)));
+        return ApiResponse.ok(articleService.update(articleId, request));
     }
 
-    /** 删除攻略，对齐契约 DELETE /admin/articles/{articleId}（204）。 */
+    /**
+     * 删除攻略，对齐契约 DELETE /admin/articles/{articleId}（204；已发布返回 409）。
+     *
+     * <p>契约的语义是"删除<b>未发布</b>攻略"，因此先判存在（404）再判状态（409）。
+     * 此前直接 deleteById：不存在的 id 也回 204，已发布的线上攻略也会被物理删除，
+     * 公开攻略页随即 404，且永远不会返回契约约定的 409。</p>
+     */
     @DeleteMapping("/articles/{articleId}")
     public ResponseEntity<Void> deleteArticle(@PathVariable Long articleId) {
-        articleMapper.deleteById(articleId);
+        articleService.delete(articleId);
         return ResponseEntity.noContent().build();
     }
 
@@ -197,17 +191,7 @@ public class AdminContentController {
     @PatchMapping("/articles/{articleId}/status")
     public ApiResponse<ArticleView> updateArticleStatus(
             @PathVariable Long articleId, @Valid @RequestBody StatusRequest request) {
-        String status = request.status();
-        if (!List.of("PUBLISHED", "OFFLINE").contains(status)) {
-            throw new BusinessException(422, "VALIDATION_ERROR", "攻略状态仅支持 PUBLISHED 或 OFFLINE");
-        }
-        TravelGuideArticle article = requireArticle(articleId);
-        article.status = status;
-        if ("PUBLISHED".equals(status) && article.publishedAt == null) {
-            article.publishedAt = LocalDateTime.now();
-        }
-        articleMapper.updateById(article);
-        return ApiResponse.ok(ArticleView.from(article, displayNameOf(article.authorId)));
+        return ApiResponse.ok(articleService.updateStatus(articleId, request.status()));
     }
 
     // ---------------- 私有辅助 ----------------
@@ -228,30 +212,18 @@ public class AdminContentController {
         return article;
     }
 
-    private TravelGuideArticle fromRequest(ArticleRequest request) {
-        TravelGuideArticle article = new TravelGuideArticle();
-        article.title = request.title();
-        article.summary = request.summary();
-        article.content = request.content();
-        article.city = request.city();
-        article.destination = request.destination();
-        article.attractionId = request.attractionId();
-        article.coverUrl = request.coverUrl();
-        article.status = request.status() == null || request.status().isBlank() ? "DRAFT" : request.status();
-        return article;
-    }
-
     private ConsultationView toView(Consultation consultation) {
         if (consultation == null) {
             return null;
         }
-        List<ConsultationReplyView> replies = replyMapper.selectList(
-                        new QueryWrapper<ConsultationReply>().eq("consultation_id", consultation.id)
-                                .orderByAsc("created_at"))
-                .stream()
-                .map(r -> ConsultationReplyView.from(r, displayNameOf(r.staffId)))
+        List<ConsultationReply> replies = replyMapper.selectList(
+                new QueryWrapper<ConsultationReply>().eq("consultation_id", consultation.id)
+                        .orderByAsc("created_at"));
+        Map<Long, String> staffNames = namesOf(replies.stream().map(reply -> reply.staffId).toList());
+        List<ConsultationReplyView> replyViews = replies.stream()
+                .map(r -> ConsultationReplyView.from(r, staffNames.get(r.staffId)))
                 .toList();
-        return ConsultationView.from(consultation, displayNameOf(consultation.userId), replies);
+        return ConsultationView.from(consultation, displayNameOf(consultation.userId), replyViews);
     }
 
     private PageResponse<ConsultationView> toViewPage(Page<Consultation> result) {
@@ -274,9 +246,11 @@ public class AdminContentController {
         }
         List<ConsultationReply> replies = replyMapper.selectList(new QueryWrapper<ConsultationReply>()
                 .in("consultation_id", consultationIds).orderByAsc("created_at"));
+        // 批量取回回复人姓名，避免逐条 displayNameOf 造成 N+1。
+        Map<Long, String> staffNames = namesOf(replies.stream().map(reply -> reply.staffId).toList());
         return replies.stream().collect(Collectors.groupingBy(
                 r -> r.consultationId, LinkedHashMap::new,
-                Collectors.mapping(r -> ConsultationReplyView.from(r, displayNameOf(r.staffId)),
+                Collectors.mapping(r -> ConsultationReplyView.from(r, staffNames.get(r.staffId)),
                         Collectors.toList())));
     }
 

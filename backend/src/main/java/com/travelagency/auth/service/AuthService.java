@@ -1,6 +1,9 @@
 package com.travelagency.auth.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.travelagency.auth.dto.ProfileRequest;
+import org.springframework.dao.DuplicateKeyException;
 import com.travelagency.auth.dto.AuthResponse;
 import com.travelagency.auth.dto.LoginRequest;
 import com.travelagency.auth.dto.RegisterRequest;
@@ -51,7 +54,7 @@ public class AuthService {
         SysUser existing = userMapper.selectOne(new QueryWrapper<SysUser>()
                 .eq("username", request.username()).eq("deleted", 0));
         if (existing != null) {
-            throw new BusinessException("用户名已存在");
+            throw new BusinessException(409, "RESOURCE_CONFLICT", "用户名已存在");
         }
         SysUser user = new SysUser();
         user.username = request.username().trim();
@@ -61,7 +64,11 @@ public class AuthService {
         user.email = request.email();
         user.status = 1;
         user.deleted = 0;
-        userMapper.insert(user);
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException ex) {
+            throw new BusinessException(409, "RESOURCE_CONFLICT", "用户名已存在");
+        }
 
         SysRole userRole = roleMapper.selectOne(new QueryWrapper<SysRole>().eq("code", RoleCode.USER));
         if (userRole != null) {
@@ -93,6 +100,20 @@ public class AuthService {
             throw new BusinessException(401, "账号不存在或已停用");
         }
         return toView(user, rolesFor(user.id));
+    }
+
+    @Transactional
+    public UserView updateProfile(UserPrincipal principal, ProfileRequest request) {
+        view(principal);
+        // PUT replaces all editable fields, including explicit SQL NULL values.
+        userMapper.update(null, new UpdateWrapper<SysUser>()
+                .eq("id", principal.userId())
+                .set("nickname", request.nickname())
+                .set("phone", request.phone())
+                .set("email", request.email())
+                .set("real_name", request.realName())
+                .set("avatar", request.avatarUrl()));
+        return view(principal);
     }
 
     public Set<String> rolesFor(Long userId) {

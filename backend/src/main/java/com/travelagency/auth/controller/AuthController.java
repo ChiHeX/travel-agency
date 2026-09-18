@@ -8,6 +8,8 @@ import com.travelagency.auth.service.AuthService;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.security.CurrentUser;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import java.net.URI;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,8 +27,9 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ApiResponse<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
-        return ApiResponse.ok(authService.register(request));
+    public ResponseEntity<ApiResponse<AuthResponse>> register(@Valid @RequestBody RegisterRequest request) {
+        return ResponseEntity.created(URI.create("/api/account/profile"))
+                .body(ApiResponse.ok(authService.register(request)));
     }
 
     @PostMapping("/login")

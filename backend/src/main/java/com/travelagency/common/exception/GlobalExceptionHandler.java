@@ -22,6 +22,7 @@ import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -69,6 +70,25 @@ public class GlobalExceptionHandler {
                 .toList();
         return ResponseEntity.unprocessableContent()
                 .body(ApiResponse.error("VALIDATION_ERROR", "请求参数校验失败", errors));
+    }
+
+    /**
+     * 方法级参数校验失败（Controller 上的 {@code @Validated} + 参数约束，或 Spring 内建的方法校验）。
+     *
+     * <p>必须显式列出：本类兜底了 {@code Exception}，而这个异常继承自
+     * {@code ResponseStatusException}，既不是 {@code ErrorResponseException} 也不是
+     * {@code ConstraintViolationException}，漏掉就会把参数校验失败降级成 500。</p>
+     */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodValidation(HandlerMethodValidationException ex) {
+        List<ApiError> errors = ex.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream())
+                .map(error -> new ApiError("", "INVALID", error.getDefaultMessage()))
+                .toList();
+        String message = errors.isEmpty() || errors.get(0).message() == null
+                ? "请求参数校验失败" : errors.get(0).message();
+        return ResponseEntity.unprocessableContent()
+                .body(ApiResponse.error("VALIDATION_ERROR", message, errors));
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.travelagency.web.controller;
 
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.service.OrderService;
 import org.junit.jupiter.api.DisplayName;
@@ -20,16 +21,29 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * 支付回调入口的安全边界。
  *
- * <p>重点覆盖两点：① 共享密钥未配置时必须 fail-closed，绝不能退回到源码里公开可见的默认值；
- * ② 回调金额必须交给业务层与订单应付金额核对，缺失金额不能当作“无需核对”放行。</p>
+ * <p>重点覆盖三点：① 共享密钥未配置时必须 fail-closed，绝不能退回到源码里公开可见的默认值；
+ * ② 回调金额必须交给业务层与订单应付金额核对，缺失金额不能当作“无需核对”放行；
+ * ③ 该路径是「未配置支付宝公钥时的本地回退验签」，官方 RSA2 验签另见
+ * {@code AlipayGatewayClientTest}。</p>
  */
 class PaymentControllerTest {
 
     private static final String SECRET = "unit-test-callback-secret";
+
+    /**
+     * 回调入口按配置在两条验签路径间自动选择。本测试类专门覆盖 <b>HMAC 回退路径</b>，
+     * 因此让适配器声明「没有配置支付宝公钥」，从而走自建共享密钥验签。
+     */
+    private static AlipayGatewayClient hmacFallbackClient() {
+        AlipayGatewayClient client = mock(AlipayGatewayClient.class);
+        when(client.canVerifyNotifySignature()).thenReturn(false);
+        return client;
+    }
 
     private static String sign(String orderNo, String tradeNo, String result) {
         try {
@@ -61,7 +75,7 @@ class PaymentControllerTest {
     @DisplayName("未配置共享密钥时一律拒绝回调（fail-closed），且不触碰订单")
     void rejectsEverythingWhenSecretMissing() {
         OrderService orderService = mock(OrderService.class);
-        PaymentController controller = new PaymentController(orderService, "");
+        PaymentController controller = new PaymentController(orderService, hmacFallbackClient(), "");
 
         var response = controller.notify(params("TA1", "ALI1", "SUCCESS", "100.00", "whatever"));
 
@@ -73,7 +87,7 @@ class PaymentControllerTest {
     @DisplayName("密钥已配置但缺少签名时拒绝")
     void rejectsWhenSignatureMissing() {
         OrderService orderService = mock(OrderService.class);
-        PaymentController controller = new PaymentController(orderService, SECRET);
+        PaymentController controller = new PaymentController(orderService, hmacFallbackClient(), SECRET);
 
         var response = controller.notify(params("TA1", "ALI1", "SUCCESS", "100.00", null));
 
@@ -85,7 +99,7 @@ class PaymentControllerTest {
     @DisplayName("回调缺少 total_amount 时拒绝，不进入业务层")
     void rejectsWhenAmountMissing() {
         OrderService orderService = mock(OrderService.class);
-        PaymentController controller = new PaymentController(orderService, SECRET);
+        PaymentController controller = new PaymentController(orderService, hmacFallbackClient(), SECRET);
 
         var response = controller.notify(params("TA1", "ALI1", "SUCCESS", null, sign("TA1", "ALI1", "SUCCESS")));
 
@@ -97,7 +111,7 @@ class PaymentControllerTest {
     @DisplayName("验签通过时把回调金额交给业务层核对")
     void passesAmountToServiceOnValidSignature() {
         OrderService orderService = mock(OrderService.class);
-        PaymentController controller = new PaymentController(orderService, SECRET);
+        PaymentController controller = new PaymentController(orderService, hmacFallbackClient(), SECRET);
 
         var response = controller.notify(params("TA1", "ALI1", "SUCCESS", "199.90", sign("TA1", "ALI1", "SUCCESS")));
 
@@ -111,7 +125,7 @@ class PaymentControllerTest {
         OrderService orderService = mock(OrderService.class);
         doThrow(new BusinessException(409, "PAYMENT_AMOUNT_MISMATCH", "回调金额与订单应付金额不一致"))
                 .when(orderService).markPaid(anyString(), anyString(), any());
-        PaymentController controller = new PaymentController(orderService, SECRET);
+        PaymentController controller = new PaymentController(orderService, hmacFallbackClient(), SECRET);
 
         var response = controller.notify(params("TA1", "ALI1", "SUCCESS", "0.01", sign("TA1", "ALI1", "SUCCESS")));
 

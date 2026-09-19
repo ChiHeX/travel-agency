@@ -159,27 +159,17 @@ public class RouteService {
      *
      * <p>契约把该路径的响应定义为分页信封 + {@code RouteSummary}，前端也按
      * {@code data.items} 消费；返回裸数组会让收藏页永远显示为空。</p>
+     *
+     * <p>过滤放在 SQL 里（{@link FavoriteMapper#selectVisibleRoutes}）：先对收藏分页、
+     * 再在内存中剔除失效线路，会让 {@code total} / {@code totalPages} 仍然把这些收藏算进去，
+     * 某一页恰好全是失效线路时还会返回空页。视图组装复用 {@link #toSummaryPage}，
+     * 与 {@code GET /routes} 保持同一套 RouteSummary 口径。</p>
      */
     public PageResponse<RouteSummaryView> pageFavorites(Long userId, long current, long size) {
-        Page<Favorite> favorites = favoriteMapper.selectPage(
+        Page<TravelRoute> favorites = favoriteMapper.selectVisibleRoutes(
                 new Page<>(Math.max(current, 1), Math.min(Math.max(size, 1), MAX_PAGE_SIZE)),
-                new QueryWrapper<Favorite>().eq("user_id", userId).orderByDesc("created_at"));
-        List<Long> routeIds = favorites.getRecords().stream().map(f -> f.routeId).toList();
-        // 收藏后线路被删除的情况要过滤掉，否则详情页会出现打不开的条目。
-        Map<Long, TravelRoute> routes = new LinkedHashMap<>();
-        if (!routeIds.isEmpty()) {
-            routeMapper.selectByIds(routeIds).stream()
-                    .filter(route -> route != null && Integer.valueOf(0).equals(route.deleted))
-                    .forEach(route -> routes.put(route.id, route));
-        }
-        List<TravelRoute> ordered = routeIds.stream().map(routes::get).filter(java.util.Objects::nonNull).toList();
-        Map<Long, BigDecimal> minPrices = minAdultPriceMap(routeIds);
-        Map<Long, Departure> nextDepartures = nextOpenDepartureMap(routeIds);
-        List<RouteSummaryView> items = ordered.stream()
-                .map(route -> summaryOf(route, minPrices, nextDepartures, true))
-                .toList();
-        return new PageResponse<>(items, (int) favorites.getCurrent(), (int) favorites.getSize(),
-                (int) favorites.getTotal(), (int) favorites.getPages());
+                userId, RouteStatus.PUBLISHED);
+        return toSummaryPage(favorites, userId);
     }
 
     /**

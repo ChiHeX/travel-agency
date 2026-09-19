@@ -384,6 +384,42 @@ class RouteBrowseContractIntegrationTest {
         assertFalse(item.has("createdBy"), "内部字段不得外泄");
     }
 
+    /**
+     * 评审提出的分页边界：收藏记录还在，但它指向的线路已经不可展示。
+     *
+     * <p>失效的收藏必须既不出现在 {@code items} 里，也不计入 {@code total} / {@code totalPages}，
+     * 否则会出现"某一页被整页过滤后返回空页、有效收藏被推到下一页"的错位。</p>
+     */
+    @Test
+    @DisplayName("收藏分页在 SQL 层过滤失效线路：items 与 total 同口径，第一页不会返回空页")
+    void favoritesPagingIgnoresRoutesThatAreNoLongerVisible() throws Exception {
+        // 已逻辑删除的线路：先收藏、后删除。
+        TravelRoute removed = route("已删除线路-" + uniq, 3, new BigDecimal("4.20"), 5, "PUBLISHED");
+        removed.deleted = 1;
+        routes.updateById(removed);
+        // 已下架的线路：详情接口对它返回 404，收藏页同样不该再展示。
+        TravelRoute offline = route("已下架线路-" + uniq, 3, new BigDecimal("4.30"), 5, "DRAFT");
+
+        LocalDateTime base = LocalDateTime.now().minusDays(3);
+        favorite(owner, cheap.id, base);                    // 最早收藏，线路有效
+        favorite(owner, offline.id, base.plusHours(1));     // 更晚收藏，但线路已下架
+        favorite(owner, removed.id, base.plusHours(2));     // 最新收藏，但线路已被删除
+
+        // 每页一条：修复前第一页会被整页过滤成空页，有效收藏还留在下一页。
+        JsonNode first = read(get("/api/favorites").header("Authorization", ownerToken)
+                .param("page", "1").param("size", "1"));
+        assertEquals(1, first.get("total").asInt(), "失效收藏不得计入 total");
+        assertEquals(1, first.get("totalPages").asInt(), "totalPages 必须与 items 使用同一套条件");
+        assertEquals(1, first.get("items").size(), "第一页必须直接返回有效收藏，而不是空页");
+        assertEquals(cheap.id.toString(), first.get("items").get(0).get("id").asString());
+
+        // 同一口径下没有第二页有效数据；翻页时 total 不应随页码变化。
+        JsonNode second = read(get("/api/favorites").header("Authorization", ownerToken)
+                .param("page", "2").param("size", "1"));
+        assertEquals(0, second.get("items").size(), "第二页应为空，有效收藏不会溢出到下一页");
+        assertEquals(1, second.get("total").asInt(), "total 必须与第一页一致");
+    }
+
     // ------------------------------------------------------------------
     // 负例：一律排在各自方法末尾
     // ------------------------------------------------------------------
@@ -608,6 +644,15 @@ class RouteBrowseContractIntegrationTest {
         Favorite favorite = new Favorite();
         favorite.userId = user.id;
         favorite.routeId = routeId;
+        favorites.insert(favorite);
+    }
+
+    /** 按指定时间写入收藏，用于构造"更晚的收藏指向已失效线路"这类分页边界。 */
+    private void favorite(SysUser user, Long routeId, LocalDateTime createdAt) {
+        Favorite favorite = new Favorite();
+        favorite.userId = user.id;
+        favorite.routeId = routeId;
+        favorite.createdAt = createdAt;
         favorites.insert(favorite);
     }
 

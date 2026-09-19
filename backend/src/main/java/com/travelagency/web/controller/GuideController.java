@@ -9,7 +9,6 @@ import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideDashboardView;
 import com.travelagency.domain.dto.GuideDepartureDetailView;
-import com.travelagency.domain.dto.StatusRequest;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.OrderTraveler;
@@ -21,11 +20,10 @@ import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.service.AdminRouteService;
 import com.travelagency.domain.service.DepartureService;
 import com.travelagency.domain.service.OrderService;
-import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -135,14 +133,26 @@ public class GuideController {
         return ApiResponse.ok(passengerList(id));
     }
 
-    @PatchMapping("/departures/{id}/status")
-    public ApiResponse<Void> status(@PathVariable Long id, @Valid @org.springframework.web.bind.annotation.RequestBody StatusRequest request) {
+    /**
+     * 导游开始行程，对齐契约 POST /guide/departures/{departureId}/start。
+     *
+     * <p>契约要求返回更新后的团期（DepartureEnvelope），前端 {@code guideApi.start} 已按
+     * {@code POST .../start} 调用；此前该端点缺失，按钮必然 404。</p>
+     */
+    @PostMapping("/departures/{id}/start")
+    public ApiResponse<DepartureView> start(@PathVariable Long id) {
         ownedDeparture(id);
-        if (!DepartureStatus.TRAVELLING.equals(request.status()) && !DepartureStatus.FINISHED.equals(request.status())) {
-            throw new BusinessException("导游只能更新行程中或已完成状态");
-        }
-        departureService.changeStatus(id, request.status());
-        return ApiResponse.ok();
+        return ApiResponse.ok(departureService.start(id));
+    }
+
+    /**
+     * 导游结束行程，对齐契约 POST /guide/departures/{departureId}/complete，
+     * 返回更新后的团期（DepartureEnvelope）。对应前端带团详情页的"标记行程已结束"按钮。
+     */
+    @PostMapping("/departures/{id}/complete")
+    public ApiResponse<DepartureView> complete(@PathVariable Long id) {
+        ownedDeparture(id);
+        return ApiResponse.ok(departureService.complete(id));
     }
 
     private Guide currentGuide() {

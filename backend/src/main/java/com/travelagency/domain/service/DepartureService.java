@@ -35,6 +35,24 @@ public class DepartureService {
     private final TravelRouteMapper routeMapper;
     private final GuideMapper guideMapper;
 
+    /** 契约 DepartureStatus 的全部取值，供后台直接改状态时校验。 */
+    private static final List<String> ALL_STATUSES = List.of(
+            DepartureStatus.DRAFT, DepartureStatus.OPEN, DepartureStatus.FULL,
+            DepartureStatus.CLOSED, DepartureStatus.TRAVELLING, DepartureStatus.FINISHED,
+            DepartureStatus.CANCELLED);
+
+    /**
+     * 允许导游"开始行程"的前置状态：已开售 / 已满 / 已截止，但都还没出发。
+     *
+     * <p>刻意排除 {@link DepartureStatus#DRAFT}：新团期由 {@link #save} 建成 DRAFT，
+     * 而 {@code OrderService#create} 只接受 {@link DepartureStatus#OPEN} 的团期下单，
+     * 故 DRAFT 团期必然零订单——允许它"出发"只会掩盖后台漏上架，因此返回 409
+     * 要求先把团期上架。同时也排除 TRAVELLING（已在行程中，重复出发）、
+     * FINISHED 与 CANCELLED（终态）。</p>
+     */
+    private static final List<String> STARTABLE_STATUSES = List.of(
+            DepartureStatus.OPEN, DepartureStatus.FULL, DepartureStatus.CLOSED);
+
     public DepartureService(DepartureMapper departureMapper, TravelOrderMapper orderMapper,
                             TravelRouteMapper routeMapper, GuideMapper guideMapper) {
         this.departureMapper = departureMapper;
@@ -150,19 +168,71 @@ public class DepartureService {
         return departure;
     }
 
+    /**
+     * 后台直接改写团期状态，对齐契约 PATCH /admin/departures/{departureId}/status。
+     *
+     * <p>后台允许把团期改成任意合法状态（如人工下架、取消），因此这里只校验状态取值，
+     * 不做状态迁移合法性约束；导游端的 {@link #start(Long)} / {@link #complete(Long)}
+     * 才带状态机校验。</p>
+     */
     @Transactional
     public void changeStatus(Long departureId, String status) {
-        Departure departure = departureMapper.selectById(departureId);
-        if (departure == null) {
-            throw new BusinessException(404, "团期不存在");
-        }
-        if (!List.of(DepartureStatus.DRAFT, DepartureStatus.OPEN, DepartureStatus.FULL,
-                DepartureStatus.CLOSED, DepartureStatus.TRAVELLING, DepartureStatus.FINISHED,
-                DepartureStatus.CANCELLED).contains(status)) {
+        Departure departure = requireDeparture(departureId);
+        if (!ALL_STATUSES.contains(status)) {
             throw new BusinessException("团期状态不合法");
         }
+        applyStatus(departure, status);
+    }
+
+    /**
+     * 导游开始行程，对齐契约 POST /guide/departures/{departureId}/start：
+     * 只允许把"已开售但尚未出发"的团期推进到 {@link DepartureStatus#TRAVELLING}。
+     *
+     * <p>草稿（还没上架）、已取消、已在行程中、已完成的团期一律返回 409，
+     * 避免状态被反复改写（契约 start/complete 都声明了 409 冲突语义）。</p>
+     */
+    @Transactional
+    public DepartureView start(Long departureId) {
+        Departure departure = requireDeparture(departureId);
+        if (!STARTABLE_STATUSES.contains(departure.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "当前团期状态不允许开始行程：" + departure.status);
+        }
+        return applyStatus(departure, DepartureStatus.TRAVELLING);
+    }
+
+    /**
+     * 导游结束行程，对齐契约 POST /guide/departures/{departureId}/complete：
+     * 只允许从 {@link DepartureStatus#TRAVELLING} 推进到 {@link DepartureStatus#FINISHED}。
+     */
+    @Transactional
+    public DepartureView complete(Long departureId) {
+        Departure departure = requireDeparture(departureId);
+        if (!DepartureStatus.TRAVELLING.equals(departure.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "只有行程中的团期可以标记为已完成，当前状态：" + departure.status);
+        }
+        return applyStatus(departure, DepartureStatus.FINISHED);
+    }
+
+    private Departure requireDeparture(Long departureId) {
+        Departure departure = departureMapper.selectById(departureId);
+        if (departure == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        return departure;
+    }
+
+    /** 写入团期状态、级联订单状态，并返回最新的契约视图（三个状态入口共用）。 */
+    private DepartureView applyStatus(Departure departure, String status) {
         departure.status = status;
         departureMapper.updateById(departure);
+        cascadeOrderStatus(departure.id, status);
+        return DepartureView.from(departure, routeName(departure.routeId), guideName(departure.guideId));
+    }
+
+    /** 团期状态变化时同步订单状态：行程中 → 在途；已完成 → 完成（并写入完成时间）。 */
+    private void cascadeOrderStatus(Long departureId, String status) {
         if (DepartureStatus.TRAVELLING.equals(status)) {
             orderMapper.update(null, new UpdateWrapper<TravelOrder>()
                     .eq("departure_id", departureId).eq("status", OrderStatus.CONFIRMED)

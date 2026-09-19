@@ -6,12 +6,14 @@ import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.RouteItineraryDay;
 import com.travelagency.domain.entity.RouteItineraryItem;
 import com.travelagency.domain.entity.SysUser;
+import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.RouteItineraryDayMapper;
 import com.travelagency.domain.mapper.RouteItineraryItemMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
+import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,9 +35,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -61,12 +65,15 @@ class GuideTripContractIntegrationTest {
     @Autowired DepartureMapper departures;
     @Autowired GuideMapper guides;
     @Autowired SysUserMapper users;
+    @Autowired TravelOrderMapper orders;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
 
     private MockMvc mvc;
     private String guideToken;
     private String otherGuideToken;
+    private Long routeId;
+    private Long ownGuideId;
     private Long ownDepartureId;
     private Long foreignDepartureId;
 
@@ -74,9 +81,11 @@ class GuideTripContractIntegrationTest {
     void setUp() {
         mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
         TravelRoute route = route();
+        routeId = route.id;
         addItinerary(route.id);
 
         Guide own = guide();
+        ownGuideId = own.id;
         guideToken = "Bearer " + tokens.createToken(own.userId, "guide_" + own.id, Set.of("GUIDE"));
         ownDepartureId = departure(route.id, own.id).id;
 
@@ -149,6 +158,73 @@ class GuideTripContractIntegrationTest {
         assertTrue(data.get("upcoming").get(0).has("availableSeats"), "元素应为契约 Departure");
     }
 
+    /**
+     * 契约 POST /guide/departures/{id}/start 与 /complete：返回更新后的团期，
+     * 且团期状态推进时该团期下的订单要跟着走（出发→在途、结束→完成）。
+     */
+    @Test
+    void guideStartsAndCompletesOwnDepartureAndOrdersFollowTheTrip() throws Exception {
+        TravelOrder order = order("CONFIRMED");
+
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/start").header("Authorization", guideToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(String.valueOf(ownDepartureId)))
+                .andExpect(jsonPath("$.data.status").value("TRAVELLING"))
+                .andExpect(jsonPath("$.data.availableSeats").isNumber());
+        assertEquals("TRAVELLING", orders.selectById(order.id).status, "出发后已确认订单应进入行程中");
+
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/complete").header("Authorization", guideToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("FINISHED"));
+
+        TravelOrder finished = orders.selectById(order.id);
+        assertEquals("COMPLETED", finished.status, "行程结束后在途订单应完成");
+        assertNotNull(finished.completedAt, "完成时间应写入");
+    }
+
+    /** 非法状态迁移一律 409：未出发不能直接完成、已在行程中不能重复开始、已完成不能重复结束。 */
+    @Test
+    void illegalDepartureTransitionsReturnConflict() throws Exception {
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/complete").header("Authorization", guideToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+        assertEquals("OPEN", departures.selectById(ownDepartureId).status, "冲突时不得改写团期");
+
+        // 草稿团期还没上架，同样不允许开始行程。
+        Departure draft = departure(routeId, ownGuideId);
+        draft.status = "DRAFT";
+        departures.updateById(draft);
+        mvc.perform(post("/api/guide/departures/" + draft.id + "/start").header("Authorization", guideToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/start").header("Authorization", guideToken))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/start").header("Authorization", guideToken))
+                .andExpect(status().isConflict());
+
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/complete").header("Authorization", guideToken))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/guide/departures/" + ownDepartureId + "/complete").header("Authorization", guideToken))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+    }
+
+    /** 越权与不存在的团期：前者 403、后者 404，且都不产生任何状态变更。 */
+    @Test
+    void startAndCompleteAreGuardedByOwnershipAndExistence() throws Exception {
+        mvc.perform(post("/api/guide/departures/" + foreignDepartureId + "/start").header("Authorization", guideToken))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/guide/departures/" + foreignDepartureId + "/complete").header("Authorization", guideToken))
+                .andExpect(status().isForbidden());
+        assertEquals("OPEN", departures.selectById(foreignDepartureId).status, "越权请求不得改动他人团期");
+
+        mvc.perform(post("/api/guide/departures/9223372036854775807/start").header("Authorization", guideToken))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/guide/departures/9223372036854775807/complete").header("Authorization", guideToken))
+                .andExpect(status().isNotFound());
+    }
+
     // ------------------------------------------------------------------
     // 测试数据
     // ------------------------------------------------------------------
@@ -216,5 +292,33 @@ class GuideTripContractIntegrationTest {
         guide.status = "ACTIVE";
         guides.insert(guide);
         return guide;
+    }
+
+    /** 给本人团期挂一条订单，用于验证团期状态推进时订单状态的级联。 */
+    private TravelOrder order(String status) {
+        SysUser user = new SysUser();
+        user.username = "guide_ct_user_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        user.nickname = "下单测试用户";
+        user.passwordHash = "unused-test-hash";
+        user.status = 1;
+        user.deleted = 0;
+        users.insert(user);
+
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "GT-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        order.userId = user.id;
+        order.routeId = routeId;
+        order.departureId = ownDepartureId;
+        order.contactName = "测试联系人";
+        order.contactPhone = "13800000001";
+        order.adultCount = 1;
+        order.childCount = 0;
+        order.adultUnitPrice = new BigDecimal("2999.00");
+        order.childUnitPrice = new BigDecimal("1999.00");
+        order.totalAmount = new BigDecimal("2999.00");
+        order.status = status;
+        order.paymentStatus = "PAID";
+        orders.insert(order);
+        return order;
     }
 }

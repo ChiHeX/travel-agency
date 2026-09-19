@@ -700,6 +700,27 @@ public class OrderService {
     }
 
     /**
+     * 线路公开详情内嵌的评价列表（契约 {@code RouteDetail.reviews}）。
+     *
+     * <p>与 {@link #listRouteReviews} 同一公开语义（仅 VISIBLE、按时间倒序），区别是不分页：
+     * 详情内嵌的评价是随线路一次性返回的数组，契约没有给它分页参数。</p>
+     *
+     * <p>必须组装成 {@link ReviewView}：早期实现用 {@code selectMaps} 直接返回数据库行，
+     * 键是 {@code route_id} / {@code created_at} 这类列名，而契约要求的是
+     * {@code routeId} / {@code createdAt} / {@code userNickname}，导致详情页评价区
+     * 的作者与时间恒为空白。</p>
+     */
+    public List<ReviewView> routeVisibleReviews(Long routeId) {
+        List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
+                .eq("route_id", routeId).eq("status", "VISIBLE").orderByDesc("created_at"));
+        Map<Long, String> orderNos = orderNoMap(reviews.stream().map(r -> r.orderId).toList());
+        Map<Long, String> nicknames = displayNameMap(reviews.stream().map(r -> r.userId).toList());
+        return reviews.stream()
+                .map(r -> ReviewView.from(r, orderNos.get(r.orderId), nicknames.get(r.userId)))
+                .toList();
+    }
+
+    /**
      * 线路管理详情使用的线路评价列表。
      *
      * <p>与 {@link #listRouteReviews} 的区别：后者是公开接口语义（仅 PUBLISHED 线路 + VISIBLE 评价，

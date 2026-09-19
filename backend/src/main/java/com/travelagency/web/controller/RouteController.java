@@ -2,9 +2,11 @@ package com.travelagency.web.controller;
 
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.security.CurrentUser;
+import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.ReviewView;
-import com.travelagency.domain.dto.RouteDetailResponse;
-import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.dto.RouteDetailView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,8 +29,15 @@ public class RouteController {
         this.orderService = orderService;
     }
 
+    /**
+     * 线路搜索与筛选，对齐契约 {@code GET /routes}。
+     *
+     * <p>响应 items 必须是契约 {@code RouteSummary}：前端线路卡片与订单页都依赖
+     * {@code availableSeats} / {@code nextDepartureDate}，直出实体时这两个字段缺失，
+     * 会让"余位"永远显示为空。{@code favorite} 需要登录态，未登录恒为 false。</p>
+     */
     @GetMapping
-    public ApiResponse<PageResponse<TravelRoute>> list(
+    public ApiResponse<PageResponse<RouteSummaryView>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "12") long size,
             @RequestParam(required = false) String keyword,
@@ -38,14 +47,16 @@ public class RouteController {
             @RequestParam(required = false) BigDecimal maxPrice,
             @RequestParam(required = false) Integer durationDays,
             @RequestParam(required = false) Integer departureMonth,
-            @RequestParam(defaultValue = "false") boolean hasDeparture) {
-        return ApiResponse.ok(PageResponse.from(routeService.pagePublic(page, size, keyword, departureCity,
-                destination, minPrice, maxPrice, durationDays, departureMonth, hasDeparture)));
+            @RequestParam(defaultValue = "false") boolean hasDeparture,
+            @RequestParam(required = false) String sort) {
+        return ApiResponse.ok(routeService.pagePublic(page, size, keyword, departureCity,
+                destination, minPrice, maxPrice, durationDays, departureMonth, hasDeparture,
+                sort, currentUserId()));
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<RouteDetailResponse> detail(@PathVariable Long id) {
-        return ApiResponse.ok(routeService.detail(id));
+    public ApiResponse<RouteDetailView> detail(@PathVariable Long id) {
+        return ApiResponse.ok(routeService.detail(id, currentUserId()));
     }
 
     /**
@@ -57,5 +68,13 @@ public class RouteController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(orderService.listRouteReviews(id, page, size));
+    }
+
+    /**
+     * 本组端点公开可访问，登录与否只影响 {@code favorite} 字段，因此取可选身份而非强制登录。
+     */
+    private static Long currentUserId() {
+        UserPrincipal principal = CurrentUser.optional();
+        return principal == null ? null : principal.userId();
     }
 }

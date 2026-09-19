@@ -177,11 +177,13 @@ public class DepartureService {
      */
     @Transactional
     public void changeStatus(Long departureId, String status) {
-        Departure departure = requireDeparture(departureId);
+        requireDeparture(departureId);
         if (!ALL_STATUSES.contains(status)) {
             throw new BusinessException("团期状态不合法");
         }
-        applyStatus(departure, status);
+        // 后台没有前置状态限制，因此只按 id 定位；写入与订单级联同处一个事务。
+        writeStatus(departureId, status, null);
+        cascadeOrderStatus(departureId, status);
     }
 
     /**
@@ -193,12 +195,8 @@ public class DepartureService {
      */
     @Transactional
     public DepartureView start(Long departureId) {
-        Departure departure = requireDeparture(departureId);
-        if (!STARTABLE_STATUSES.contains(departure.status)) {
-            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
-                    "当前团期状态不允许开始行程：" + departure.status);
-        }
-        return applyStatus(departure, DepartureStatus.TRAVELLING);
+        return transition(departureId, STARTABLE_STATUSES, DepartureStatus.TRAVELLING,
+                "当前团期状态不允许开始行程：");
     }
 
     /**
@@ -207,12 +205,50 @@ public class DepartureService {
      */
     @Transactional
     public DepartureView complete(Long departureId) {
+        return transition(departureId, List.of(DepartureStatus.TRAVELLING), DepartureStatus.FINISHED,
+                "只有行程中的团期可以标记为已完成，当前状态：");
+    }
+
+    /**
+     * 团期状态机迁移：把前置状态校验下推到 UPDATE 语句里，用影响行数做原子闸门。
+     *
+     * <p>原先的"先 select 判状态、再 {@code updateById} 写状态"只能拦住顺序重复调用：
+     * 两个并发请求会同时读到 OPEN（或 TRAVELLING），随后双双更新成功并各执行一次订单级联，
+     * 完成团期时还会重复覆盖 {@code completed_at}。改为条件更新
+     * {@code UPDATE departure SET status = ? WHERE id = ? AND status IN (允许的旧状态)} 后，
+     * 行锁保证只有一个请求能把状态从旧值改走、影响行数为 1；其余请求影响行数为 0，
+     * 统一返回 409 {@code DEPARTURE_STATE_CONFLICT}，因此只有迁移成功的那个请求才会继续级联订单。
+     * 归属校验（404/403，语义上要求区分"团期不存在"与"不是本人负责"）仍由调用方在进入本方法前完成。</p>
+     */
+    private DepartureView transition(Long departureId, List<String> fromStatuses, String toStatus,
+                                     String conflictMessage) {
         Departure departure = requireDeparture(departureId);
-        if (!DepartureStatus.TRAVELLING.equals(departure.status)) {
-            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
-                    "只有行程中的团期可以标记为已完成，当前状态：" + departure.status);
+        if (writeStatus(departureId, toStatus, fromStatuses) == 0) {
+            // 影响行数为 0：状态已被并发的另一次迁移改走，回读最新状态用于说明冲突原因。
+            Departure latest = departureMapper.selectById(departureId);
+            String current = latest == null ? departure.status : latest.status;
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT", conflictMessage + current);
         }
-        return applyStatus(departure, DepartureStatus.FINISHED);
+        cascadeOrderStatus(departureId, toStatus);
+        return toView(departureMapper.selectById(departureId));
+    }
+
+    /**
+     * 只写团期状态，返回影响行数。
+     *
+     * <p>{@code fromStatuses} 非空时作为 UPDATE 的附加条件（乐观闸门）；为空表示不限制前置状态，
+     * 供后台 {@link #changeStatus} 使用。用条件更新而非 {@code updateById} 还会顺带避免
+     * 把回读实体里的旧 {@code updated_at} 写回库里——该字段由数据库
+     * {@code ON UPDATE CURRENT_TIMESTAMP} 自行维护。</p>
+     */
+    private int writeStatus(Long departureId, String status, List<String> fromStatuses) {
+        UpdateWrapper<Departure> update = new UpdateWrapper<Departure>()
+                .eq("id", departureId)
+                .set("status", status);
+        if (fromStatuses != null && !fromStatuses.isEmpty()) {
+            update.in("status", fromStatuses);
+        }
+        return departureMapper.update(null, update);
     }
 
     private Departure requireDeparture(Long departureId) {
@@ -221,14 +257,6 @@ public class DepartureService {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
         }
         return departure;
-    }
-
-    /** 写入团期状态、级联订单状态，并返回最新的契约视图（三个状态入口共用）。 */
-    private DepartureView applyStatus(Departure departure, String status) {
-        departure.status = status;
-        departureMapper.updateById(departure);
-        cascadeOrderStatus(departure.id, status);
-        return DepartureView.from(departure, routeName(departure.routeId), guideName(departure.guideId));
     }
 
     /** 团期状态变化时同步订单状态：行程中 → 在途；已完成 → 完成（并写入完成时间）。 */

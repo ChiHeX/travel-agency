@@ -53,9 +53,17 @@ app:
       # 应用私钥（RSA2 / PKCS#8，不含头部 PEM 标记）。严禁提交到仓库（见 CONTRIBUTING §14）。
       app-private-key: ${ALIPAY_APP_PRIVATE_KEY:}
       # 支付宝公钥（用于验签支付宝的异步通知与响应报文）。
+      # ⚠️ 必须与 app-id 同时配置：RSA2 验签要核对通知归属，只给公钥无法判断通知是不是发给本应用的。
       alipay-public-key: ${ALIPAY_PUBLIC_KEY:}
-      # 旧的回调共享密钥，仅在未配置支付宝公钥时作为本地开发回退使用（HMAC 适配点）。
-      # 配置了支付宝公钥后，回调一律走官方 RSA2 验签，本项不再参与。
+      # 支付结果异步通知地址（公网可达的 POST /api/payments/alipay/notify 全地址）。
+      # 作为公共参数随收银台请求一起参与签名；不配置则支付宝无法回传结果，
+      # 订单会一直停在待支付（本系统不依赖浏览器跳转确认支付）。
+      notify-url: ${ALIPAY_NOTIFY_URL:}
+      # 可选：支付宝商户 UID。配置后回调会一并核对 seller_id，进一步收紧归属校验。
+      seller-id: ${ALIPAY_SELLER_ID:}
+      # 旧的回调共享密钥，仅在【公钥与 APPID 都未配置】时作为本地开发回退使用（HMAC 适配点）。
+      # 只要公钥与 APPID 配齐，回调一律走官方 SDK 验签，本项不再参与；
+      # 若两者只配其一，回调会被直接拒绝，不会降级到本项。
       callback-secret: ${ALIPAY_CALLBACK_SECRET:}
 
 management:

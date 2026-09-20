@@ -1,5 +1,6 @@
 package com.travelagency.common.alipay;
 
+import com.alipay.api.internal.util.AlipaySignature;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -8,36 +9,53 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.PrivateKey;
-import java.security.Signature;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 支付宝沙箱适配器的签名/验签规则。
+ * 支付宝沙箱适配器的签名/验签契约，<b>签名与验签全部以官方 SDK {@code AlipaySignature} 为准</b>。
  *
- * <p>这些用例不联网：密钥对在测试内用 {@link KeyPairGenerator} 现场生成，
- * 「应用私钥」与「支付宝私钥」各用一对，用来分别模拟本应用签名与支付宝签名。
- * 覆盖的规则与支付宝官方 {@code AlipaySignature} 一致：</p>
+ * <p>这些用例不联网：密钥对在测试内用 {@link KeyPairGenerator} 现场生成，应用侧与支付宝侧
+ * 各用一对，分别模拟「本应用签名」与「支付宝签名」。断言不依赖我们自己的拼串实现，
+ * 而是拿官方 SDK 的验签函数回验产出，因此实现若偏离官方口径会直接变红。</p>
+ *
+ * <p>两套口径必须分清，这是本类最容易踩的坑，也是下面成对断言要钉住的东西：</p>
  * <ul>
- *   <li><b>请求签名</b>：剔除 {@code sign} 与空值，{@code sign_type} <b>参与</b>签名；</li>
- *   <li><b>异步通知验签</b>：剔除 {@code sign} <b>和</b> {@code sign_type}（等价 {@code rsaCheckV1}）；</li>
- *   <li>通知声明的 {@code app_id} 必须与本应用一致；</li>
- *   <li>任何一项不满足都按拒绝处理（fail-closed），且不抛异常打死调用方。</li>
+ *   <li><b>请求签名（收银台链接）</b>：剔除 {@code sign}，{@code sign_type} <b>参与</b>签名
+ *       → 对应 {@code rsaCheckV2}。<b>实测</b>：收银台链接用 {@code rsaCheckV1} 回验必然为 false。</li>
+ *   <li><b>异步通知验签</b>：剔除 {@code sign} <b>和</b> {@code sign_type}
+ *       （等价官方 {@code rsaCheckV1} / {@code getSignCheckContentV1}）。</li>
+ * </ul>
+ *
+ * <p>另外两条实测结论被写成用例，防止后人改回去：</p>
+ * <ul>
+ *   <li>官方 {@code getSignCheckContentV1/V2} 会<b>就地删除</b>传入 Map 的 {@code sign}/{@code sign_type}，
+ *       且删除是<b>无条件</b>的（验签失败也照删）⇒ 实现必须传副本，否则同一份参数验第二次就废了；</li>
+ *   <li>公钥为空、{@code sign} 非法 Base64 等情况下 SDK <b>抛 {@code AlipayApiException} 而不是返回 false</b>
+ *       ⇒ 实现必须捕获并当作验签失败，否则回调会被打成 5xx。</li>
  * </ul>
  */
 class AlipayGatewayClientTest {
 
     private static final String GATEWAY = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
     private static final String APP_ID = "9021000168641134";
-    private static final String NOTIFY_PATH = "/api/payments/alipay/notify";
+    private static final String OTHER_APP_ID = "9999999999999999";
+    private static final String NOTIFY_URL = "https://travel-agency.test/api/payments/alipay/notify";
+    private static final String SELLER_ID = "2088000000000000";
+    private static final String OTHER_SELLER_ID = "2088000000000099";
+    private static final DateTimeFormatter ALIPAY_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     // ------------------------------------------------------------------ 配置判定
 
@@ -46,78 +64,155 @@ class AlipayGatewayClientTest {
     void requiresAppIdAndPrivateKeyToBuildCashierUrl() {
         KeyPair app = keyPair();
 
-        assertTrue(sandbox(app, APP_ID).canBuildCashierUrl());
+        assertTrue(sandbox(privateKey(app), APP_ID).canBuildCashierUrl());
+        // APPID 与私钥都给全时才是「可生成」
+        assertTrue(gateway(privateKey(app), "", NOTIFY_URL, "").canBuildCashierUrl());
         // 缺少 APPID：登录沙箱页面前就是这种状态，必须回退占位而不是抛异常
-        assertFalse(new AlipayGatewayClient(GATEWAY, "", privateKey(app), "").canBuildCashierUrl());
+        assertFalse(sandbox("", APP_ID).canBuildCashierUrl());
         // 缺少应用私钥
-        assertFalse(new AlipayGatewayClient(GATEWAY, APP_ID, "", "").canBuildCashierUrl());
+        assertFalse(sandbox(privateKey(app), "").canBuildCashierUrl());
         // 网关地址为空
-        assertFalse(new AlipayGatewayClient("", APP_ID, privateKey(app), "").canBuildCashierUrl());
+        assertFalse(new AlipayGatewayClient("", APP_ID, privateKey(app), "", NOTIFY_URL, "")
+                .canBuildCashierUrl());
     }
 
     @Test
-    @DisplayName("只有配置了支付宝公钥才具备官方验签能力")
-    void requiresAlipayPublicKeyToVerifyNotify() {
+    @DisplayName("必须支付宝公钥与 APPID 同时配置才算具备官方验签能力")
+    void requiresBothPublicKeyAndAppIdToVerifyNotify() {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
 
-        assertFalse(sandbox(app, APP_ID).canVerifyNotifySignature());
-        assertTrue(new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay))
+        // 只有 APPID，没有公钥：验不了签
+        assertFalse(sandbox(privateKey(app), APP_ID).canVerifyNotifySignature());
+        // 只有公钥，没有 APPID：无法核对通知归属，同样不算具备验签能力
+        assertFalse(new AlipayGatewayClient(GATEWAY, "", privateKey(app), publicKey(alipay), NOTIFY_URL, "")
                 .canVerifyNotifySignature());
+        // 两者齐备
+        assertTrue(gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, "").canVerifyNotifySignature());
     }
 
     @Test
-    @DisplayName("未配置时生成收银台地址直接拒绝，且自述配置只输出“已配置/未配置”，不泄露密钥内容")
-    void throwsWhenNotConfigured() {
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, "", "", "");
+    @DisplayName("半配置判定：公钥与 APPID 恰好只配其一时为 true，两者都没配或都配齐为 false")
+    void isRsa2ConfigurationIncompleteOnlyWhenExactlyOneIsConfigured() {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
 
-        assertThrows(IllegalStateException.class,
-                () -> client.buildCashierUrl("TA1", new BigDecimal("1.00"), "订单"));
+        // 只配公钥 → 半配置
+        assertTrue(new AlipayGatewayClient(GATEWAY, "", privateKey(app), publicKey(alipay), NOTIFY_URL, "")
+                .isRsa2ConfigurationIncomplete());
+        // 只配 APPID → 半配置
+        assertTrue(sandbox(privateKey(app), APP_ID).isRsa2ConfigurationIncomplete());
+        // 都没配 → 不是半配置，调用方应走本地 HMAC 回退
+        assertFalse(new AlipayGatewayClient(GATEWAY, "", "", "", "", "").isRsa2ConfigurationIncomplete());
+        // 都配齐 → 正常
+        assertFalse(gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, "").isRsa2ConfigurationIncomplete());
+    }
 
-        String description = client.describeConfiguration();
+    @Test
+    @DisplayName("hasNotifyUrl 如实反映配置，describeConfiguration 只输出“已配置/未配置”且不含密钥原文")
+    void describesConfigurationWithoutLeakingKeys() {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+
+        assertTrue(gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID).hasNotifyUrl());
+        assertFalse(new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay), "", "")
+                .hasNotifyUrl());
+
+        AlipayGatewayClient blank = new AlipayGatewayClient(GATEWAY, "", "", "", "", "");
+        String description = blank.describeConfiguration();
         assertTrue(description.contains("appId=未配置"));
         assertTrue(description.contains("appPrivateKey=未配置"));
         assertTrue(description.contains("alipayPublicKey=未配置"));
+        assertTrue(description.contains("notifyUrl=未配置"));
+        assertTrue(description.contains("sellerId=未配置"));
+
+        // 配了密钥时，自述里绝不能出现密钥原文
+        AlipayGatewayClient configured = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
+        String configuredDescription = configured.describeConfiguration();
+        assertFalse(configuredDescription.contains(privateKey(app)), "自述泄露了应用私钥");
+        assertFalse(configuredDescription.contains(publicKey(alipay)), "自述泄露了支付宝公钥");
+        assertTrue(configuredDescription.contains("appPrivateKey=已配置"));
     }
 
-    // ------------------------------------------------------------------ 收银台链接
+    @Test
+    @DisplayName("未配置 APPID/私钥时生成收银台地址直接拒绝，而不是抛 500 级别的未知异常")
+    void throwsWhenCashierUrlNotConfigured() {
+        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, "", "", "", "", "");
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> client.buildCashierUrl("TA1", new BigDecimal("1.00"), "订单"));
+        assertTrue(ex.getMessage().contains("未配置"), "异常消息要能定位到是配置缺失：" + ex.getMessage());
+    }
+
+    // ------------------------------------------------------------------ 收银台链接（请求签名口径）
 
     @Test
-    @DisplayName("收银台链接用应用私钥签名，且签名可被应用公钥验回（sign_type 参与签名）")
-    void cashierUrlIsSignedWithAppPrivateKey() throws Exception {
+    @DisplayName("收银台链接由官方 SDK 按请求口径签名（sign_type 参与），可用 rsaCheckV2 验回、rsaCheckV1 验不回")
+    void cashierUrlIsSignedWithRequestCaliber() throws Exception {
         KeyPair app = keyPair();
-        AlipayGatewayClient client = sandbox(app, APP_ID);
-
-        String url = client.buildCashierUrl("TA20270301000001ABCD1234", new BigDecimal("1999.9"),
-                "旅行社团购订单 TA20270301000001ABCD1234");
+        String url = sandbox(privateKey(app), APP_ID)
+                .buildCashierUrl("TA20270301000001ABCD1234", new BigDecimal("1999.9"),
+                        "旅行社团购订单 TA20270301000001ABCD1234");
 
         assertTrue(url.startsWith(GATEWAY + "?"), "收银台链接必须指向沙箱网关");
 
         Map<String, String> params = parseQuery(url);
-        String sign = params.remove("sign");
-
         assertEquals("alipay.trade.page.pay", params.get("method"));
         assertEquals(APP_ID, params.get("app_id"));
         assertEquals("RSA2", params.get("sign_type"));
-        assertEquals("JSON", params.get("format"));
+        assertEquals("json", params.get("format"));
+        assertEquals("utf-8", params.get("charset"));
         assertEquals("1.0", params.get("version"));
         assertTrue(params.containsKey("timestamp"), "必须带支付宝时间戳");
         assertTrue(url.contains("FAST_INSTANT_TRADE_PAY"), "产品码必须出现在 biz_content 中");
 
-        // 只剔除 sign，保留 sign_type → 若实现把 sign_type 也剔掉了，这里就会验签失败
-        String content = AlipayGatewayClient.canonicalContent(params, Set.of("sign"));
-        assertTrue(AlipayGatewayClient.rsa2Verify(content, sign, publicKey(app)),
-                "收银台链接的签名必须能用应用公钥验回");
+        // 官方请求签名口径：只剔 sign，sign_type 参与
+        assertTrue(AlipaySignature.rsaCheckV2(new LinkedHashMap<>(params), publicKey(app), "utf-8", "RSA2"),
+                "收银台链接必须能用应用公钥按官方请求口径验回");
+
+        // 反向对照：若实现误用了通知口径（把 sign_type 也剔掉）签，V2 就会失败，这里会先红。
+        // 同时钉住「两套口径不可混用」这一契约，防止后人把通知的 rsaCheckV1 拿来验请求。
+        assertFalse(AlipaySignature.rsaCheckV1(new LinkedHashMap<>(params), publicKey(app), "utf-8", "RSA2"),
+                "收银台链接按请求口径签名（sign_type 参与），用通知口径必然对不上");
     }
 
     @Test
-    @DisplayName("金额统一格式化为两位小数，商品名中的引号被转义")
+    @DisplayName("收银台链接带 notify_url，且它是被签进报文的公共参数")
+    void cashierUrlCarriesSignedNotifyUrl() throws Exception {
+        KeyPair app = keyPair();
+        String url = gateway(privateKey(app), "", NOTIFY_URL, "")
+                .buildCashierUrl("TA20270301000002ABCD1234", new BigDecimal("1.00"), "订单");
+
+        Map<String, String> params = parseQuery(url);
+        assertEquals(NOTIFY_URL, params.get("notify_url"), "付款结果必须能回传到本系统的回调地址");
+
+        // 去掉 notify_url 后签名必须失配 —— 证明它不是「挂在 URL 上但没被签」的裸参数
+        Map<String, String> stripped = new LinkedHashMap<>(params);
+        stripped.remove("notify_url");
+        assertFalse(AlipaySignature.rsaCheckV2(stripped, publicKey(app), "utf-8", "RSA2"),
+                "notify_url 未参与签名，可被中间人改写");
+    }
+
+    @Test
+    @DisplayName("未配置 ALIPAY_NOTIFY_URL 时收银台链接仍可生成，但确实不带 notify_url")
+    void cashierUrlOmitsNotifyUrlWhenNotConfigured() {
+        KeyPair app = keyPair();
+        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), "", "", "");
+
+        assertFalse(client.hasNotifyUrl());
+        String url = client.buildCashierUrl("TA20270301000003ABCD1234", new BigDecimal("10.00"), "订单");
+
+        assertTrue(url.startsWith(GATEWAY + "?"), "缺 notify_url 不应该让收银台链接生成失败");
+        assertFalse(parseQuery(url).containsKey("notify_url"), "未配置时不得凭空出现 notify_url");
+    }
+
+    @Test
+    @DisplayName("金额统一格式化为两位小数，商品名中的引号与反斜杠被转义")
     void formatsAmountAndEscapesSubject() {
         KeyPair app = keyPair();
-        AlipayGatewayClient client = sandbox(app, APP_ID);
 
-        Map<String, String> params = parseQuery(
-                client.buildCashierUrl("TA1", new BigDecimal("1000"), "含\"引号\"的订单名"));
+        Map<String, String> params = parseQuery(sandbox(privateKey(app), APP_ID)
+                .buildCashierUrl("TA1", new BigDecimal("1000"), "含\"引号\"的订单名"));
 
         String biz = params.get("biz_content");
         assertTrue(biz.contains("\"total_amount\":\"1000.00\""), "金额必须是两位小数字符串：" + biz);
@@ -126,27 +221,67 @@ class AlipayGatewayClientTest {
     }
 
     @Test
-    @DisplayName("时间戳落在 +08:00，格式为 yyyy-MM-dd HH:mm:ss")
+    @DisplayName("biz_content：金额四舍五入到两位小数、反斜杠与引号转义、subject 为空时不产出 null")
+    void bizContentFollowsContract() {
+        String biz = AlipayGatewayClient.bizContent("TA1", new BigDecimal("1999.999"), "a\\b\"c");
+
+        assertTrue(biz.contains("\"total_amount\":\"2000.00\""), "必须按 HALF_UP 取两位小数：" + biz);
+        assertTrue(biz.contains("\"subject\":\"a\\\\b\\\"c\""), "反斜杠与引号都要转义：" + biz);
+        assertTrue(biz.contains("\"product_code\":\"FAST_INSTANT_TRADE_PAY\""));
+
+        // null subject 不能拼出字面量 null 或 NPE
+        String nullSubject = AlipayGatewayClient.bizContent("TA1", new BigDecimal("1"), null);
+        assertTrue(nullSubject.contains("\"subject\":\"\""), "subject 为空时应是空串：" + nullSubject);
+    }
+
+    @Test
+    @DisplayName("时间戳用支付宝口径（+08:00），格式为 yyyy-MM-dd HH:mm:ss")
     void timestampUsesAlipayZone() {
         KeyPair app = keyPair();
 
-        Map<String, String> params = parseQuery(
-                sandbox(app, APP_ID).buildCashierUrl("TA1", new BigDecimal("1.00"), "订单"));
+        Map<String, String> params = parseQuery(sandbox(privateKey(app), APP_ID)
+                .buildCashierUrl("TA1", new BigDecimal("1.00"), "订单"));
 
-        assertTrue(params.get("timestamp").matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"),
-                "时间戳格式不对：" + params.get("timestamp"));
+        String timestamp = params.get("timestamp");
+        LocalDateTime parsed = LocalDateTime.parse(timestamp, ALIPAY_TIME);
+
+        // 实测 SDK 的时间戳固定按 +08:00 产出，不受 JVM 默认时区影响（-Duser.timezone=UTC 下同样如此），
+        // 因此这里可以断言时区，而不是只断言格式。
+        LocalDateTime beijingNow = OffsetDateTime.now(ZoneOffset.ofHours(8)).toLocalDateTime();
+        long skewSeconds = Math.abs(Duration.between(beijingNow, parsed).getSeconds());
+        assertTrue(skewSeconds <= 30, "时间戳必须接近北京时间：" + timestamp + "（偏差 " + skewSeconds + " 秒）");
     }
 
-    // ------------------------------------------------------------------ 回调验签
+    // ------------------------------------------------------------------ 异步通知验签（官方 SDK 口径）
 
     @Test
-    @DisplayName("真实支付宝通知（sign_type 参与报文但被剔除后验签）可以通过")
+    @DisplayName("真实支付宝通知（官方 V1 口径签名）可以通过验签")
     void verifiesGenuineNotify() throws Exception {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay));
 
-        assertTrue(client.verifyNotifySignature(alipaySignedNotify("TA1", alipay)));
+        assertTrue(gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID)
+                .verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, alipay)));
+    }
+
+    @Test
+    @DisplayName("同一份参数可重复验签，且官方 SDK 的删 key 副作用不会波及调用方的 Map")
+    void notifyVerificationIsRepeatableAndDoesNotMutateCallerMap() throws Exception {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
+
+        Map<String, String> notify = signedNotify(APP_ID, SELLER_ID, alipay);
+
+        assertTrue(client.verifyNotifySignature(notify));
+        // 实测官方 getSignCheckContentV1 会无条件删掉传入 Map 的 sign/sign_type；实现传了副本，
+        // 所以调用方的 Map 必须原样保留，否则「验一次就被掏空」会污染支付回调的后续处理。
+        assertTrue(notify.containsKey("sign"), "调用方 Map 里的 sign 被 SDK 删掉了，说明实现没有传副本");
+        assertTrue(notify.containsKey("sign_type"), "调用方 Map 里的 sign_type 被 SDK 删掉了");
+        assertEquals("RSA2", notify.get("sign_type"));
+
+        // 同一份参数（同一个 Map 对象）再验一次仍须通过
+        assertTrue(client.verifyNotifySignature(notify), "同一份参数第二次验签失败了，说明副作用没有隔离");
     }
 
     @Test
@@ -154,25 +289,46 @@ class AlipayGatewayClientTest {
     void rejectsTamperedNotify() throws Exception {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay));
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
 
-        Map<String, String> params = alipaySignedNotify("TA1", alipay);
+        Map<String, String> params = signedNotify(APP_ID, SELLER_ID, alipay);
         params.put("total_amount", "0.01");   // 签名覆盖金额，改动必然失配
 
         assertFalse(client.verifyNotifySignature(params));
     }
 
     @Test
-    @DisplayName("缺少 sign 的通知一律拒绝")
-    void rejectsNotifyWithoutSign() {
+    @DisplayName("缺少 sign、空参数表一律拒绝，且不抛异常")
+    void rejectsNotifyWithoutSign() throws Exception {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay));
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
 
-        Map<String, String> params = notifyParams("TA1", "ALI1");
-        assertFalse(client.verifyNotifySignature(params));
+        // 有报文但没有 sign
+        Map<String, String> noSign = notifyParams(APP_ID, SELLER_ID);
+        assertFalse(client.verifyNotifySignature(noSign));
+        // sign 存在但为空串
+        Map<String, String> blankSign = notifyParams(APP_ID, SELLER_ID);
+        blankSign.put("sign", "   ");
+        assertFalse(client.verifyNotifySignature(blankSign));
+        // null / 空表
         assertFalse(client.verifyNotifySignature(null));
-        assertFalse(client.verifyNotifySignature(Map.of()));
+        assertFalse(client.verifyNotifySignature(new LinkedHashMap<>()));
+    }
+
+    @Test
+    @DisplayName("非法 Base64 的 sign 被拒绝：官方 SDK 会抛异常，必须被实现吞掉而不是打成 5xx")
+    void rejectsMalformedSignatureWithoutThrowing() throws Exception {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
+
+        Map<String, String> params = notifyParams(APP_ID, SELLER_ID);
+        params.put("sign", "!!!not-base64!!!");
+
+        // 实测该场景 rsaCheckV1 抛 AlipayApiException 而非返回 false
+        assertFalse(client.verifyNotifySignature(params),
+                "非法 sign 必须是「拒绝」而不是异常穿到 controller");
     }
 
     @Test
@@ -181,9 +337,9 @@ class AlipayGatewayClientTest {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
         KeyPair attacker = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay));
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
 
-        assertFalse(client.verifyNotifySignature(alipaySignedNotify("TA1", attacker)));
+        assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, attacker)));
     }
 
     @Test
@@ -191,125 +347,174 @@ class AlipayGatewayClientTest {
     void rejectsNotifyForOtherApp() throws Exception {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay));
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
 
-        Map<String, String> params = notifyParams("TA1", "ALI1");
-        params.put("app_id", "9999999999999999");
-        params.put("sign", signContent(params, alipay.getPrivate()));
+        // 用支付宝私钥签的、完全合法的签名，但声明的是另一个应用
+        Map<String, String> params = signedNotify(OTHER_APP_ID, SELLER_ID, alipay);
 
         assertFalse(client.verifyNotifySignature(params), "其他应用的合法通知不能被拿去串单");
     }
 
     @Test
-    @DisplayName("未配置支付宝公钥时验签直接失败，不会退化成放行")
+    @DisplayName("配置了 seller_id 时，通知里的 seller_id 不匹配（含缺失）一律拒绝")
+    void rejectsNotifyForOtherSellerWhenSellerConfigured() throws Exception {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, SELLER_ID);
+
+        assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, OTHER_SELLER_ID, alipay)),
+                "seller_id 不匹配必须拒绝");
+
+        Map<String, String> missingSeller = notifyParams(APP_ID, "");
+        missingSeller.remove("seller_id");
+        missingSeller.put("sign", sign(missingSeller, alipay));
+        assertFalse(client.verifyNotifySignature(missingSeller),
+                "配置了 seller_id 却没有收到 seller_id，属于信息不全，同样拒绝");
+    }
+
+    @Test
+    @DisplayName("未配置 seller_id 时不因 seller_id 拒绝（该字段不是契约必填）")
+    void acceptsAnySellerWhenSellerNotConfigured() throws Exception {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+        AlipayGatewayClient client = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, "");
+
+        assertTrue(client.verifyNotifySignature(signedNotify(APP_ID, OTHER_SELLER_ID, alipay)));
+    }
+
+    // ------------------------------------------------------------------ fail-closed：半配置必须拒绝
+
+    @Test
+    @DisplayName("只配了公钥（缺 APPID）时验签一律失败，不会退化成放行")
+    void failsClosedWhenAppIdMissing() throws Exception {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+        // 公钥配了、APPID 没配 —— 正是「半配置」
+        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, "", privateKey(app), publicKey(alipay),
+                NOTIFY_URL, SELLER_ID);
+
+        assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, alipay)));
+    }
+
+    @Test
+    @DisplayName("只配了 APPID（缺公钥）时验签一律失败，不会退化成放行")
     void failsClosedWhenPublicKeyMissing() throws Exception {
         KeyPair app = keyPair();
         KeyPair alipay = keyPair();
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), "");
+        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), "",
+                NOTIFY_URL, SELLER_ID);
 
-        assertFalse(client.verifyNotifySignature(alipaySignedNotify("TA1", alipay)));
+        assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, alipay)));
+
+        // 连公钥都是空串，SDK 会抛异常，实现必须照样给出「拒绝」
+        Map<String, String> params = notifyParams(APP_ID, SELLER_ID);
+        params.put("sign", sign(params, alipay));
+        assertFalse(client.verifyNotifySignature(params));
     }
 
-    // ------------------------------------------------------------------ 底层签名
+    // ------------------------------------------------------------------ 密钥形态（PEM）
 
     @Test
-    @DisplayName("RSA2 签名往返：合法签名通过，篡改内容或乱码签名被拒（不抛异常）")
-    void rsa2VerifyHandlesEdgeCases() {
+    @DisplayName("密钥归一化：剥掉 PEM 头尾与所有空白，单行/多行 PEM 与纯 Base64 等价")
+    void normalizeKeyStripsPemArmor() {
+        String body = privateKey(keyPair());
+
+        // 已经是纯 Base64：原样返回（幂等）
+        assertEquals(body, AlipayGatewayClient.normalizeKey(body));
+        // 单行 PEM（头尾紧贴主体）
+        assertEquals(body, AlipayGatewayClient.normalizeKey(
+                "-----BEGIN PRIVATE KEY-----" + body + "-----END PRIVATE KEY-----"));
+        // 多行 PEM（OpenSSL 常见的每行 64 字符折行 + \n）
+        assertEquals(body, AlipayGatewayClient.normalizeKey(pem("PRIVATE KEY", body)));
+        // 前后还有多余空白
+        assertEquals(body, AlipayGatewayClient.normalizeKey("  " + pem("PUBLIC KEY", body) + "  \n"));
+        // null 不能 NPE
+        assertNull(AlipayGatewayClient.normalizeKey(null));
+    }
+
+    @Test
+    @DisplayName("带 PEM 头尾的密钥可直接使用：能签出收银台链接、也能验签通知")
+    void acceptsPemWrappedKeys() throws Exception {
         KeyPair app = keyPair();
-        String content = "app_id=1&method=alipay.trade.query";
+        KeyPair alipay = keyPair();
 
-        String sign = AlipayGatewayClient.rsa2Sign(content, privateKey(app));
+        // 应用私钥与支付宝公钥都按 PEM 形态给（支付宝控制台/OpenSSL 复制出来的样子）
+        AlipayGatewayClient client = new AlipayGatewayClient(
+                GATEWAY, APP_ID,
+                pem("PRIVATE KEY", privateKey(app)),
+                pem("PUBLIC KEY", publicKey(alipay)),
+                NOTIFY_URL, SELLER_ID);
 
-        assertTrue(AlipayGatewayClient.rsa2Verify(content, sign, publicKey(app)));
-        assertFalse(AlipayGatewayClient.rsa2Verify(content + "&x=1", sign, publicKey(app)));
-        assertFalse(AlipayGatewayClient.rsa2Verify(content, "@@not-a-signature@@", publicKey(app)));
-        assertFalse(AlipayGatewayClient.rsa2Verify(content, sign, "not-a-key"));
-        assertFalse(AlipayGatewayClient.rsa2Verify(content, "", publicKey(app)));
-    }
+        assertTrue(client.canBuildCashierUrl(), "PEM 形态的应用私钥应当可用");
+        assertTrue(client.canVerifyNotifySignature(), "PEM 形态的支付宝公钥应当可用");
+        assertFalse(client.isRsa2ConfigurationIncomplete(), "都是已配置，不该判成半配置");
 
-    @Test
-    @DisplayName("待签名串：按 key 字典序、剔除指定参数与空值、不做 URL 编码")
-    void canonicalContentFollowsAlipayRules() {
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("version", "1.0");
-        params.put("app_id", APP_ID);
-        params.put("sign_type", "RSA2");   // 请求签名时参与
-        params.put("empty", "");
-        params.put("sign", "SHOULD_BE_DROPPED");
-        params.put("biz_content", "{\"a\":\"中文 与 空格\"}");
+        // 收银台链接确实签了出来，且能用【纯 Base64】形态的应用公钥验回
+        // —— 若 PEM 私钥没被正确剥壳，这里的签名必然对不上。
+        Map<String, String> params = parseQuery(client.buildCashierUrl(
+                "TA20270301000009ABCD1234", new BigDecimal("1.00"), "订单"));
+        assertTrue(AlipaySignature.rsaCheckV2(new LinkedHashMap<>(params), publicKey(app), "utf-8", "RSA2"),
+                "PEM 形态的应用私钥没有被正确归一化，收银台签名对不上");
 
-        String content = AlipayGatewayClient.canonicalContent(params, Set.of("sign"));
-
-        assertEquals("app_id=" + APP_ID
-                        + "&biz_content={\"a\":\"中文 与 空格\"}"
-                        + "&sign_type=RSA2"
-                        + "&version=1.0",
-                content);
-        // 通知验签时 sign_type 也要剔除
-        assertEquals("app_id=" + APP_ID
-                        + "&biz_content={\"a\":\"中文 与 空格\"}"
-                        + "&version=1.0",
-                AlipayGatewayClient.canonicalContent(params, Set.of("sign", "sign_type")));
-    }
-
-    @Test
-    @DisplayName("带 PEM 头尾的密钥也能被解析（沙箱页面复制出来的两种形态都支持）")
-    void acceptsPemWrappedKeys() {
-        KeyPair app = keyPair();
-
-        String pemPrivate = "-----BEGIN PRIVATE KEY-----\n" + privateKey(app) + "\n-----END PRIVATE KEY-----";
-        String pemPublic = "-----BEGIN PUBLIC KEY-----\n" + publicKey(app) + "\n-----END PUBLIC KEY-----";
-
-        AlipayGatewayClient client = new AlipayGatewayClient(GATEWAY, APP_ID, pemPrivate, pemPublic);
-        assertTrue(client.canBuildCashierUrl());
-        assertTrue(client.canVerifyNotifySignature());
-
-        String content = "app_id=1";
-        assertTrue(AlipayGatewayClient.rsa2Verify(content,
-                AlipayGatewayClient.rsa2Sign(content, pemPrivate), pemPublic));
+        // 通知验签同样要真的按 PEM 公钥生效，而不是「恰好放行」
+        assertTrue(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, alipay)),
+                "PEM 形态的支付宝公钥没有被正确归一化，验签失败");
+        // 反向：换一对密钥签的通知仍必须被拒（证明上面的 true 是真验签，不是无条件放行）
+        assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, keyPair())),
+                "PEM 公钥路径下也不能放行他人签名的通知");
     }
 
     // ------------------------------------------------------------------ helpers
 
-    private static AlipayGatewayClient sandbox(KeyPair app, String appId) {
-        return new AlipayGatewayClient(GATEWAY, appId, privateKey(app), "");
+    /** 沙箱客户端：只关心收银台链接的用例用（不配支付宝公钥）。 */
+    private static AlipayGatewayClient sandbox(String appPrivateKey, String appId) {
+        return new AlipayGatewayClient(GATEWAY, appId, appPrivateKey, "", "", "");
     }
 
-    /** 构造一份「支付宝侧已签名」的异步通知报文。 */
-    private static Map<String, String> alipaySignedNotify(String orderNo, KeyPair alipay) throws Exception {
-        Map<String, String> params = notifyParams(orderNo, "ALI" + orderNo);
-        params.put("sign", signContent(params, alipay.getPrivate()));
+    /** 全量构造，按用例需要给公钥 / notify_url / seller_id。 */
+    private static AlipayGatewayClient gateway(String appPrivateKey, String alipayPublicKey,
+                                              String notifyUrl, String sellerId) {
+        return new AlipayGatewayClient(GATEWAY, APP_ID, appPrivateKey, alipayPublicKey, notifyUrl, sellerId);
+    }
+
+    /** 构造一份「支付宝侧已按官方 V1 口径签名」的异步通知报文。 */
+    private static Map<String, String> signedNotify(String appId, String sellerId, KeyPair alipay)
+            throws Exception {
+        Map<String, String> params = notifyParams(appId, sellerId);
+        params.put("sign", sign(params, alipay));
         return params;
     }
 
-    private static Map<String, String> notifyParams(String orderNo, String tradeNo) {
+    private static Map<String, String> notifyParams(String appId, String sellerId) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("gmt_create", "2027-03-01 10:00:00");
         params.put("charset", "utf-8");
         params.put("seller_email", "sandbox@alipaydev.com");
         params.put("subject", "旅行社团购订单");
-        params.put("sign", "");                    // 占位，调用方覆盖
         params.put("buyer_id", "2088722000000000");
         params.put("notify_id", "2027030100222100000000000000");
         params.put("notify_type", "trade_status_sync");
         params.put("trade_status", "TRADE_SUCCESS");
         params.put("total_amount", "1999.90");
-        params.put("trade_no", tradeNo);
-        params.put("app_id", APP_ID);
+        params.put("trade_no", "2027030122001400000000000001");
+        params.put("app_id", appId);
+        params.put("seller_id", sellerId);
         params.put("notify_time", "2027-03-01 10:00:05");
-        params.put("out_trade_no", orderNo);
-        params.put("sign_type", "RSA2");           // 验签时必须剔除
-        params.put("notify_path", NOTIFY_PATH);
+        params.put("out_trade_no", "TA20270301000001ABCD1234");
+        params.put("sign_type", "RSA2");           // 官方 V1 口径下必须剔除
         return params;
     }
 
-    /** 按官方 {@code rsaCheckV1} 口径对通知签名：剔除 sign 与 sign_type。 */
-    private static String signContent(Map<String, String> params, PrivateKey alipayPrivateKey) throws Exception {
-        String content = AlipayGatewayClient.canonicalContent(params, Set.of("sign", "sign_type"));
-        Signature signature = Signature.getInstance("SHA256withRSA");
-        signature.initSign(alipayPrivateKey);
-        signature.update(content.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(signature.sign());
+    /**
+     * 按官方 {@code AlipaySignature.rsaSign} + {@code getSignCheckContentV1} 对通知签名。
+     *
+     * <p>这里刻意不自己拼串：签名口径必须与 {@code rsaCheckV1} 完全同源，否则用例本身
+     * 就成了「自证自话」。同源之后，实现只要偏离官方口径就会红。</p>
+     */
+    private static String sign(Map<String, String> params, KeyPair alipay) throws Exception {
+        return AlipaySignature.rsaSign(
+                AlipaySignature.getSignCheckContentV1(new LinkedHashMap<>(params)),
+                base64(alipay.getPrivate().getEncoded()), "utf-8", "RSA2");
     }
 
     private static Map<String, String> parseQuery(String url) {
@@ -317,10 +522,22 @@ class AlipayGatewayClientTest {
         Map<String, String> params = new LinkedHashMap<>();
         for (String pair : query.split("&")) {
             int split = pair.indexOf('=');
+            if (split < 0) {
+                continue;
+            }
             params.put(URLDecoder.decode(pair.substring(0, split), StandardCharsets.UTF_8),
                     URLDecoder.decode(pair.substring(split + 1), StandardCharsets.UTF_8));
         }
         return params;
+    }
+
+    /** 生成带 PEM 头尾的密钥片段，按每行 64 字符折行（OpenSSL/keytool 导出的常见形态）。 */
+    private static String pem(String label, String body) {
+        StringBuilder pem = new StringBuilder("-----BEGIN ").append(label).append("-----\n");
+        for (int i = 0; i < body.length(); i += 64) {
+            pem.append(body, i, Math.min(i + 64, body.length())).append('\n');
+        }
+        return pem.append("-----END ").append(label).append("-----").toString();
     }
 
     private static KeyPair keyPair() {
@@ -334,10 +551,14 @@ class AlipayGatewayClientTest {
     }
 
     private static String privateKey(KeyPair keyPair) {
-        return Base64.getEncoder().encodeToString(keyPair.getPrivate().getEncoded());
+        return base64(keyPair.getPrivate().getEncoded());
     }
 
     private static String publicKey(KeyPair keyPair) {
-        return Base64.getEncoder().encodeToString(keyPair.getPublic().getEncoded());
+        return base64(keyPair.getPublic().getEncoded());
+    }
+
+    private static String base64(byte[] der) {
+        return Base64.getEncoder().encodeToString(der);
     }
 }

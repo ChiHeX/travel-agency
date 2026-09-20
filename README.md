@@ -116,6 +116,7 @@ JWT_SECRET
 AMAP_ENABLED / AMAP_WEB_KEY
 ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
 ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
+ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID
 ALIPAY_CALLBACK_SECRET
 ```
 
@@ -130,24 +131,34 @@ ALIPAY_CALLBACK_SECRET
 $env:ALIPAY_APP_ID          = "沙箱应用 APPID"
 $env:ALIPAY_APP_PRIVATE_KEY = "应用私钥（PKCS#8，可只填 Base64 主体）"
 $env:ALIPAY_PUBLIC_KEY      = "支付宝公钥（用于验签通知）"
+$env:ALIPAY_NOTIFY_URL      = "https://<公网可达域名>/api/payments/alipay/notify"
+# $env:ALIPAY_SELLER_ID 可选，配置后回调会一并核对 seller_id
 # $env:ALIPAY_GATEWAY_URL 默认已指向沙箱新版网关，无需设置
 ```
 
 **密钥一律通过环境变量注入，禁止提交到仓库**（见 CONTRIBUTING §14）。
 
-支付链路按配置自动降级，缺项不会把接口打成 500：
+签名与验签统一走支付宝官方 SDK `com.alipay.sdk:alipay-sdk-java`（`AlipaySignature.rsaCheckV1`
+与 `AlipayClient.pageExecute`），不再自写 RSA2 拼接 —— 这是 `docs/openapi.yaml` 对
+`POST /payments/alipay/notify` 的硬性要求。
+
+支付链路按配置自动选择路径，缺项不会把接口打成 500：
 
 | 配置情况 | 下单支付 | 异步通知验签 |
 | --- | --- | --- |
-| 配齐 `ALIPAY_APP_ID` + `ALIPAY_APP_PRIVATE_KEY` | 生成真实沙箱收银台链接 | — |
-| 配齐 `ALIPAY_PUBLIC_KEY` | — | 官方 **RSA2** 验签，并核对 `app_id` |
-| 未配 `ALIPAY_PUBLIC_KEY` | — | 回退自建 HMAC（`ALIPAY_CALLBACK_SECRET`），未配置则一律拒绝 |
+| 配齐 `ALIPAY_APP_ID` + `ALIPAY_APP_PRIVATE_KEY` | 生成真实沙箱收银台链接（带 `notify_url`） | — |
+| 配齐 `ALIPAY_APP_ID` **与** `ALIPAY_PUBLIC_KEY` | — | 官方 SDK **RSA2** 验签，始终核对 `app_id`；配了 `ALIPAY_SELLER_ID` 再核对 `seller_id` |
+| `ALIPAY_APP_ID` / `ALIPAY_PUBLIC_KEY` **只配了其一** | — | **一律拒绝**（半配置按 fail-closed 处理，不会降级到 HMAC） |
+| 两者都未配置 | — | 回退自建 HMAC（`ALIPAY_CALLBACK_SECRET`），未配置则一律拒绝 |
+
+⚠️ `ALIPAY_NOTIFY_URL` 缺失时收银台请求不带 `notify_url`，支付宝无法回传支付结果，
+订单会一直停在待支付 —— 联调前请先把它配成公网可达地址。
 
 异步通知入口为 `POST /api/payments/alipay/notify`。回调**只认验签后的结果**，并核对商户、
 订单号与金额，业务层只接受验签通过且金额一致的支付；浏览器跳转结果不作为支付成功依据。
 
 > 本地自建 HMAC 那条路径只用于「手上还没有沙箱密钥」时把链路跑通，**不代表支付宝官方验签**；
-> 联调与验收请务必配置 `ALIPAY_PUBLIC_KEY`，让回调走官方 RSA2。
+> 联调与验收请务必把 `ALIPAY_APP_ID` 与 `ALIPAY_PUBLIC_KEY` 一起配上，让回调走官方 SDK 验签。
 
 ## 验证命令
 

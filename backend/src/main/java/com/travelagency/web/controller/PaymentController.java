@@ -24,17 +24,20 @@ import java.util.Map;
  * 支付宝异步通知入口，对齐契约 POST /payments/alipay/notify：
  * 接收 application/x-www-form-urlencoded，按第三方交易号幂等处理，返回 text/plain 的 success/failure。
  *
- * <p><b>验签有两条路径，按配置自动选择：</b></p>
+ * <p><b>验签按配置分三条路径：</b></p>
  * <ol>
- *   <li><b>官方路径（配置了 {@code ALIPAY_PUBLIC_KEY} 时）</b>：用支付宝公钥做 RSA2 验签，
- *       并核对通知声明的 {@code app_id} 与本应用一致。这是契约与架构文档要求的口径，
- *       规则与 {@code alipay-sdk-java} 的 {@code rsaCheckV1} 一致（剔除 sign、sign_type，其余按 key 字典序拼串）。</li>
- *   <li><b>本地开发回退路径（未配置支付宝公钥时）</b>：沿用自建 HMAC 适配点，共享密钥由
+ *   <li><b>官方路径（{@code ALIPAY_PUBLIC_KEY} 与 {@code ALIPAY_APP_ID} 都配置时）</b>：
+ *       调用 {@code alipay-sdk-java} 的 {@code AlipaySignature.rsaCheckV1} 做 RSA2 验签，
+ *       并核对通知声明的 {@code app_id}（配置了 {@code ALIPAY_SELLER_ID} 时再核对 {@code seller_id}）。
+ *       这是契约与架构文档要求的口径。</li>
+ *   <li><b>半配置路径（两项只配了其一）</b>：一律拒绝。使用者显然想走官方验签却没配完，
+ *       此时若退回 HMAC 就是把验签强度静默降级，与文档承诺的 fail-closed 相悖。</li>
+ *   <li><b>本地开发回退路径（两项都没配）</b>：沿用自建 HMAC 适配点，共享密钥由
  *       {@code ALIPAY_CALLBACK_SECRET} 注入，未配置时一律拒绝（fail-closed）。
  *       它只用于本地没有沙箱密钥时把链路跑通，<b>不代表支付宝官方验签</b>。</li>
  * </ol>
  *
- * <p>两条路径都保留金额核对：回调金额会与订单应付金额比对，不一致即拒绝。</p>
+ * <p>三条路径都保留金额核对：回调金额会与订单应付金额比对，不一致即拒绝。</p>
  */
 @RestController
 @RequestMapping("/api/payments")
@@ -97,15 +100,23 @@ public class PaymentController {
     }
 
     /**
-     * 按配置选择验签路径：配置了支付宝公钥走官方 RSA2 验签，否则回退到自建 HMAC 适配点。
+     * 按配置选择验签路径：公钥与 APPID 配齐走官方 RSA2 验签；只配其一直接拒绝；
+     * 两项都没配才回退到自建 HMAC 适配点。
      */
     private boolean verified(Map<String, String> params, String orderNo, String tradeNo, String result) {
         if (alipayGatewayClient.canVerifyNotifySignature()) {
             boolean ok = alipayGatewayClient.verifyNotifySignature(params);
             if (!ok) {
-                log.warn("支付回调未通过支付宝 RSA2 验签，已拒绝：orderNo={}", orderNo);
+                log.warn("支付回调未通过支付宝官方 SDK 验签，已拒绝：orderNo={}", orderNo);
             }
             return ok;
+        }
+        if (alipayGatewayClient.isRsa2ConfigurationIncomplete()) {
+            // 公钥与 APPID 只配了其一：使用者想走官方验签但没配完。
+            // 这里必须拒绝而不是降级到 HMAC —— 少配一个环境变量不该悄悄降低验签强度。
+            log.error("支付宝 RSA2 验签配置不完整（ALIPAY_PUBLIC_KEY 与 ALIPAY_APP_ID 必须同时配置），"
+                    + "已拒绝该支付回调（fail-closed）：{}", alipayGatewayClient.describeConfiguration());
+            return false;
         }
         return verifySharedSecret(orderNo, tradeNo, result,
                 firstNonBlank(params.get("signature"), params.get("sign")));

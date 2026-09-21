@@ -248,6 +248,44 @@ class TradingFlowContractIntegrationTest {
     }
 
     @Test
+    @DisplayName("同一幂等键重复发起支付返回同一支付单，有效期不随重试顺延")
+    void paymentStartIsIdempotentForTheSameKey() throws Exception {
+        String orderNo = book(orderBody(1, 0), newKey(), 201);
+        String key = newKey();
+
+        JsonNode first = read(post("/api/orders/" + orderNo + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key)).get("data");
+        JsonNode replay = read(post("/api/orders/" + orderNo + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key)).get("data");
+
+        assertEquals(first.get("paymentNo").asString(), replay.get("paymentNo").asString(),
+                "同键重放必须返回首次生成的支付单号");
+        assertEquals(first.get("paymentUrl").asString(), replay.get("paymentUrl").asString(),
+                "同键重放的收银台地址必须一致");
+        assertEquals(first.get("expiresAt").asString(), replay.get("expiresAt").asString(),
+                "支付窗口锚定在首次发起支付的时刻，重试不得把它一次次往后顺延");
+        assertEquals("WAIT_PAY", orderOf(orderNo).status, "发起支付不得推进订单状态");
+        assertEquals(1, reserved(), "重放不得重复占用名额");
+    }
+
+    @Test
+    @DisplayName("同一幂等键换个订单号复用直接拒绝，不返回另一笔订单的支付信息")
+    void paymentStartRejectsKeyReusedOnAnotherOrder() throws Exception {
+        String firstOrder = book(orderBody(1, 0), newKey(), 201);
+        String secondOrder = book(orderBody(1, 0), newKey(), 201);
+        String key = newKey();
+
+        read(post("/api/orders/" + firstOrder + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key));
+
+        // 负例排在末尾：业务异常会污染参与事务，之后不能再走成功路径
+        mvc.perform(post("/api/orders/" + secondOrder + "/pay")
+                        .header("Authorization", buyerToken).header("Idempotency-Key", key))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    }
+
+    @Test
     @DisplayName("取消待支付订单释放预留名额，且同一订单不能取消两次")
     void cancelReleasesReservedSeatAndRejectsSecondCancel() throws Exception {
         String orderNo = book(orderBody(2, 0), newKey(), 201);

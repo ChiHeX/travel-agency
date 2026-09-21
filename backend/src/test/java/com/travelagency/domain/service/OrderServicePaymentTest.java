@@ -3,6 +3,8 @@ package com.travelagency.domain.service;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.domain.dto.PaymentStartResponse;
+import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.TravelOrder;
@@ -26,20 +28,25 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 成员 B 交易模块：支付回调幂等。
- * 支付宝会重复投递异步通知，重复处理绝不能把订单推进两次。
+ * 成员 B 交易模块：支付回调幂等与发起支付的幂等键。
+ * 支付宝会重复投递异步通知，重复处理绝不能把订单推进两次；
+ * 同一幂等键重试 {@code POST /orders/{orderNo}/pay} 也只能真正发起一次支付。
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -213,5 +220,136 @@ class OrderServicePaymentTest {
 
         assertEquals(404, ex.getStatus());
         assertEquals("RESOURCE_NOT_FOUND", ex.getCode());
+    }
+
+    // ------------------------------------------------- 发起支付的幂等键（Idempotency-Key）
+
+    /** 构造一条幂等记录；resourceNo 为 null 表示首个请求还没回填业务单号。 */
+    private static IdempotencyRecord idempotency(String resourceNo, LocalDateTime createdAt) {
+        IdempotencyRecord record = new IdempotencyRecord();
+        record.id = 501L;
+        record.userId = 9L;
+        record.scope = "START_PAYMENT";
+        record.idemKey = "IDEM-PAY-0001";
+        record.resourceType = resourceNo == null ? null : "PAYMENT";
+        record.resourceNo = resourceNo;
+        record.createdAt = createdAt;
+        return record;
+    }
+
+    /** 让「重放」分支生效：同一幂等键再次插入会撞唯一键。 */
+    private void givenKeyAlreadyClaimed(IdempotencyRecord existing) {
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class)))
+                .thenThrow(new DuplicateKeyException("uk_idempotency_user_scope_key"));
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(existing);
+    }
+
+    @Test
+    @DisplayName("幂等：同一幂等键重复发起支付只返回同一个支付单，且不改写支付单、不滑动有效期")
+    void startPaymentReplaysSamePaymentWithoutTouchingTheRow() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.UNPAID);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        // 首次：抢占成功（insert 返回 1），随后回读拿到窗口锚点
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class))).thenReturn(1);
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(idempotency(null, anchor));
+
+        PaymentStartResponse first = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(first.paymentNo(), replay.paymentNo());
+        // 有效期锚定在首次抢占幂等记录的时刻：重试不会把支付窗口一次次往后顺延
+        assertEquals(anchor.plusMinutes(30), first.expiresAt());
+        assertEquals(first.expiresAt(), replay.expiresAt());
+        // 支付单只在首次被改写一次，重放没有二次副作用
+        verify(paymentMapper, times(1)).updateById(p);
+    }
+
+    @Test
+    @DisplayName("幂等：订单已支付后用同一键重试，返回首次的支付单而不是 409")
+    void startPaymentReplayWinsOverStateCheck() {
+        // 订单已推进到 PAID_WAIT_CONFIRM；同一幂等键的重试属于原请求的重放，应拿到首次结果
+        TravelOrder o = order(55L, OrderStatus.PAID_WAIT_CONFIRM, PaymentStatus.PAID);
+        Payment p = payment(55L, PaymentStatus.PAID);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, LocalDateTime.now().minusMinutes(5)));
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        when(orderMapper.selectById(any())).thenReturn(o);
+
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(p.paymentNo, replay.paymentNo());
+        assertEquals(OrderStatus.PAID_WAIT_CONFIRM, o.status);
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("幂等：首个请求仍在处理中（支付单号未回填）时报 409，而不是给出空的支付信息")
+    void startPaymentReplayInProgressIsRejected() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        givenKeyAlreadyClaimed(idempotency(null, LocalDateTime.now()));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("IDEMPOTENT_REQUEST_IN_PROGRESS", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("幂等键绑定到订单：同一个键用到另一张订单上直接拒绝")
+    void startPaymentRejectsKeyReusedOnAnotherOrder() {
+        TravelOrder recorded = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.PENDING);
+        recorded.orderNo = "TA20270301000002ZZZZ9999";
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, LocalDateTime.now()));
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        when(orderMapper.selectById(any())).thenReturn(recorded);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment("TA20270301000001ABCD1234", 9L, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("IDEMPOTENCY_KEY_REUSED", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("不带幂等键时保持原行为：改支付单为 PENDING 并按当前时刻给 30 分钟窗口")
+    void startPaymentWithoutKeyKeepsLegacyBehaviour() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.UNPAID);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+
+        PaymentStartResponse response = orderService.startPayment(o.orderNo, o.userId);
+
+        assertEquals(PaymentStatus.PENDING, p.status);
+        assertEquals(p.paymentNo, response.paymentNo());
+        assertEquals(o.totalAmount, response.amount());
+        assertTrue(response.expiresAt().isAfter(LocalDateTime.now().plusMinutes(29)));
+        verify(paymentMapper).updateById(p);
+        verify(idempotencyRecordMapper, never()).insert(any(IdempotencyRecord.class));
+    }
+
+    @Test
+    @DisplayName("状态闸门没有被幂等放宽：不带幂等键时非待支付订单仍报 409")
+    void startPaymentRejectsNonWaitPayOrderWithoutKey() {
+        TravelOrder o = order(55L, OrderStatus.CONFIRMED, PaymentStatus.PAID);
+        Payment p = payment(55L, PaymentStatus.PAID);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("ORDER_STATE_CONFLICT", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
     }
 }

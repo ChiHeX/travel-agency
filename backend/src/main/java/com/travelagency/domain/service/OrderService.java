@@ -86,6 +86,16 @@ public class OrderService {
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
     /** 申请退款动作的幂等作用域。 */
     private static final String SCOPE_APPLY_REFUND = "APPLY_REFUND";
+    /** 发起支付动作的幂等作用域。 */
+    private static final String SCOPE_START_PAYMENT = "START_PAYMENT";
+
+    /**
+     * 收银台链接的有效期长度（分钟）。
+     *
+     * <p>窗口从「首次发起支付的那一刻」起算，而不是每次读响应时的当前时刻：否则同一幂等键
+     * 每重试一次，契约返回的 {@code expiresAt} 就往后顺延一次，等于重试能无限延长支付窗口。</p>
+     */
+    private static final long PAYMENT_WINDOW_MINUTES = 30L;
 
     @Value("${app.integrations.alipay.gateway-url:https://openapi-sandbox.dl.alipaydev.com/gateway.do}")
     private String alipayGatewayUrl;
@@ -346,6 +356,29 @@ public class OrderService {
 
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId) {
+        return startPayment(orderNo, userId, null);
+    }
+
+    /**
+     * 发起支付宝沙箱支付，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>此前该请求头只在控制器上做了长度校验就被丢弃，同一键重试会重复走一遍业务：
+     * 支付单状态被再写一次、契约返回的 {@code expiresAt} 也随每次重试向后滑动。
+     * 现在与 {@link #create} / {@link #applyRefund} 对齐——首次请求先抢占幂等记录，
+     * 业务成功后回填支付单号，后续重放请求直接返回首次生成的支付单信息。</p>
+     *
+     * <p>幂等键绑定到具体订单：若同一用户把同一个键用到另一张订单上，属调用方误用，
+     * 直接拒绝而不是返回另一笔订单的支付信息。</p>
+     */
+    @Transactional
+    public PaymentStartResponse startPayment(String orderNo, Long userId, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_START_PAYMENT, idempotencyKey);
+            if (replay != null) {
+                return replayStartPayment(orderNo, replay);
+            }
+        }
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
@@ -354,9 +387,53 @@ public class OrderService {
         Payment payment = paymentFor(order.id);
         payment.status = PaymentStatus.PENDING;
         paymentMapper.updateById(payment);
-        LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(30);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_START_PAYMENT, idempotencyKey, "PAYMENT", payment.paymentNo);
+        }
+        return startPaymentResponse(order, payment, paymentWindowStart(userId, idempotencyKey, idempotent));
+    }
+
+    /**
+     * 重放首次发起支付的结果。
+     *
+     * <p>记录已抢占但支付单号尚未回填，说明首个请求仍在处理中，此时不能凭一个还没有结果的
+     * 幂等键给出支付信息，返回 409 让调用方稍后重试。</p>
+     */
+    private PaymentStartResponse replayStartPayment(String orderNo, IdempotencyRecord replay) {
+        Payment payment = replay.resourceNo == null ? null
+                : paymentMapper.selectOne(new QueryWrapper<Payment>().eq("payment_no", replay.resourceNo));
+        if (payment == null) {
+            throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                    "相同幂等键的请求正在处理中，请稍后重试");
+        }
+        TravelOrder order = orderMapper.selectById(payment.orderId);
+        if (order == null || !order.orderNo.equals(orderNo)) {
+            throw new BusinessException(409, "IDEMPOTENCY_KEY_REUSED",
+                    "该幂等键已用于其他订单的支付请求，请更换 Idempotency-Key");
+        }
+        return startPaymentResponse(order, payment, replay.createdAt);
+    }
+
+    /**
+     * 取支付窗口的起点。
+     *
+     * <p>首次请求用幂等记录的创建时刻、无幂等键时用当前时刻。用记录而不是「当前时刻」是为了让
+     * 同一键的重放返回完全一致的 {@code expiresAt}；记录查不到（理论上只会在无幂等键时发生）
+     * 则退化为当前时刻。</p>
+     */
+    private LocalDateTime paymentWindowStart(Long userId, String idempotencyKey, boolean idempotent) {
+        if (!idempotent) {
+            return LocalDateTime.now();
+        }
+        IdempotencyRecord record = idempotencyRecordMapper.selectOne(new QueryWrapper<IdempotencyRecord>()
+                .eq("user_id", userId).eq("scope", SCOPE_START_PAYMENT).eq("idem_key", idempotencyKey));
+        return record == null || record.createdAt == null ? LocalDateTime.now() : record.createdAt;
+    }
+
+    private PaymentStartResponse startPaymentResponse(TravelOrder order, Payment payment, LocalDateTime windowStart) {
+        LocalDateTime anchor = windowStart == null ? LocalDateTime.now() : windowStart;
         return new PaymentStartResponse(order.orderNo, payment.paymentNo, payment.channel,
-                order.totalAmount, alipayGatewayUrl, expiresAt);
+                order.totalAmount, alipayGatewayUrl, anchor.plusMinutes(PAYMENT_WINDOW_MINUTES));
     }
 
     /**

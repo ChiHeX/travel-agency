@@ -1,16 +1,19 @@
 package com.travelagency.web.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.travelagency.auth.dto.UserView;
 import com.travelagency.auth.service.AuthService;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.enums.AccountStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
-import com.travelagency.domain.dto.AdminUserView;
+import com.travelagency.domain.dto.AccountStatusUpdateRequest;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.GuideView;
@@ -24,6 +27,8 @@ import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
 import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.dto.StaffAccountRequest;
+import com.travelagency.domain.dto.StaffUpdateRequest;
+import com.travelagency.domain.dto.StaffView;
 import com.travelagency.domain.dto.StatusRequest;
 import com.travelagency.domain.entity.Attraction;
 import com.travelagency.domain.entity.Departure;
@@ -52,6 +57,7 @@ import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -75,6 +81,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @RestController
@@ -435,51 +442,175 @@ public class AdminController {
         return ApiResponse.ok(view);
     }
 
+    /**
+     * 后台用户分页查询，对齐契约 GET /admin/users（UserPageEnvelope）。
+     *
+     * <p>此前直出 {@code AdminUserView}：{@code status} 被序列化成整数 {@code 1/0}、
+     * 契约 required 的 {@code roles} 整个缺失、头像字段名还是 {@code avatar}（契约是 {@code avatarUrl}）。
+     * 前端 {@code AdminUsersView} 用 {@code row.status === 'ACTIVE'} 判断状态，整数永远不相等，
+     * 于是所有账号都被渲染成「已冻结」。这里改为复用 {@link UserView}（与契约 User 一一对应）。</p>
+     */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
-    public ApiResponse<PageResponse<AdminUserView>> users(
+    public ApiResponse<PageResponse<UserView>> users(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
-        Page<SysUser> result = userMapper.selectPage(new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)),
+        Page<SysUser> result = userMapper.selectPage(pageOf(page, size),
                 new QueryWrapper<SysUser>().eq("deleted", 0).orderByDesc("created_at"));
-        List<AdminUserView> records = result.getRecords().stream()
-                .map(user -> new AdminUserView(user.id, user.username, user.nickname, user.realName,
-                        user.phone, user.email, user.avatar, user.status, user.createdAt))
+        Map<Long, Set<String>> roles = authService.rolesOfAll(
+                result.getRecords().stream().map(user -> user.id).toList());
+        List<UserView> records = result.getRecords().stream()
+                .map(user -> authService.toView(user, roles.getOrDefault(user.id, Set.of(RoleCode.USER))))
                 .toList();
-        return ApiResponse.ok(new PageResponse<>(records, (int) result.getCurrent(), (int) result.getSize(), (int) result.getTotal(), (int) result.getPages()));
+        return ApiResponse.ok(new PageResponse<>(records, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages()));
     }
 
+    /**
+     * 后台用户详情，对齐契约 GET /admin/users/{userId}（UserEnvelope，不存在或已删除 → 404）。
+     *
+     * <p>此前只有列表映射，前端 {@code adminApi.user(userId)} 调用时命中缺失的 GET 映射而 404。</p>
+     */
+    @GetMapping("/users/{userId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<UserView> userDetail(@PathVariable Long userId) {
+        SysUser user = userMapper.selectById(userId);
+        if (user == null || Integer.valueOf(1).equals(user.deleted)) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "用户不存在");
+        }
+        return ApiResponse.ok(authService.toView(user, authService.rolesFor(user.id)));
+    }
+
+    /**
+     * 启用或停用用户账号，对齐契约 PATCH /admin/users/{userId}/status
+     * （请求体 AccountStatusUpdateRequest，200 响应是 UserEnvelope）。
+     *
+     * <p>此前接的是自由文本 {@code StatusRequest} 且直接 {@code Integer.parseInt(request.status())}：
+     * 契约与前端 {@code adminApi.updateUserStatus} 传的都是 {@code ACTIVE}/{@code DISABLED}，
+     * 一调即抛 NumberFormatException 变成 500；而且响应体与契约的 UserEnvelope 不符（data 恒为 null）。
+     * 现在枚举值由 DTO 上的约束挡住（非法值 → 422），状态到 1/0 的转换只做一次，并把更新后的用户返回。
+     * 目标账号不存在时不再静默成功（旧实现 update 0 行也回 200），统一按契约全局口径判 404。</p>
+     */
     @PatchMapping("/users/{id}/status")
     @PreAuthorize("hasRole('ADMIN')")
-    public ApiResponse<Void> updateUserStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
-        userMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<SysUser>()
-                .eq("id", id).set("status", Integer.parseInt(request.status())));
-        log("用户", "STATUS", "USER", id, "SUCCESS", "账号状态变更");
-        return ApiResponse.ok();
+    @Transactional
+    public ApiResponse<UserView> updateUserStatus(@PathVariable Long id,
+                                                 @Valid @RequestBody AccountStatusUpdateRequest request) {
+        SysUser user = requireLockedUser(id);
+        user.status = statusValue(request.status());
+        userMapper.update(null, new UpdateWrapper<SysUser>().eq("id", id).set("status", user.status));
+        log("用户", "STATUS", "USER", id, "SUCCESS", "账号状态变更为 " + request.status());
+        return ApiResponse.ok(authService.toView(user, authService.rolesFor(user.id)));
     }
 
+    /**
+     * 后台工作人员分页查询，对齐契约 GET /admin/staff（StaffPageEnvelope）。
+     *
+     * <p>此前直出 {@link Staff} 实体：契约 required 的 {@code username}、{@code realName}、
+     * {@code status} 都取自 {@code sys_user}，实体里一个都没有 —— 既缺必填字段，
+     * 也违反「Controller 不得直接暴露 Entity」（docs/API.md §14）。</p>
+     */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
-    public ApiResponse<PageResponse<Staff>> staff(
+    public ApiResponse<PageResponse<StaffView>> staff(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size) {
-        Page<Staff> result = staffMapper.selectPage(new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)),
+        Page<Staff> result = staffMapper.selectPage(pageOf(page, size),
                 new QueryWrapper<Staff>().orderByDesc("created_at"));
-        return ApiResponse.ok(PageResponse.from(result));
+        Map<Long, SysUser> accounts = accountsOf(result.getRecords().stream().map(staff -> staff.userId).toList());
+        List<StaffView> items = result.getRecords().stream()
+                .map(staff -> StaffView.from(staff, accounts.get(staff.userId)))
+                .toList();
+        return ApiResponse.ok(new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages()));
     }
 
+    /**
+     * 创建工作人员账号，对齐契约 POST /admin/staff
+     * （StaffCreateRequest → 201 + Location + StaffEnvelope，重复工号/账号 → 409，校验失败 → 422）。
+     *
+     * <p>此前用的是缺 {@code employeeNo} 的请求体（服务端自动生成 {@code "EMP" + user.id}），
+     * 契约里冻结的请求体根本发不进来（多出的字段被全局 FAIL_ON_UNKNOWN_PROPERTIES 判 400），
+     * 成功状态码也错用 200 且不带 Location。</p>
+     *
+     * <p>工号唯一性<b>先查再写</b>，而不是等唯一键报错再回滚：撞号时账号还没插库，
+     * 不会出现「账号建好了但没有档案」的中间态。唯一键冲突仍留一道 catch 兜并发。</p>
+     */
     @PostMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional
-    public ApiResponse<Staff> createStaff(@Valid @RequestBody StaffAccountRequest request) {
-        SysUser user = createAccount(request.username(), request.password(), request.realName(), request.phone(), RoleCode.STAFF);
+    public ResponseEntity<ApiResponse<StaffView>> createStaff(@Valid @RequestBody StaffAccountRequest request) {
+        requireEmployeeNoFree(request.employeeNo(), null);
+        SysUser user = createAccount(request.username(), request.password(), request.realName(),
+                request.phone(), RoleCode.STAFF);
         Staff staff = new Staff();
         staff.userId = user.id;
-        staff.employeeNo = "EMP" + user.id;
+        staff.employeeNo = request.employeeNo();
         staff.department = request.department();
         staff.position = request.position();
-        staffMapper.insert(staff);
-        return ApiResponse.ok(staff);
+        try {
+            staffMapper.insert(staff);
+        } catch (DuplicateKeyException ex) {
+            throw new BusinessException(409, "RESOURCE_STATE_CONFLICT", "员工工号已存在");
+        }
+        Staff saved = staffMapper.selectById(staff.id);
+        log("员工", "CREATE", "STAFF", saved.id, "SUCCESS", "创建工作人员");
+        return ResponseEntity.created(URI.create("/api/admin/staff/" + saved.id))
+                .body(ApiResponse.ok(StaffView.from(saved, user)));
+    }
+
+    /**
+     * 修改工作人员资料，对齐契约 PUT /admin/staff/{staffId}（StaffUpdateRequest → StaffEnvelope）。
+     *
+     * <p>姓名与手机号落在 {@code sys_user}，工号/部门/岗位落在 {@code staff}，一次事务写完。</p>
+     */
+    @PutMapping("/staff/{staffId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Transactional
+    public ApiResponse<StaffView> updateStaff(@PathVariable Long staffId,
+                                             @Valid @RequestBody StaffUpdateRequest request) {
+        Staff staff = requireLockedStaff(staffId);
+        SysUser account = requireStaffAccount(staff);
+        requireEmployeeNoFree(request.employeeNo(), staffId);
+        try {
+            staffMapper.update(null, new UpdateWrapper<Staff>().eq("id", staffId)
+                    .set("employee_no", request.employeeNo())
+                    .set("department", request.department())
+                    .set("position", request.position()));
+        } catch (DuplicateKeyException ex) {
+            throw new BusinessException(409, "RESOURCE_STATE_CONFLICT", "员工工号已存在");
+        }
+        UpdateWrapper<SysUser> accountUpdate = new UpdateWrapper<SysUser>().eq("id", account.id)
+                .set("real_name", request.realName())
+                .set("phone", request.phone());
+        // 创建账号时昵称被初始化成姓名（见 createAccount）。只有当昵称还是那个初始值、
+        // 或本来就为空时才跟着改，避免把用户自己在「个人资料」里改过的昵称覆盖掉。
+        if (account.nickname == null || account.nickname.isBlank() || account.nickname.equals(account.realName)) {
+            accountUpdate.set("nickname", request.realName());
+        }
+        userMapper.update(null, accountUpdate);
+        log("员工", "UPDATE", "STAFF", staffId, "SUCCESS", "修改工作人员资料");
+        return ApiResponse.ok(staffDetail(staffId));
+    }
+
+    /**
+     * 启用或停用工作人员账号，对齐契约 PATCH /admin/staff/{staffId}/status（StaffEnvelope，失败 409）。
+     *
+     * <p>{@code staff} 表没有自己的状态列，账号可用性只落在 {@code sys_user.status}（1/0），
+     * 所以这里只写 sys_user，并在返回的 {@link StaffView} 里把 1/0 还原成契约 AccountStatus。
+     * 与 {@code GuideService#updateStatus} 同构：账号缺失或已删除 → 409，而不是让状态卡在半途。</p>
+     */
+    @PatchMapping("/staff/{staffId}/status")
+    @PreAuthorize("hasRole('ADMIN')")
+    @Transactional
+    public ApiResponse<StaffView> updateStaffStatus(@PathVariable Long staffId,
+                                                   @Valid @RequestBody AccountStatusUpdateRequest request) {
+        Staff staff = requireLockedStaff(staffId);
+        SysUser account = requireStaffAccount(staff);
+        account.status = statusValue(request.status());
+        userMapper.update(null, new UpdateWrapper<SysUser>().eq("id", account.id).set("status", account.status));
+        log("员工", "STATUS", "STAFF", staffId, "SUCCESS", "账号状态变更为 " + request.status());
+        return ApiResponse.ok(StaffView.from(staffMapper.selectById(staffId), account));
     }
 
     /**
@@ -563,6 +694,76 @@ public class AdminController {
         }
         SysUser user = userMapper.selectById(userId);
         return user == null ? null : user.username;
+    }
+
+    /** 契约 AccountStatus（ACTIVE/DISABLED）→ {@code sys_user.status}（1/0）；非法值已被 DTO 约束挡在 422。 */
+    private static int statusValue(String status) {
+        return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
+    }
+
+    /** 锁行取用户：并发改状态时不拿旧快照去覆盖刚写入的结果。不存在或已软删 → 404。 */
+    private SysUser requireLockedUser(Long id) {
+        SysUser user = userMapper.selectOne(new QueryWrapper<SysUser>()
+                .eq("id", id).eq("deleted", 0).last("FOR UPDATE"));
+        if (user == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "用户不存在");
+        }
+        return user;
+    }
+
+    /** 锁行取工作人员档案，不存在 → 404。 */
+    private Staff requireLockedStaff(Long id) {
+        Staff staff = staffMapper.selectOne(new QueryWrapper<Staff>().eq("id", id).last("FOR UPDATE"));
+        if (staff == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "工作人员不存在");
+        }
+        return staff;
+    }
+
+    /**
+     * 校验员工工号未被占用。{@code staff.employee_no} 上有唯一键（uk_staff_employee_no），
+     * 但先查一次能给出明确的 409 而不是把 {@code DataIntegrityViolationException} 变成 500，
+     * 也让创建流程在插账号之前就失败，不留「有账号没档案」的中间态。
+     *
+     * @param selfId 修改场景传入自身 id（工号保持不变时不算冲突），创建场景传 {@code null}
+     */
+    private void requireEmployeeNoFree(String employeeNo, Long selfId) {
+        Staff existing = staffMapper.selectOne(new QueryWrapper<Staff>().eq("employee_no", employeeNo));
+        if (existing != null && !existing.id.equals(selfId)) {
+            throw new BusinessException(409, "RESOURCE_STATE_CONFLICT", "员工工号已存在");
+        }
+    }
+
+    /**
+     * 取工作人员关联的有效账号。{@code staff.user_id} 有外键且非空，所以「查不到」只可能是账号被软删，
+     * 此时既不能改资料也不能改状态（否则返回的视图缺契约 required 的字段）→ 409。
+     * 与 {@code GuideService#updateStatus} 对「导游尚未关联有效账号」的处理同构。
+     */
+    private SysUser requireStaffAccount(Staff staff) {
+        SysUser account = staff.userId == null ? null : userMapper.selectById(staff.userId);
+        if (account == null || Integer.valueOf(1).equals(account.deleted)) {
+            throw new BusinessException(409, "STAFF_ACCOUNT_CONFLICT", "工作人员尚未关联有效账号");
+        }
+        return account;
+    }
+
+    /** 回查单条工作人员及其账号，用于写操作后返回契约 Staff 视图。 */
+    private StaffView staffDetail(Long staffId) {
+        Staff staff = staffMapper.selectById(staffId);
+        if (staff == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "工作人员不存在");
+        }
+        return StaffView.from(staff, staff.userId == null ? null : userMapper.selectById(staff.userId));
+    }
+
+    /** 批量取账号，避免工作人员列表逐行查询造成 N+1。 */
+    private Map<Long, SysUser> accountsOf(List<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(user -> user.id, user -> user, (a, b) -> a));
     }
 
     /** 批量取登录名，避免逐行查询造成 N+1。 */

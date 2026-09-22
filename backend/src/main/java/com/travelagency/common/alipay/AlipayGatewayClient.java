@@ -13,7 +13,9 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -37,8 +39,18 @@ import java.util.Map;
  * <p><b>密钥形态</b>：官方 SDK 不认 PEM 头尾，因此本类在构造时用 {@link #normalizeKey(String)}
  * 统一剥壳，纯 Base64 主体与带 {@code -----BEGIN ...-----} 的 PEM 片段都能直接用。</p>
  *
- * <p>配置全部来自环境变量，缺失时 {@link #canBuildCashierUrl()} 为 false，
- * 调用方据此回退到「适配点未接入」的行为，而不是抛异常把主链路打死。</p>
+ * <p><b>配置齐全性由两个不同粒度的谓词表达，别混用：</b></p>
+ * <ul>
+ *   <li>{@link #canBuildCashierUrl()}：<b>SDK 能不能把请求签出来</b>（网关地址 + APPID + 应用私钥）。
+ *       这是本类内部的自检条件。</li>
+ *   <li>{@link #isCashierConfigurationComplete()}：<b>这条支付链路能不能真正闭环</b>
+ *       —— 在前者之上还要求支付宝公钥与回调地址齐备。因为链接一旦交给用户就代表「现在可以付款」，
+ *       而付款结果只能由支付宝回调 {@code notify_url} 回传、再用支付宝公钥验签；少任何一项都会造成
+ *       「用户付了钱、订单却永远停在待支付」。<b>调用方必须用这个谓词决定要不要放行支付。</b></li>
+ * </ul>
+ *
+ * <p>两个谓词都由环境变量驱动，缺失信息经 {@link #missingCashierConfiguration()} 以
+ * <b>环境变量名</b>的形式暴露，绝不输出密钥内容。</p>
  */
 @Component
 public class AlipayGatewayClient {
@@ -52,6 +64,17 @@ public class AlipayGatewayClient {
     private static final String SIGN_TYPE = "RSA2";
     private static final String CHARSET = "utf-8";
     private static final String FORMAT_JSON = "json";
+
+    /**
+     * 让支付链路真正闭环所需的全部配置项（环境变量名），顺序固定。
+     *
+     * <p>四项缺一不可，理由都是同一件事——<b>付款结果必须能回来、且能被验真</b>：
+     * 没有 APPID / 应用私钥就签不出请求；没有支付宝公钥就无法验签回调，无法判断通知是不是支付宝发来的；
+     * 没有回调地址则支付宝根本无处回传，用户付款后订单只会停在待支付。</p>
+     */
+    private static final List<String> CASHIER_REQUIRED_CONFIG = List.of(
+            "ALIPAY_GATEWAY_URL", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY",
+            "ALIPAY_PUBLIC_KEY", "ALIPAY_NOTIFY_URL");
 
     private final String gatewayUrl;
     private final String appId;
@@ -82,11 +105,52 @@ public class AlipayGatewayClient {
     }
 
     /**
-     * 是否具备生成真实收银台链接的条件（APPID + 应用私钥）。
-     * 缺任一项时调用方应回退到占位行为，不能把下单/支付接口打成 500。
+     * 官方 SDK 是否具备签出收银台请求的最小条件（网关地址 + APPID + 应用私钥）。
+     *
+     * <p>⚠️ 这只是「签得出来」，<b>不代表可以把链接交给用户去付款</b>：链接一旦给出就代表
+     * 「这笔单现在可以付款」，而付款结果还要靠回调回来并验签。要不要放行支付请用
+     * {@link #isCashierConfigurationComplete()}。</p>
      */
     public boolean canBuildCashierUrl() {
         return notBlank(gatewayUrl) && notBlank(appId) && notBlank(appPrivateKey);
+    }
+
+    /**
+     * 是否具备「生成可付款收银台链接」的完整配置：{@link #CASHIER_REQUIRED_CONFIG} 全部非空。
+     *
+     * <p>调用方（{@code OrderService.startPayment}）必须在<b>生成链接之前</b>用它把关：
+     * 只有齐全才能把链接交给用户；缺任何一项都应明确拒绝并提示「支付尚未配置完成」，
+     * 而不是给出一个用户付得了款、系统却收不到结果的链接。</p>
+     */
+    public boolean isCashierConfigurationComplete() {
+        return missingCashierConfiguration().isEmpty();
+    }
+
+    /**
+     * 列出「生成可付款收银台链接」还缺哪些配置，返回<b>环境变量名</b>（可能为空列表）。
+     *
+     * <p>只输出变量名与「已配置 / 未配置」的事实，不含任何密钥内容，可直接进日志与接口 message。</p>
+     */
+    public List<String> missingCashierConfiguration() {
+        List<String> missing = new ArrayList<>();
+        for (String name : CASHIER_REQUIRED_CONFIG) {
+            if (!notBlank(valueOf(name))) {
+                missing.add(name);
+            }
+        }
+        return List.copyOf(missing);
+    }
+
+    /** 按环境变量名取出本类持有的配置值，供 {@link #missingCashierConfiguration()} 统一判空。 */
+    private String valueOf(String envName) {
+        return switch (envName) {
+            case "ALIPAY_GATEWAY_URL" -> gatewayUrl;
+            case "ALIPAY_APP_ID" -> appId;
+            case "ALIPAY_APP_PRIVATE_KEY" -> appPrivateKey;
+            case "ALIPAY_PUBLIC_KEY" -> alipayPublicKey;
+            case "ALIPAY_NOTIFY_URL" -> notifyUrl;
+            default -> null;
+        };
     }
 
     /**
@@ -108,11 +172,6 @@ public class AlipayGatewayClient {
      */
     public boolean isRsa2ConfigurationIncomplete() {
         return notBlank(alipayPublicKey) ^ notBlank(appId);
-    }
-
-    /** 网关地址。未配置沙箱密钥时，调用方用它作为「适配点未接入」的占位地址。 */
-    public String gatewayUrl() {
-        return gatewayUrl;
     }
 
     /** 是否已配置异步通知地址。未配置时收银台请求不带 notify_url。 */
@@ -139,6 +198,12 @@ public class AlipayGatewayClient {
      * <p>生成的链接可直接在浏览器打开：沙箱环境下用<b>沙箱买家账号</b>登录付款。
      * 付款结果由支付宝回调 {@code notify_url} 异步回传，<b>不依赖浏览器跳转</b>。</p>
      *
+     * <p><b>本方法只负责「签得出来」，不负责「该不该给用户」</b>：它是传输层适配器，
+     * 只要 SDK 三要素齐备就会产出链接（缺 {@code notify_url} 时打 WARN）。
+     * 「配置不齐就不许生成可付款链接」这条业务策略在 {@code OrderService.startPayment} 里把关
+     * （判据 {@link #isCashierConfigurationComplete()}），这样以后若要接入
+     * 「只查单不回调」的流程（{@code alipay.trade.query}），适配器无需跟着改。</p>
+     *
      * @throws IllegalStateException 未配置 APPID / 应用私钥，或 SDK 签名失败
      */
     public String buildCashierUrl(String outTradeNo, BigDecimal amount, String subject) {
@@ -151,7 +216,9 @@ public class AlipayGatewayClient {
             request.setNotifyUrl(notifyUrl);
         } else {
             log.warn("未配置 app.integrations.alipay.notify-url（ALIPAY_NOTIFY_URL），"
-                    + "收银台请求将不带 notify_url，用户付款后订单可能一直停留在待支付");
+                    + "收银台请求将不带 notify_url，用户付款后订单可能一直停留在待支付"
+                    + "（正常调用路径 OrderService.startPayment 会先按配置齐全性 fail-closed，"
+                    + "走到这里说明是绕过了该检查的直接调用）");
         }
         request.setBizContent(bizContent(outTradeNo, amount, subject));
         try {

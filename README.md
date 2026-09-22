@@ -142,17 +142,19 @@ $env:ALIPAY_NOTIFY_URL      = "https://<公网可达域名>/api/payments/alipay/
 与 `AlipayClient.pageExecute`），不再自写 RSA2 拼接 —— 这是 `docs/openapi.yaml` 对
 `POST /payments/alipay/notify` 的硬性要求。
 
-支付链路按配置自动选择路径，缺项不会把接口打成 500：
+支付链路按配置自动选择路径，**配置不齐一律 fail-closed**（返回 409 与明确错误码，不会打成 500，
+更不会给出一个「用户付得进去、系统收不到结果」的链接）：
 
-| 配置情况 | 下单支付 | 异步通知验签 |
+| 配置情况 | `POST /orders/{orderNo}/pay` 发起支付 | `POST /payments/alipay/notify` 异步通知验签 |
 | --- | --- | --- |
-| 配齐 `ALIPAY_APP_ID` + `ALIPAY_APP_PRIVATE_KEY` | 生成真实沙箱收银台链接（带 `notify_url`） | — |
-| 配齐 `ALIPAY_APP_ID` **与** `ALIPAY_PUBLIC_KEY` | — | 官方 SDK **RSA2** 验签，始终核对 `app_id`；配了 `ALIPAY_SELLER_ID` 再核对 `seller_id` |
-| `ALIPAY_APP_ID` / `ALIPAY_PUBLIC_KEY` **只配了其一** | — | **一律拒绝**（半配置按 fail-closed 处理，不会降级到 HMAC） |
-| 两者都未配置 | — | 回退自建 HMAC（`ALIPAY_CALLBACK_SECRET`），未配置则一律拒绝 |
+| `ALIPAY_APP_ID` + `ALIPAY_APP_PRIVATE_KEY` + `ALIPAY_PUBLIC_KEY` + `ALIPAY_NOTIFY_URL` **四项全配齐** | 生成真实沙箱收银台链接，`notify_url` 作为公共参数参与签名 | 官方 SDK **RSA2** 验签，始终核对 `app_id`；配了 `ALIPAY_SELLER_ID` 再核对 `seller_id` |
+| 以上四项**缺任意一项** | **409 `PAYMENT_NOT_CONFIGURED`**，`message` 直接列出缺少的环境变量名；**不生成链接、不写 payment 行** | 见下面两行（走官方验签的前提是 APPID 与公钥齐备） |
+| `ALIPAY_APP_ID` / `ALIPAY_PUBLIC_KEY` **只配了其一** | 409 `PAYMENT_NOT_CONFIGURED`（同样属于缺项） | **一律拒绝**（半配置按 fail-closed 处理，不会降级到 HMAC） |
+| `ALIPAY_APP_ID` 与 `ALIPAY_PUBLIC_KEY` 都未配置 | 409 `PAYMENT_NOT_CONFIGURED` | 回退自建 HMAC（`ALIPAY_CALLBACK_SECRET`），未配置则一律拒绝 |
 
-⚠️ `ALIPAY_NOTIFY_URL` 缺失时收银台请求不带 `notify_url`，支付宝无法回传支付结果，
-订单会一直停在待支付 —— 联调前请先把它配成公网可达地址。
+⚠️ 发起支付要求**四项齐全**：缺 `ALIPAY_NOTIFY_URL` 支付宝无处回传结果，缺 `ALIPAY_PUBLIC_KEY`
+回调验不了签，两种情况下用户付了钱订单都会一直停在待支付。因此宁可明确拒绝并提示缺哪一项，
+也不放行一个「能付款但收不到结果」的链接。**联调前请先把这四项配好。**
 
 异步通知入口为 `POST /api/payments/alipay/notify`。回调**只认验签后的结果**，并核对商户、
 订单号与金额，业务层只接受验签通过且金额一致的支付；浏览器跳转结果不作为支付成功依据。

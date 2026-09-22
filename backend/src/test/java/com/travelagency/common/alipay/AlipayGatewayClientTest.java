@@ -16,6 +16,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -106,6 +107,59 @@ class AlipayGatewayClientTest {
         assertFalse(new AlipayGatewayClient(GATEWAY, "", "", "", "", "").isRsa2ConfigurationIncomplete());
         // 都配齐 → 正常
         assertFalse(gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, "").isRsa2ConfigurationIncomplete());
+    }
+
+    @Test
+    @DisplayName("收银台链路齐全性：四项配置缺一即不算齐全，缺项以环境变量名列出且不含密钥原文")
+    void reportsMissingCashierConfigurationByEnvName() {
+        KeyPair app = keyPair();
+        KeyPair alipay = keyPair();
+
+        // 全配齐 → 无缺失，可以放行支付
+        AlipayGatewayClient complete = gateway(privateKey(app), publicKey(alipay), NOTIFY_URL, "");
+        assertTrue(complete.isCashierConfigurationComplete());
+        assertTrue(complete.missingCashierConfiguration().isEmpty());
+
+        // 缺支付宝公钥：链接签得出来、用户也付得了款，但回调验不了签 ⇒ 必须算【不齐】
+        AlipayGatewayClient noPublicKey = gateway(privateKey(app), "", NOTIFY_URL, "");
+        assertFalse(noPublicKey.isCashierConfigurationComplete());
+        assertEquals(List.of("ALIPAY_PUBLIC_KEY"), noPublicKey.missingCashierConfiguration());
+
+        // 缺回调地址：即便公钥齐备，支付宝也无处回传结果 ⇒ 同样算【不齐】
+        assertEquals(List.of("ALIPAY_NOTIFY_URL"),
+                new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(alipay), "", "")
+                        .missingCashierConfiguration());
+
+        // 一项都没配：五个都缺，顺序固定（日志与接口提示都靠它稳定）
+        assertEquals(List.of("ALIPAY_GATEWAY_URL", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY",
+                        "ALIPAY_PUBLIC_KEY", "ALIPAY_NOTIFY_URL"),
+                new AlipayGatewayClient("", "", "", "", "", "").missingCashierConfiguration());
+
+        // 缺项提示只输出变量名，绝不能夹带密钥原文（它会直接进接口 message 与日志）
+        String brief = String.join("、",
+                new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), "", "", "")
+                        .missingCashierConfiguration());
+        assertFalse(brief.contains(privateKey(app)), "缺项提示泄露了应用私钥");
+        assertFalse(brief.contains(publicKey(alipay)), "缺项提示泄露了支付宝公钥");
+    }
+
+    @Test
+    @DisplayName("「SDK 签得出来」不等于「可以放行支付」：缺公钥/回调地址时前者为 true、后者必须为 false")
+    void signingAbilityIsWeakerThanCashierReadiness() {
+        KeyPair app = keyPair();
+
+        // 两个谓词的粒度差异就是本次评审指出的问题所在，这里把它钉死，防止后人用错判据。
+        AlipayGatewayClient signableButNotReady = gateway(privateKey(app), "", NOTIFY_URL, "");
+        assertTrue(signableButNotReady.canBuildCashierUrl(),
+                "只看 SDK 三要素，它是能签出请求的（这也正是旧实现会产出可付款链接的原因）");
+        assertFalse(signableButNotReady.isCashierConfigurationComplete(),
+                "缺支付宝公钥 ⇒ 回调验不了签，绝不允许把链接交给用户");
+
+        AlipayGatewayClient missingNotifyUrl =
+                new AlipayGatewayClient(GATEWAY, APP_ID, privateKey(app), publicKey(keyPair()), "", "");
+        assertTrue(missingNotifyUrl.canBuildCashierUrl());
+        assertFalse(missingNotifyUrl.isCashierConfigurationComplete(),
+                "缺回调地址 ⇒ 支付宝无处回传结果，同样不许放行");
     }
 
     @Test

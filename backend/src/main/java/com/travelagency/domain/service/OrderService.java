@@ -50,6 +50,8 @@ import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.mapper.TravelerMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,6 +70,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class OrderService {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final TravelOrderMapper orderMapper;
     private final DepartureMapper departureMapper;
@@ -344,12 +348,33 @@ public class OrderService {
         return toDetail(order);
     }
 
+    /**
+     * 发起支付宝沙箱支付，返回收银台跳转信息。
+     *
+     * <p><b>配置不齐就拒绝，绝不给出可付款链接。</b>收银台链接一旦返回给用户，就等于系统声明
+     * 「这笔单现在可以付款」；而付款结果只能由支付宝回调 {@code notify_url} 回传、再由本系统用
+     * 支付宝公钥验签。因此只要 {@code ALIPAY_GATEWAY_URL} / {@code ALIPAY_APP_ID} /
+     * {@code ALIPAY_APP_PRIVATE_KEY} / {@code ALIPAY_PUBLIC_KEY} / {@code ALIPAY_NOTIFY_URL}
+     * 里任何一项没配，就在这里明确拒绝，而不是生成一个「用户付得进去、结果回不来」的链接
+     * —— 那会让用户付完钱后订单永远停在待支付。</p>
+     *
+     * <p>检查位置在订单状态校验<b>之后</b>、任何写库与生成链接<b>之前</b>：订单状态不对时优先报
+     * 状态冲突（那才是用户侧的因），避免把「订单已支付/已取消」误报成「支付未配置」；
+     * 同时保证被拒绝的请求<b>不产生任何副作用</b>（不推进 payment、不落库）。</p>
+     */
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId) {
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许支付");
+        }
+        if (!alipayGatewayClient.isCashierConfigurationComplete()) {
+            String missing = String.join("、", alipayGatewayClient.missingCashierConfiguration());
+            log.error("支付尚未配置完成，已拒绝发起支付（fail-closed）：orderNo={}, 缺少={}",
+                    orderNo, missing);
+            throw new BusinessException(409, "PAYMENT_NOT_CONFIGURED",
+                    "支付尚未配置完成，无法发起支付（缺少配置项：" + missing + "）");
         }
         Payment payment = paymentFor(order.id);
         payment.status = PaymentStatus.PENDING;
@@ -360,19 +385,15 @@ public class OrderService {
     }
 
     /**
-     * 生成收银台地址。
+     * 生成收银台地址：到这里配置已由 {@link #startPayment} 校验齐全，直接产出真实链接。
      *
-     * <p>配置了支付宝沙箱密钥（{@code ALIPAY_APP_ID} + {@code ALIPAY_APP_PRIVATE_KEY}）时，
-     * 返回的是支付宝 {@code alipay.trade.page.pay} 的<b>真实收银台链接</b>，可直接在浏览器打开付款；
-     * 未配置时回退到网关占位地址，让未接入沙箱的本地环境仍能走通前端流程
-     * （占位地址不可付款，这一点在 README 与测试报告里都写明了）。</p>
+     * <p>方法名保留「cashierUrl」是因为语义没变，但实现里<b>不再有「未配置就回退网关占位地址」</b>
+     * 那条分支 —— 占位地址看着能返回 200，实际用户付不了款、订单也不会更新，
+     * 属于把配置问题伪装成成功响应，正是本次评审要求去掉的东西。</p>
      */
     private String cashierUrl(TravelOrder order) {
-        if (alipayGatewayClient.canBuildCashierUrl()) {
-            return alipayGatewayClient.buildCashierUrl(
-                    order.orderNo, order.totalAmount, "旅行社团购订单 " + order.orderNo);
-        }
-        return alipayGatewayClient.gatewayUrl();
+        return alipayGatewayClient.buildCashierUrl(
+                order.orderNo, order.totalAmount, "旅行社团购订单 " + order.orderNo);
     }
 
     /**

@@ -1,6 +1,11 @@
 package com.travelagency.common.alipay;
 
+import com.alipay.api.AlipayApiException;
+import com.alipay.api.AlipayClient;
 import com.alipay.api.internal.util.AlipaySignature;
+import com.alipay.api.request.AlipayTradeFastpayRefundQueryRequest;
+import com.alipay.api.request.AlipayTradeRefundRequest;
+import com.alipay.api.response.AlipayTradeFastpayRefundQueryResponse;
 import com.alipay.api.response.AlipayTradeRefundResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +20,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +31,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 /**
  * 支付宝沙箱适配器的签名/验签契约，<b>签名与验签全部以官方 SDK {@code AlipaySignature} 为准</b>。
@@ -566,36 +579,35 @@ class AlipayGatewayClientTest {
     }
 
     @Test
-    @DisplayName("⚠️ 退款成功判定必须看 code，不能看 isSuccess()：空响应与 code=null 都会被 isSuccess() 判成 true")
+    @DisplayName("⚠️ 退款成功判定必须看 code + fund_change，不能看 isSuccess()：空响应与 code=null 都会被 isSuccess() 判成 true")
     void refundOutcomeIsJudgedByCodeNotByIsSuccess() {
         // 坑的实证：SDK 的 isSuccess() 判据是「code 不是 40004/20000」，
         // 所以一个全新、什么都没填的响应对象也会返回 true。用它判退款＝把「支付宝没回话」当「钱已退」。
         AlipayTradeRefundResponse blank = new AlipayTradeRefundResponse();
         assertTrue(blank.isSuccess(), "这是 SDK 的既有行为，本用例把它钉住，防止有人误用");
-        assertFalse(AlipayGatewayClient.fromResponse(blank, "RF70").success(),
+        assertFalse(AlipayGatewayClient.fromResponse(blank).success(),
                 "空白响应绝不能被当作出款成功（fail-closed）");
+        assertEquals(AlipayGatewayClient.RefundOutcome.NEEDS_CONFIRMATION,
+                AlipayGatewayClient.classify(blank), "连 code 都没有，只能去查询确认");
 
         AlipayTradeRefundResponse nullCode = new AlipayTradeRefundResponse();
         nullCode.setMsg("Success");
-        assertFalse(AlipayGatewayClient.fromResponse(nullCode, "RF70").success());
+        assertFalse(AlipayGatewayClient.fromResponse(nullCode).success());
+        assertEquals(AlipayGatewayClient.RefundOutcome.NEEDS_CONFIRMATION,
+                AlipayGatewayClient.classify(nullCode), "code 缺失时不能就地判定");
 
-        // 正常成功：code=10000，fund_change=Y
+        // 确定成功：code=10000 且 fund_change=Y
         AlipayTradeRefundResponse ok = new AlipayTradeRefundResponse();
         ok.setCode("10000");
         ok.setFundChange("Y");
         ok.setTradeNo("2027030122001400000000000001");
         ok.setOutTradeNo("TA20270301000001ABCD1234");
-        AlipayGatewayClient.RefundResult settled = AlipayGatewayClient.fromResponse(ok, "RF70");
+        assertEquals(AlipayGatewayClient.RefundOutcome.CONFIRMED_SUCCESS,
+                AlipayGatewayClient.classify(ok));
+        AlipayGatewayClient.RefundResult settled = AlipayGatewayClient.fromResponse(ok);
         assertTrue(settled.success());
         assertEquals("2027030122001400000000000001", settled.tradeNo());
         assertEquals("TA20270301000001ABCD1234", settled.outTradeNo());
-
-        // code=10000 但明示「未发生资金变化」⇒ 钱没动，不算退成功
-        AlipayTradeRefundResponse noFundChange = new AlipayTradeRefundResponse();
-        noFundChange.setCode("10000");
-        noFundChange.setFundChange("N");
-        AlipayGatewayClient.RefundResult notMoved = AlipayGatewayClient.fromResponse(noFundChange, "RF70");
-        assertFalse(notMoved.success());
 
         // 业务失败：错误码优先取 sub_code（更可定位），并带上可读原因
         AlipayTradeRefundResponse rejected = new AlipayTradeRefundResponse();
@@ -603,14 +615,202 @@ class AlipayGatewayClientTest {
         rejected.setMsg("Business Failed");
         rejected.setSubCode("ACQ.TRADE_NOT_EXIST");
         rejected.setSubMsg("交易不存在");
-        AlipayGatewayClient.RefundResult failed = AlipayGatewayClient.fromResponse(rejected, "RF70");
+        assertEquals(AlipayGatewayClient.RefundOutcome.REJECTED,
+                AlipayGatewayClient.classify(rejected), "回了非空非 10000 的 code ⇒ 明确被拒");
+        AlipayGatewayClient.RefundResult failed = AlipayGatewayClient.fromResponse(rejected);
         assertFalse(failed.success());
         assertEquals("ACQ.TRADE_NOT_EXIST", failed.code());
         assertEquals("交易不存在", failed.message());
 
         // 连响应对象都没有
-        assertFalse(AlipayGatewayClient.fromResponse(null, "RF70").success());
-        assertEquals("EMPTY_RESPONSE", AlipayGatewayClient.fromResponse(null, "RF70").code());
+        assertFalse(AlipayGatewayClient.fromResponse(null).success());
+        assertEquals(AlipayGatewayClient.RefundOutcome.NEEDS_CONFIRMATION,
+                AlipayGatewayClient.classify(null));
+    }
+
+    @Test
+    @DisplayName("⚠️ 评审核心：code=10000 但 fund_change=N 或【字段缺失】都不算成功，必须查询确认")
+    void refundNeverTreatsMissingFundChangeAsSuccess() {
+        // 官方口径：code=10000 只代表「请求处理成功」，不代表钱动了。
+        // fund_change=N（钱没动，例如同一请求号被重复提交）与字段缺失都必须用原 out_request_no
+        // 查询退款结果后再下结论 —— 既不能当成功（会虚报已退款），也不能当失败（首次可能其实成功了）。
+        AlipayTradeRefundResponse fundChangeNo = new AlipayTradeRefundResponse();
+        fundChangeNo.setCode("10000");
+        fundChangeNo.setFundChange("N");
+        fundChangeNo.setTradeNo("2027030122001400000000000001");
+
+        AlipayTradeRefundResponse fundChangeMissing = new AlipayTradeRefundResponse();
+        fundChangeMissing.setCode("10000");
+        fundChangeMissing.setTradeNo("2027030122001400000000000001");
+
+        for (AlipayTradeRefundResponse response : List.of(fundChangeNo, fundChangeMissing)) {
+            assertEquals(AlipayGatewayClient.RefundOutcome.NEEDS_CONFIRMATION,
+                    AlipayGatewayClient.classify(response),
+                    "code=10000 且 fund_change=" + response.getFundChange() + " 不能就地判定成败");
+
+            AlipayGatewayClient.RefundResult result = AlipayGatewayClient.fromResponse(response);
+            assertFalse(result.success(), "未经查询确认的退款响应绝不能被当作成功");
+            assertEquals("REFUND_RESULT_UNCONFIRMED", result.code());
+        }
+    }
+
+    @Test
+    @DisplayName("fund_change=Y 已经是确定结论，不必再多查一次")
+    void refundSkipsQueryWhenFundChangeIsYes() throws Exception {
+        AlipayClient sdk = mock(AlipayClient.class);
+        AlipayTradeRefundResponse refundResponse = new AlipayTradeRefundResponse();
+        refundResponse.setCode("10000");
+        refundResponse.setFundChange("Y");
+        refundResponse.setTradeNo("2027030122001400000000000001");
+
+        doAnswer(invocation -> refundResponse).when(sdk).execute(any(AlipayTradeRefundRequest.class));
+
+        AlipayGatewayClient client = spy(sandbox(privateKey(keyPair()), APP_ID));
+        doReturn(sdk).when(client).alipayClient();
+
+        AlipayGatewayClient.RefundResult result =
+                client.refund("TA20270301000001ABCD1234", "RF70", new BigDecimal("2999.00"), "行程有变");
+
+        assertTrue(result.success());
+        verify(sdk, never()).execute(any(AlipayTradeFastpayRefundQueryRequest.class));
+    }
+
+    @Test
+    @DisplayName("退款响应 fund_change=N 时按【原请求号】查询，查到 REFUND_SUCCESS 才判成功")
+    void refundConfirmsByQueryWhenFundChangeIsNo() throws Exception {
+        AlipayClient sdk = mock(AlipayClient.class);
+        AlipayTradeRefundResponse refundResponse = new AlipayTradeRefundResponse();
+        refundResponse.setCode("10000");
+        refundResponse.setFundChange("N");
+
+        AlipayTradeFastpayRefundQueryResponse queryResponse = new AlipayTradeFastpayRefundQueryResponse();
+        queryResponse.setCode("10000");
+        queryResponse.setRefundStatus("REFUND_SUCCESS");
+        queryResponse.setTradeNo("2027030122001400000000000001");
+        queryResponse.setOutTradeNo("TA20270301000001ABCD1234");
+
+        List<Object> sent = new ArrayList<>();
+        doAnswer(invocation -> {
+            sent.add(invocation.getArgument(0));
+            return refundResponse;
+        }).when(sdk).execute(any(AlipayTradeRefundRequest.class));
+        doAnswer(invocation -> {
+            sent.add(invocation.getArgument(0));
+            return queryResponse;
+        }).when(sdk).execute(any(AlipayTradeFastpayRefundQueryRequest.class));
+
+        AlipayGatewayClient client = spy(sandbox(privateKey(keyPair()), APP_ID));
+        doReturn(sdk).when(client).alipayClient();
+
+        AlipayGatewayClient.RefundResult result =
+                client.refund("TA20270301000001ABCD1234", "RF70", new BigDecimal("2999.00"), "行程有变");
+
+        assertTrue(result.success(), "查询确认退款成功后应判成功");
+        assertEquals("2027030122001400000000000001", result.tradeNo());
+
+        // 查询必须落在同一笔退款上：换请求号查到的是另一笔，结论对本笔无效
+        assertEquals(2, sent.size(), "应依次发出「退款」与「退款查询」两个请求");
+        assertTrue(sent.get(1) instanceof AlipayTradeFastpayRefundQueryRequest,
+                "第二次调用的必须是退款查询，实际是 " + sent.get(1).getClass().getName());
+        String queryBiz = ((AlipayTradeFastpayRefundQueryRequest) sent.get(1)).getBizContent();
+        assertTrue(queryBiz.contains("\"out_request_no\":\"RF70\""),
+                "查询必须带原退款请求号：" + queryBiz);
+        assertTrue(queryBiz.contains("\"out_trade_no\":\"TA20270301000001ABCD1234\""),
+                "查询必须带原商户订单号：" + queryBiz);
+    }
+
+    @Test
+    @DisplayName("退款请求超时（AlipayApiException）不直接判失败，而是先查询确认——首次可能其实已出款")
+    void refundConfirmsByQueryWhenRequestTimesOut() throws Exception {
+        AlipayClient sdk = mock(AlipayClient.class);
+        AlipayTradeFastpayRefundQueryResponse queryResponse = new AlipayTradeFastpayRefundQueryResponse();
+        queryResponse.setCode("10000");
+        queryResponse.setRefundStatus("REFUND_SUCCESS");
+        queryResponse.setTradeNo("2027030122001400000000000001");
+
+        List<Object> sent = new ArrayList<>();
+        doAnswer(invocation -> {
+            throw new AlipayApiException("Read timed out");
+        }).when(sdk).execute(any(AlipayTradeRefundRequest.class));
+        doAnswer(invocation -> {
+            sent.add(invocation.getArgument(0));
+            return queryResponse;
+        }).when(sdk).execute(any(AlipayTradeFastpayRefundQueryRequest.class));
+
+        AlipayGatewayClient client = spy(sandbox(privateKey(keyPair()), APP_ID));
+        doReturn(sdk).when(client).alipayClient();
+
+        AlipayGatewayClient.RefundResult result =
+                client.refund("TA20270301000001ABCD1234", "RF70", new BigDecimal("2999.00"), "行程有变");
+
+        assertTrue(result.success(),
+                "超时后查询到已退款成功，必须判成功（否则本地会永远停在待审核）");
+        assertEquals(1, sent.size(), "超时路径必须发起一次退款查询");
+    }
+
+    @Test
+    @DisplayName("查询也没能确认时不落已退款：返回 unconfirmed，请求号恒定所以可原样重试")
+    void refundStaysUnconfirmedWhenQueryCannotConfirm() throws Exception {
+        AlipayClient sdk = mock(AlipayClient.class);
+        AlipayTradeRefundResponse refundResponse = new AlipayTradeRefundResponse();
+        refundResponse.setCode("10000");
+        refundResponse.setFundChange("N");
+
+        doAnswer(invocation -> refundResponse).when(sdk).execute(any(AlipayTradeRefundRequest.class));
+        doAnswer(invocation -> {
+            throw new AlipayApiException("connect timed out");
+        }).when(sdk).execute(any(AlipayTradeFastpayRefundQueryRequest.class));
+
+        AlipayGatewayClient client = spy(sandbox(privateKey(keyPair()), APP_ID));
+        doReturn(sdk).when(client).alipayClient();
+
+        AlipayGatewayClient.RefundResult result =
+                client.refund("TA20270301000001ABCD1234", "RF70", new BigDecimal("2999.00"), "行程有变");
+
+        assertFalse(result.success(), "连查询都失败了，绝不能判成功");
+        assertEquals("REFUND_RESULT_UNCONFIRMED", result.code());
+        assertTrue(result.message().contains("查询"),
+                "原因里要说清查询也失败了，便于后台判断是重试还是查人工：" + result.message());
+    }
+
+    @Test
+    @DisplayName("退款查询必须同时看 code 与 refund_status，光 code=10000 不算查到成功")
+    void refundQueryRequiresRefundStatusSuccess() {
+        AlipayTradeFastpayRefundQueryResponse processing = new AlipayTradeFastpayRefundQueryResponse();
+        processing.setCode("10000");
+        processing.setRefundStatus("REFUND_PROCESSING");
+        assertFalse(AlipayGatewayClient.isRefundQuerySucceeded(processing),
+                "退款处理中不等于退款成功");
+
+        AlipayTradeFastpayRefundQueryResponse blank = new AlipayTradeFastpayRefundQueryResponse();
+        assertFalse(AlipayGatewayClient.isRefundQuerySucceeded(blank));
+        assertFalse(AlipayGatewayClient.isRefundQuerySucceeded(null));
+
+        AlipayTradeFastpayRefundQueryResponse succeeded = new AlipayTradeFastpayRefundQueryResponse();
+        succeeded.setCode("10000");
+        succeeded.setRefundStatus("REFUND_SUCCESS");
+        assertTrue(AlipayGatewayClient.isRefundQuerySucceeded(succeeded));
+    }
+
+    @Test
+    @DisplayName("退款原因含换行/制表符时生成的仍是合法 JSON（控制字符必须转义）")
+    void refundBizContentEscapesControlCharactersInReason() {
+        String biz = AlipayGatewayClient.refundBizContent(
+                "TA20270301000001ABCD1234", "RF70", new BigDecimal("2999"),
+                "第一行\n第二行\t带制表符\r\n结束");
+
+        // 逐字断言：换行必须是 \n、制表符必须是 \t、回车必须是 \r。
+        // 旧实现用手工拼串 + 只转义引号/反斜杠，会把裸控制字符留在报文里，
+        // 支付宝侧解析 JSON 立刻失败 —— 用户在备注里敲个回车就能让退款发不出去。
+        assertEquals("{\"out_trade_no\":\"TA20270301000001ABCD1234\""
+                + ",\"refund_amount\":\"2999.00\""
+                + ",\"out_request_no\":\"RF70\""
+                + ",\"refund_reason\":\"第一行\\n第二行\\t带制表符\\r\\n结束\"}", biz);
+
+        // 反向对照：报文里不能再出现裸露的换行 / 制表符 / 回车
+        assertFalse(biz.contains("\n"), "refund_reason 里的换行没有被转义：" + biz);
+        assertFalse(biz.contains("\t"), "refund_reason 里的制表符没有被转义：" + biz);
+        assertFalse(biz.contains("\r"), "refund_reason 里的回车没有被转义：" + biz);
     }
 
     // ------------------------------------------------------------------ helpers

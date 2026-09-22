@@ -1359,9 +1359,15 @@ paths:
 
         - 出款配置不齐（缺 `ALIPAY_APP_ID` / `ALIPAY_APP_PRIVATE_KEY` 等）→
           `409 REFUND_NOT_CONFIGURED`，不产生任何「已退款」痕迹；
-        - 支付宝未成功受理 → `503 REFUND_FAILED`，退款单退回 `APPLYING`，
+        - 支付宝未成功受理，或**出款结果无法确认** → `503 REFUND_FAILED`，退款单退回 `APPLYING`，
           名额与线路计数都不变，后台可原样重试（出款请求号对同一退款单恒定，
           支付宝据此幂等，重试不会重复出款）。
+
+        其中「出款结果无法确认」指：退款响应 `code=10000` 但 `fund_change` 不是 `Y`
+        （`N` 或字段缺失），或请求超时/网络异常，且随后用**同一个** `out_request_no`
+        调 `alipay.trade.fastpay.refund.query` 也没查到 `refund_status=REFUND_SUCCESS`。
+        这些情形下钱可能已经退出去，所以既不能就地判失败、更不能落 `REFUNDED`；
+        保持 `APPLYING` 并原样重试既不会重复出款，也能在下一次收敛出确定结论。
 
         即：**响应 200 才代表钱已退给游客**，`REFUNDED` 不会被提前写入。
       x-roles: [STAFF, ADMIN]

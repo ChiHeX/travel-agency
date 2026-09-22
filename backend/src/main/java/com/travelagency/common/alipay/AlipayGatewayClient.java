@@ -549,6 +549,15 @@ public class AlipayGatewayClient {
     public record RefundResult(boolean success, String tradeNo, String outTradeNo,
                                String code, String message) {
 
+        /**
+         * 「结果未确认」的原因码。
+         *
+         * <p>调用方<b>必须</b>用它把「还不知道钱退没退」与「明确失败」分开处置：
+         * 明确失败可以原样重试、也可以让管理员拒绝；未确认则只能继续确认 ——
+         * 此时退回待审核状态会让「拒绝」变成一条能把已退款订单改回「已支付」的出路。</p>
+         */
+        public static final String UNCONFIRMED_CODE = "REFUND_RESULT_UNCONFIRMED";
+
         /** 确定退款成功。{@code tradeNo} 为支付宝交易号，成功时必有。 */
         public static RefundResult succeeded(String tradeNo, String outTradeNo) {
             return new RefundResult(true, tradeNo, outTradeNo, null, null);
@@ -568,7 +577,18 @@ public class AlipayGatewayClient {
          * 原样重试既不会重复出款，下一次也可能查询到确定结论而收敛。</p>
          */
         public static RefundResult unconfirmed(String reason) {
-            return new RefundResult(false, null, null, "REFUND_RESULT_UNCONFIRMED", reason);
+            return new RefundResult(false, null, null, UNCONFIRMED_CODE, reason);
+        }
+
+        /**
+         * 是否是「结果未确认」——{@code success()} 为 {@code false} 的两种情形里，只有这一种
+         * 意味着钱<b>可能已经退出去</b>。
+         *
+         * <p>用方法而不是让调用方去比 {@code code()} 字符串：判定口径与
+         * {@link #unconfirmed(String)} 写在一起，改一处即可，调用方也不会漏掉这个区分。</p>
+         */
+        public boolean unconfirmed() {
+            return !success && UNCONFIRMED_CODE.equals(code);
         }
 
         /** 供日志/错误信息使用的单行描述，不含密钥。 */

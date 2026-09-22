@@ -2,6 +2,7 @@ package com.travelagency;
 
 import com.alipay.api.internal.util.AlipaySignature;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
@@ -56,6 +57,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -557,6 +559,70 @@ class TradingFlowContractIntegrationTest {
     }
 
     @Test
+    @DisplayName("出款结果未确认：503 REFUND_RESULT_UNCONFIRMED，且不落已退款、不动订单与名额")
+    void refundReportsPendingConfirmationWhenPayoutOutcomeIsUnknown() throws Exception {
+        String orderNo = confirmedOrder();
+        String refundId = read(post("/api/orders/" + orderNo + "/refunds").header("Authorization", buyerToken)
+                .header("Idempotency-Key", newKey())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"这次出款结果拿不到确定结论。\"}"), 201).get("data").get("id").asString();
+
+        // 出款那一跳替换成「结果未确认」：请求超时、且用同一请求号查询也没查到结论
+        givenPayoutUnconfirmed();
+
+        mvc.perform(post("/api/admin/refunds/" + refundId + "/approve").header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"comment\":\"第一次尝试\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("REFUND_RESULT_UNCONFIRMED"));
+
+        // 没确认钱退出去，就不能有任何「已退款」痕迹
+        assertEquals("REFUND_APPLYING", orderOf(orderNo).status, "结果未确认不得改动订单状态");
+        assertNotEquals("REFUNDED", refundStatus(refundId), "结果未确认不得落 REFUNDED");
+        assertEquals(1, confirmed(), "结果未确认不得释放名额");
+        // ⚠️ 「退款单是否真的留在 PROCESSING（即事务是否提交而非回滚）」无法在本类里断言：
+        // 本类是 @Transactional 测试，内层参与事务不会真正提交。那条语义由真机实测覆盖
+        // （见 PR 描述里的实测记录）。
+    }
+
+    @Test
+    @DisplayName("退款待确认期间拒绝被拦下，订单不被恢复；确认成功后释放名额")
+    void refundRejectionIsRefusedWhilePayoutResultIsUnconfirmed() throws Exception {
+        String orderNo = confirmedOrder();
+        String refundId = read(post("/api/orders/" + orderNo + "/refunds").header("Authorization", buyerToken)
+                .header("Idempotency-Key", newKey())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"支付宝侧其实可能已经退款成功。\"}"), 201).get("data").get("id").asString();
+
+        // 直接构造「出款已发起、结果待确认」这个持久状态：
+        // 真实链路由「出款请求与随后的结果查询都超时」产生，这里只关心它之后的行为。
+        refunds.update(null, new UpdateWrapper<Refund>()
+                .eq("id", Long.valueOf(refundId))
+                .set("status", "PROCESSING"));
+
+        // 钱可能已经退出去，此时「拒绝」必须被拦住 —— 拒绝会把订单恢复成申请前的已支付状态
+        mvc.perform(post("/api/admin/refunds/" + refundId + "/reject").header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"comment\":\"材料不齐，驳回\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REFUND_RESULT_UNCONFIRMED"));
+        assertEquals("REFUND_APPLYING", orderOf(orderNo).status, "被拦下的拒绝绝不能让订单回到已支付");
+        assertEquals("PROCESSING", refundStatus(refundId), "被拦下的拒绝不得改动退款单");
+        assertEquals(1, confirmed(), "被拦下的拒绝不得释放名额");
+
+        // 继续确认的入口是重试「同意」：仍用同一请求号，这次支付宝给出确定成功 ⇒ 收敛
+        givenPayoutSucceeds(orderNo);
+        mvc.perform(post("/api/admin/refunds/" + refundId + "/approve").header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"comment\":\"重试确认\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("REFUNDED"));
+        assertEquals(0, confirmed(), "确认成功后应释放名额");
+        verify(alipayGatewayClient).refund(eq(orderNo), eq("RF" + refundId),
+                eq(new BigDecimal(ADULT_PRICE)), anyString());
+    }
+
+    @Test
     @DisplayName("退款被驳回时订单恢复原业务状态且名额、报名数均不变")
     void refundRejectionRestoresOriginalOrderStatus() throws Exception {
         String orderNo = confirmedOrder();
@@ -1047,6 +1113,27 @@ class TradingFlowContractIntegrationTest {
         doReturn(AlipayGatewayClient.RefundResult.succeeded("2027030122001400000000000001", orderNo))
                 .when(alipayGatewayClient)
                 .refund(anyString(), anyString(), any(BigDecimal.class), anyString());
+    }
+
+    /**
+     * 让「退款出款」这一跳返回<b>结果未确认</b>：退款请求异常（如超时），且用同一个
+     * {@code out_request_no} 查询也没查到 {@code REFUND_SUCCESS}。
+     *
+     * <p>它对应「支付宝侧其实可能已经退款成功、只是我们没拿到结论」这一类情形，
+     * 与「支付宝明确拒绝」是两回事，调用方的处置也不同。</p>
+     */
+    private void givenPayoutUnconfirmed() {
+        doReturn(AlipayGatewayClient.RefundResult.unconfirmed(
+                "退款请求异常：Read timed out；查询也失败：Read timed out"))
+                .when(alipayGatewayClient)
+                .refund(anyString(), anyString(), any(BigDecimal.class), anyString());
+    }
+
+    /** 直接读退款单的库内状态，用于断言审核链路对它的处置。 */
+    private String refundStatus(String refundId) {
+        Refund refund = refunds.selectById(Long.valueOf(refundId));
+        assertNotNull(refund, "退款单应存在");
+        return refund.status;
     }
 
     private static String newKey() {

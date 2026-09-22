@@ -7,6 +7,7 @@ import com.alipay.api.request.AlipayTradeFastpayRefundQueryRequest;
 import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.response.AlipayTradeFastpayRefundQueryResponse;
 import com.alipay.api.response.AlipayTradeRefundResponse;
+import com.travelagency.common.exception.RefundPendingConfirmationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -790,6 +791,29 @@ class AlipayGatewayClientTest {
         succeeded.setCode("10000");
         succeeded.setRefundStatus("REFUND_SUCCESS");
         assertTrue(AlipayGatewayClient.isRefundQuerySucceeded(succeeded));
+    }
+
+    @Test
+    @DisplayName("「结果未确认」与「明确失败」可由 RefundResult 直接区分，且两处结果码逐字一致")
+    void unconfirmedResultIsDistinguishableFromExplicitFailure() {
+        AlipayGatewayClient.RefundResult pending =
+                AlipayGatewayClient.RefundResult.unconfirmed("请求超时且查询无结论");
+        AlipayGatewayClient.RefundResult rejected =
+                AlipayGatewayClient.RefundResult.failed(null, "ACQ.TRADE_NOT_EXIST", "交易不存在");
+        AlipayGatewayClient.RefundResult settled = AlipayGatewayClient.RefundResult.succeeded(
+                "2027030122001400000000000001", "TA20270301000001ABCD1234");
+
+        // 两者的 success() 都是 false，但只有「未确认」意味着钱可能已经退出去 ——
+        // 调用方必须据此禁止拒绝退款，而不是把它当普通失败退回待审核。
+        assertFalse(pending.success());
+        assertFalse(rejected.success());
+        assertTrue(pending.unconfirmed(), "未确认必须能被识别出来");
+        assertFalse(rejected.unconfirmed(), "明确失败不是未确认：钱确定没动，可以重试也可以拒绝");
+        assertFalse(settled.unconfirmed());
+        // 异常码与判定码是两处独立定义，必须逐字一致 ——
+        // 否则同一个场景会对外返回两种错误码，前端与运维都得同时认两套。
+        assertEquals(RefundPendingConfirmationException.CODE,
+                AlipayGatewayClient.RefundResult.UNCONFIRMED_CODE);
     }
 
     @Test

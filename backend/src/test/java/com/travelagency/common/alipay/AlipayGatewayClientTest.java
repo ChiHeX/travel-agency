@@ -1,6 +1,7 @@
 package com.travelagency.common.alipay;
 
 import com.alipay.api.internal.util.AlipaySignature;
+import com.alipay.api.response.AlipayTradeRefundResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -516,6 +517,100 @@ class AlipayGatewayClientTest {
         // 反向：换一对密钥签的通知仍必须被拒（证明上面的 true 是真验签，不是无条件放行）
         assertFalse(client.verifyNotifySignature(signedNotify(APP_ID, SELLER_ID, keyPair())),
                 "PEM 公钥路径下也不能放行他人签名的通知");
+    }
+
+    // ------------------------------------------------------------------ 退款出款
+
+    @Test
+    @DisplayName("退款出款只要求「签得出来」的三项：网关 + APPID + 应用私钥，不要求公钥与回调地址")
+    void refundConfigurationNeedsOnlySigningPrerequisites() {
+        KeyPair app = keyPair();
+
+        // 三要素齐备即可出款：退款是同步接口，不需要回调地址，也不需要验签别人的报文
+        assertTrue(sandbox(privateKey(app), APP_ID).isRefundConfigurationComplete());
+        assertTrue(sandbox(privateKey(app), APP_ID).missingRefundConfiguration().isEmpty());
+        // 与收银台的差别正在这里：公钥 / 回调地址缺失不影响出款
+        assertFalse(sandbox(privateKey(app), APP_ID).isCashierConfigurationComplete());
+
+        // 缺任一要素都不行
+        assertFalse(sandbox("", APP_ID).isRefundConfigurationComplete());
+        assertFalse(sandbox(privateKey(app), "").isRefundConfigurationComplete());
+        assertFalse(new AlipayGatewayClient("", APP_ID, privateKey(app), "", "", "")
+                .isRefundConfigurationComplete());
+
+        // 缺失项以环境变量名给出，顺序固定，便于运维按名补齐；且不含密钥内容
+        assertEquals(List.of("ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY"),
+                sandbox("", "").missingRefundConfiguration());
+    }
+
+    @Test
+    @DisplayName("未配置时不允许发起退款，直接抛 IllegalStateException 而不产生请求")
+    void refundFailsFastWhenNotConfigured() {
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> sandbox("", "").refund("TA20270301000001ABCD1234", "RF1", new BigDecimal("2999.00"), "行程有变"));
+
+        assertTrue(ex.getMessage().contains("无法发起退款"));
+    }
+
+    @Test
+    @DisplayName("退款请求体带 out_request_no 幂等键，金额固定两位小数")
+    void refundBizContentCarriesIdempotencyKeyAndNormalizedAmount() {
+        String biz = AlipayGatewayClient.refundBizContent(
+                "TA20270301000001ABCD1234", "RF70", new BigDecimal("2999"), "行程有变，退全款");
+
+        // 逐字比对，避免以后有人改名成 out_request_id / refund_money 之类支付宝不认的字段
+        assertEquals("{\"out_trade_no\":\"TA20270301000001ABCD1234\""
+                + ",\"refund_amount\":\"2999.00\""
+                + ",\"out_request_no\":\"RF70\""
+                + ",\"refund_reason\":\"行程有变，退全款\"}", biz);
+    }
+
+    @Test
+    @DisplayName("⚠️ 退款成功判定必须看 code，不能看 isSuccess()：空响应与 code=null 都会被 isSuccess() 判成 true")
+    void refundOutcomeIsJudgedByCodeNotByIsSuccess() {
+        // 坑的实证：SDK 的 isSuccess() 判据是「code 不是 40004/20000」，
+        // 所以一个全新、什么都没填的响应对象也会返回 true。用它判退款＝把「支付宝没回话」当「钱已退」。
+        AlipayTradeRefundResponse blank = new AlipayTradeRefundResponse();
+        assertTrue(blank.isSuccess(), "这是 SDK 的既有行为，本用例把它钉住，防止有人误用");
+        assertFalse(AlipayGatewayClient.fromResponse(blank, "RF70").success(),
+                "空白响应绝不能被当作出款成功（fail-closed）");
+
+        AlipayTradeRefundResponse nullCode = new AlipayTradeRefundResponse();
+        nullCode.setMsg("Success");
+        assertFalse(AlipayGatewayClient.fromResponse(nullCode, "RF70").success());
+
+        // 正常成功：code=10000，fund_change=Y
+        AlipayTradeRefundResponse ok = new AlipayTradeRefundResponse();
+        ok.setCode("10000");
+        ok.setFundChange("Y");
+        ok.setTradeNo("2027030122001400000000000001");
+        ok.setOutTradeNo("TA20270301000001ABCD1234");
+        AlipayGatewayClient.RefundResult settled = AlipayGatewayClient.fromResponse(ok, "RF70");
+        assertTrue(settled.success());
+        assertEquals("2027030122001400000000000001", settled.tradeNo());
+        assertEquals("TA20270301000001ABCD1234", settled.outTradeNo());
+
+        // code=10000 但明示「未发生资金变化」⇒ 钱没动，不算退成功
+        AlipayTradeRefundResponse noFundChange = new AlipayTradeRefundResponse();
+        noFundChange.setCode("10000");
+        noFundChange.setFundChange("N");
+        AlipayGatewayClient.RefundResult notMoved = AlipayGatewayClient.fromResponse(noFundChange, "RF70");
+        assertFalse(notMoved.success());
+
+        // 业务失败：错误码优先取 sub_code（更可定位），并带上可读原因
+        AlipayTradeRefundResponse rejected = new AlipayTradeRefundResponse();
+        rejected.setCode("40004");
+        rejected.setMsg("Business Failed");
+        rejected.setSubCode("ACQ.TRADE_NOT_EXIST");
+        rejected.setSubMsg("交易不存在");
+        AlipayGatewayClient.RefundResult failed = AlipayGatewayClient.fromResponse(rejected, "RF70");
+        assertFalse(failed.success());
+        assertEquals("ACQ.TRADE_NOT_EXIST", failed.code());
+        assertEquals("交易不存在", failed.message());
+
+        // 连响应对象都没有
+        assertFalse(AlipayGatewayClient.fromResponse(null, "RF70").success());
+        assertEquals("EMPTY_RESPONSE", AlipayGatewayClient.fromResponse(null, "RF70").code());
     }
 
     // ------------------------------------------------------------------ helpers

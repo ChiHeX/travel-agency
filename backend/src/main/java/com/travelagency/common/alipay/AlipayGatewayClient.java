@@ -5,7 +5,9 @@ import com.alipay.api.AlipayClient;
 import com.alipay.api.DefaultAlipayClient;
 import com.alipay.api.internal.util.AlipaySignature;
 import com.alipay.api.request.AlipayTradePagePayRequest;
+import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.response.AlipayTradePagePayResponse;
+import com.alipay.api.response.AlipayTradeRefundResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,7 +41,7 @@ import java.util.Map;
  * <p><b>密钥形态</b>：官方 SDK 不认 PEM 头尾，因此本类在构造时用 {@link #normalizeKey(String)}
  * 统一剥壳，纯 Base64 主体与带 {@code -----BEGIN ...-----} 的 PEM 片段都能直接用。</p>
  *
- * <p><b>配置齐全性由两个不同粒度的谓词表达，别混用：</b></p>
+ * <p><b>配置齐全性由三个不同粒度的谓词表达，别混用：</b></p>
  * <ul>
  *   <li>{@link #canBuildCashierUrl()}：<b>SDK 能不能把请求签出来</b>（网关地址 + APPID + 应用私钥）。
  *       这是本类内部的自检条件。</li>
@@ -47,10 +49,14 @@ import java.util.Map;
  *       —— 在前者之上还要求支付宝公钥与回调地址齐备。因为链接一旦交给用户就代表「现在可以付款」，
  *       而付款结果只能由支付宝回调 {@code notify_url} 回传、再用支付宝公钥验签；少任何一项都会造成
  *       「用户付了钱、订单却永远停在待支付」。<b>调用方必须用这个谓词决定要不要放行支付。</b></li>
+ *   <li>{@link #isRefundConfigurationComplete()}：<b>能不能真把款退出去</b>
+ *       —— 退款是<b>同步请求</b>，不需要回调地址与支付宝公钥，但同样要能签名，
+ *       所以判据回到「网关地址 + APPID + 应用私钥」这三项。
+ *       <b>调用方必须在把「已退款」写进库之前用它把关</b>。</li>
  * </ul>
  *
- * <p>两个谓词都由环境变量驱动，缺失信息经 {@link #missingCashierConfiguration()} 以
- * <b>环境变量名</b>的形式暴露，绝不输出密钥内容。</p>
+ * <p>三个谓词都由环境变量驱动，缺失信息经 {@link #missingCashierConfiguration()} /
+ * {@link #missingRefundConfiguration()} 以<b>环境变量名</b>的形式暴露，绝不输出密钥内容。</p>
  */
 @Component
 public class AlipayGatewayClient {
@@ -75,6 +81,22 @@ public class AlipayGatewayClient {
     private static final List<String> CASHIER_REQUIRED_CONFIG = List.of(
             "ALIPAY_GATEWAY_URL", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY",
             "ALIPAY_PUBLIC_KEY", "ALIPAY_NOTIFY_URL");
+
+    /**
+     * 真正能把款退出去（{@code alipay.trade.refund}）所需的配置项（环境变量名），顺序固定。
+     *
+     * <p>比收银台少了 {@code ALIPAY_PUBLIC_KEY} 与 {@code ALIPAY_NOTIFY_URL}，因为退款是
+     * <b>同步请求</b>：出款结果由本次响应的 {@code code} / {@code fund_change} 直接给出，
+     * 不依赖异步回调、也不需要验签别人的报文。少这三项之外的东西不影响「退得出去」。</p>
+     */
+    private static final List<String> REFUND_REQUIRED_CONFIG = List.of(
+            "ALIPAY_GATEWAY_URL", "ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY");
+
+    /** 支付宝同步接口的成功码。{@code AlipayResponse.isSuccess()} 并不等价于它，见 {@link #succeeded}。 */
+    private static final String ALIPAY_SUCCESS_CODE = "10000";
+
+    /** 退款结果里「本次是否发生资金变化」的否定值。{@code N} 表示没动钱，不能算退款成功。 */
+    private static final String FUND_CHANGE_NO = "N";
 
     private final String gatewayUrl;
     private final String appId;
@@ -134,6 +156,32 @@ public class AlipayGatewayClient {
     public List<String> missingCashierConfiguration() {
         List<String> missing = new ArrayList<>();
         for (String name : CASHIER_REQUIRED_CONFIG) {
+            if (!notBlank(valueOf(name))) {
+                missing.add(name);
+            }
+        }
+        return List.copyOf(missing);
+    }
+
+    /**
+     * 是否具备「把退款真正退出去」的完整配置：{@link #REFUND_REQUIRED_CONFIG} 全部非空。
+     *
+     * <p>调用方（{@code OrderService.processRefund}）必须在<b>把「已退款」写进库之前</b>用它把关：
+     * 退款单与订单状态一旦落成 {@code REFUNDED}，对外就等于「钱已经退给游客了」，
+     * 而此时如果根本调不出支付宝接口，用户拿不到钱、后台却显示已退 —— 比不退款更糟。</p>
+     */
+    public boolean isRefundConfigurationComplete() {
+        return missingRefundConfiguration().isEmpty();
+    }
+
+    /**
+     * 列出「把退款真正退出去」还缺哪些配置，返回<b>环境变量名</b>（可能为空列表）。
+     *
+     * <p>与 {@link #missingCashierConfiguration()} 一样只输出变量名，不含任何密钥内容。</p>
+     */
+    public List<String> missingRefundConfiguration() {
+        List<String> missing = new ArrayList<>();
+        for (String name : REFUND_REQUIRED_CONFIG) {
             if (!notBlank(valueOf(name))) {
                 missing.add(name);
             }
@@ -234,6 +282,105 @@ public class AlipayGatewayClient {
     }
 
     /**
+     * 发起支付宝退款（{@code alipay.trade.refund}），把已收款退回给游客。
+     *
+     * <p><b>这是同步接口</b>：出款结果由本次响应直接给出，不需要回调，因此调用方（后台审核）
+     * 可以当场知道钱退没退出去，据此决定要不要把订单落成 {@code REFUNDED}。</p>
+     *
+     * <p><b>幂等性由 {@code outRequestNo} 承担</b>：支付宝对同一 {@code out_trade_no} +
+     * {@code out_request_no} 的重复请求返回<b>首次</b>结果而不会重复出款。调用方必须传入
+     * <b>与退款单一一对应且稳定</b>的值（本项目用退款单主键派生），这样
+     * 「响应丢失 / 事务回滚后管理员再点一次审核」都是安全的，无需额外的对账任务兜底。</p>
+     *
+     * <p><b>本方法不做业务判断</b>：它是传输层适配器，「配置不齐就不许把已退款写进库」这条
+     * 业务策略在 {@code OrderService.processRefund} 里把关（判据
+     * {@link #isRefundConfigurationComplete()}），与本类同 {@code buildCashierUrl} 的分工一致。</p>
+     *
+     * <p>网络/序列化异常<b>不抛出</b>，而是折叠成一个失败的 {@link RefundResult}：
+     * 调用方需要的是「能不能确定钱退了」，而不是一个需要区分处理的异常层次；
+     * 且因为 {@code outRequestNo} 稳定，失败后重试是安全的。</p>
+     *
+     * @param outTradeNo   下单时使用的商户订单号（本项目即 {@code orderNo}）
+     * @param outRequestNo 本次退款请求号，同一退款单必须保持不变
+     * @param amount       退款金额，与下单金额同币种、两位小数
+     * @param reason       退款原因，进支付宝账单
+     * @throws IllegalStateException 配置不全（调用方本应先判 {@link #isRefundConfigurationComplete()}）
+     */
+    public RefundResult refund(String outTradeNo, String outRequestNo, BigDecimal amount, String reason) {
+        if (!isRefundConfigurationComplete()) {
+            throw new IllegalStateException(
+                    "支付宝沙箱未配置，无法发起退款（需要 ALIPAY_APP_ID 与 ALIPAY_APP_PRIVATE_KEY）："
+                            + describeConfiguration());
+        }
+        AlipayTradeRefundRequest request = new AlipayTradeRefundRequest();
+        request.setBizContent(refundBizContent(outTradeNo, outRequestNo, amount, reason));
+        try {
+            AlipayTradeRefundResponse response = alipayClient().execute(request);
+            return fromResponse(response, outRequestNo);
+        } catch (AlipayApiException ex) {
+            log.warn("支付宝退款请求异常（out_request_no={}）：{}", outRequestNo, briefMessage(ex));
+            return RefundResult.failed(null, "REFUND_REQUEST_FAILED", briefMessage(ex));
+        }
+    }
+
+    /**
+     * 把支付宝退款响应折叠成调用方可直接判断的 {@link RefundResult}。
+     *
+     * <p><b>⚠️ 不能用 {@code response.isSuccess()} 判定</b>：实测（{@code alipay-sdk-java-4.40.996.ALL}）
+     * 该方法的判据是「{@code code} 不是 {@code 40004} / {@code 20000}」，因此
+     * <b>{@code code} 为 {@code null}、甚至一个完全空白的新响应对象，都会返回 {@code true}</b>。
+     * 拿它判退款＝把「支付宝根本没回话」当成「钱已退」，正是本项目最要避免的 fail-open。
+     * 所以这里<b>显式要求 {@code code == "10000"}</b>。</p>
+     *
+     * <p>在此基础上再看 {@code fund_change}：它是「本次退款是否发生了资金变化」，
+     * 显式为 {@code N} 表示钱没动（例如重复退款被拦），同样不能算成功。
+     * 缺省（未返回）则容忍 —— 以 {@code code} 为准。</p>
+     */
+    static RefundResult fromResponse(AlipayTradeRefundResponse response, String outRequestNo) {
+        if (response == null) {
+            return RefundResult.failed(null, "EMPTY_RESPONSE", "支付宝未返回任何响应");
+        }
+        if (ALIPAY_SUCCESS_CODE.equals(response.getCode())
+                && !FUND_CHANGE_NO.equalsIgnoreCase(response.getFundChange())) {
+            return RefundResult.succeeded(response.getTradeNo(), response.getOutTradeNo());
+        }
+        String code = notBlank(response.getSubCode()) ? response.getSubCode() : response.getCode();
+        String message = notBlank(response.getSubMsg()) ? response.getSubMsg() : response.getMsg();
+        return RefundResult.failed(response.getTradeNo(),
+                notBlank(code) ? code : "REFUND_REJECTED",
+                notBlank(message) ? message : "支付宝未受理本次退款（code=" + response.getCode() + "）");
+    }
+
+    /**
+     * 退款结果。{@link #message} 直接来自支付宝，可能含 {@code sub_code} 的可读说明，
+     * 会原样进接口错误信息与日志，因此制作时已限制长度且不含密钥。
+     *
+     * @param success     是否<b>确定</b>退款成功（{@code code=10000} 且未发生「钱没动」）
+     * @param tradeNo     支付宝交易号，成功时非空，可留档对账
+     * @param outTradeNo  商户订单号，成功时非空
+     * @param code        失败时的支付宝错误码（{@code sub_code} 优先），成功时为空
+     * @param message     失败原因，供后台审核人判断能否重试
+     */
+    public record RefundResult(boolean success, String tradeNo, String outTradeNo,
+                               String code, String message) {
+
+        /** 确定退款成功。{@code tradeNo} 为支付宝交易号，成功时必有。 */
+        public static RefundResult succeeded(String tradeNo, String outTradeNo) {
+            return new RefundResult(true, tradeNo, outTradeNo, null, null);
+        }
+
+        /** 退款未成功。{@code code} 用支付宝的 {@code sub_code}（如 {@code ACQ.TRADE_NOT_EXIST}）更可定位。 */
+        public static RefundResult failed(String tradeNo, String code, String message) {
+            return new RefundResult(false, tradeNo, null, code, message);
+        }
+
+        /** 供日志/错误信息使用的单行描述，不含密钥。 */
+        public String describe() {
+            return success ? "成功（tradeNo=" + tradeNo + "）" : code + "：" + message;
+        }
+    }
+
+    /**
      * 校验支付宝异步通知的签名，并核对发起方归属。
      *
      * <p>顺序是先验签、再核对归属：{@code app_id} / {@code seller_id} 也来自未受信的请求体，
@@ -322,6 +469,22 @@ public class AlipayGatewayClient {
                 + "\",\"total_amount\":\"" + formatAmount(amount)
                 + "\",\"subject\":\"" + jsonEscape(subject)
                 + "\",\"product_code\":\"" + PRODUCT_CODE_PAGE_PAY + "\"}";
+    }
+
+    /**
+     * {@code alipay.trade.refund} 的业务参数。
+     *
+     * <p>{@code out_request_no} 必须带上：它既是支付宝侧的退款幂等键（同值重复请求返回首次结果、
+     * 不重复出款），也让同一订单的多次退款在支付宝账单里可区分。</p>
+     *
+     * <p>金额与收银台同口径（两位小数），避免出现「下单 2999 元、退款 2999.0 元」这类
+     * 支付宝侧判定金额不一致而拒绝的输入。</p>
+     */
+    static String refundBizContent(String outTradeNo, String outRequestNo, BigDecimal amount, String reason) {
+        return "{\"out_trade_no\":\"" + jsonEscape(outTradeNo)
+                + "\",\"refund_amount\":\"" + formatAmount(amount)
+                + "\",\"out_request_no\":\"" + jsonEscape(outRequestNo)
+                + "\",\"refund_reason\":\"" + jsonEscape(reason) + "\"}";
     }
 
     private static String formatAmount(BigDecimal amount) {

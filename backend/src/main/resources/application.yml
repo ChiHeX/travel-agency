@@ -46,8 +46,29 @@ app:
     alipay:
       sandbox: ${ALIPAY_SANDBOX:true}
       enabled: ${ALIPAY_ENABLED:false}
-      # 必填：回调共享密钥。未配置时支付回调一律被拒绝（fail-closed），
-      # 避免退回到源码里公开可见的默认值（见 CONTRIBUTING §14：禁止提交密钥）。
+      # 网关地址：默认指向沙箱新版网关（与支付宝开放平台沙箱页面一致）。
+      gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi-sandbox.dl.alipaydev.com/gateway.do}
+      # 沙箱应用 APPID。
+      # ⚠️ 以下四项必须【同时】配置，缺任何一项 POST /orders/{orderNo}/pay 都会以
+      # 409 PAYMENT_NOT_CONFIGURED 拒绝发起支付（fail-closed），不会给出可付款链接：
+      # app-id、app-private-key、alipay-public-key、notify-url。
+      # 理由：链接一旦交给用户就代表"现在可以付款"，而付款结果只能靠回调回来并验签，
+      # 缺项会让用户付了钱、订单却永远停在待支付。
+      app-id: ${ALIPAY_APP_ID:}
+      # 应用私钥（RSA2 / PKCS#8，不含头部 PEM 标记）。严禁提交到仓库（见 CONTRIBUTING §14）。
+      app-private-key: ${ALIPAY_APP_PRIVATE_KEY:}
+      # 支付宝公钥（用于验签支付宝的异步通知与响应报文）。
+      # ⚠️ 必须与 app-id 同时配置：RSA2 验签要核对通知归属，只给公钥无法判断通知是不是发给本应用的。
+      alipay-public-key: ${ALIPAY_PUBLIC_KEY:}
+      # 支付结果异步通知地址（公网可达的 POST /api/payments/alipay/notify 全地址）。
+      # 作为公共参数随收银台请求一起参与签名；不配置则支付宝无法回传结果，
+      # 订单会一直停在待支付（本系统不依赖浏览器跳转确认支付），因此发起支付时同样必填。
+      notify-url: ${ALIPAY_NOTIFY_URL:}
+      # 可选：支付宝商户 UID。配置后回调会一并核对 seller_id，进一步收紧归属校验。
+      seller-id: ${ALIPAY_SELLER_ID:}
+      # 旧的回调共享密钥，仅在【公钥与 APPID 都未配置】时作为本地开发回退使用（HMAC 适配点）。
+      # 只要公钥与 APPID 配齐，回调一律走官方 SDK 验签，本项不再参与；
+      # 若两者只配其一，回调会被直接拒绝，不会降级到本项。
       callback-secret: ${ALIPAY_CALLBACK_SECRET:}
 
 management:

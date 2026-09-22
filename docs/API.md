@@ -147,6 +147,7 @@ RESOURCE_NOT_FOUND
 ORDER_STATE_CONFLICT
 DEPARTURE_CAPACITY_INSUFFICIENT
 PAYMENT_SIGNATURE_INVALID
+PAYMENT_NOT_CONFIGURED
 ```
 
 前端必须根据 HTTP 状态码和 `code` 处理分支，不得依赖可变的 `message` 文案。`message` 和 `errors` 不得包含异常堆栈、SQL、密钥或敏感个人信息。

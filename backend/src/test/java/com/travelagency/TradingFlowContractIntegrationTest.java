@@ -1,9 +1,11 @@
 package com.travelagency;
 
+import com.alipay.api.internal.util.AlipaySignature;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Review;
 import com.travelagency.domain.entity.SysUser;
@@ -11,6 +13,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.PaymentMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.ReviewMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
@@ -24,6 +27,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -32,14 +37,16 @@ import org.springframework.web.context.WebApplicationContext;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -74,6 +81,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code UnexpectedRollbackException}——那是测试脚手架的噪声，不是业务缺陷。
  * 所以「先跑完成功路径，负例收尾」。</p>
  *
+ * <p><b>支付宝配置前提由本类自己声明，不依赖运行环境</b>：本类要真的走完「发起支付 → 支付回调」，
+ * 而 {@code POST /orders/{orderNo}/pay} 在支付配置不齐时按契约 fail-closed 返回
+ * {@code 409 PAYMENT_NOT_CONFIGURED} —— 链接一旦交给用户就代表「这笔单现在可以付款」，
+ * 而付款结果只能由支付宝回调 {@code notify_url} 回传再验签，缺任何一项都会造成
+ * 「用户付了钱、订单却停在待支付」。所以本类用 {@link #alipayCredentials} 现场生成两对 RSA 密钥
+ * （本应用一对、支付宝一对）把四项配置注齐，回调也改为按官方 V1 口径做 RSA2 签名：
+ * 配置齐全后 {@code ALIPAY_PUBLIC_KEY} 与 {@code ALIPAY_APP_ID} 同时存在，控制器必然走官方验签路径。
+ * 这样本类既不依赖「本机碰巧没配支付宝」，也不再依赖「未配置时返回占位链接」这类旧行为；
+ * HMAC 回退通道本身由 {@code PaymentControllerTest} 单独覆盖。</p>
+ *
  * <p>需要数据库：{@code $env:TRAVEL_MYSQL_TEST = "true"}。整个类在事务内执行，
  * 结束时统一回滚，不会给本地库留下任何数据。</p>
  */
@@ -86,9 +103,34 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @EnabledIfEnvironmentVariable(named = "TRAVEL_MYSQL_TEST", matches = "true")
 class TradingFlowContractIntegrationTest {
 
-    private static final String CALLBACK_SECRET = "trading-flow-callback-secret-32-bytes";
+    /** 测试用 APPID，只用于校验回调归属，不是真实沙箱账号。 */
+    private static final String TEST_APP_ID = "9021000168641134";
+    private static final String TEST_NOTIFY_URL = "https://travel-agency.test/api/payments/alipay/notify";
+    /** 故意写坏的签名：既不是合法 Base64，也验不过任何公钥。 */
+    private static final String BROKEN_SIGNATURE = "AAAAinvalidSignatureAAAA";
+    /** 现场生成的两对测试密钥，不落盘、不提交、不联网。 */
+    private static final KeyPair APP_KEY_PAIR = keyPair();
+    private static final KeyPair ALIPAY_KEY_PAIR = keyPair();
+
     private static final String ADULT_PRICE = "2999.00";
     private static final String CHILD_PRICE = "1999.00";
+
+    /**
+     * 注入一份齐全的支付宝沙箱配置（网关地址走 {@code application.yml} 的默认沙箱地址）。
+     *
+     * <p>用动态属性而不是 {@code @TestPropertySource} 的字面量，是因为密钥要现场生成、而注解只能写
+     * 编译期常量。动态属性在测试环境里优先级最高，所以本机即使导出了 {@code ALIPAY_*} 环境变量，
+     * 也改不动本类的前提。</p>
+     */
+    @DynamicPropertySource
+    static void alipayCredentials(DynamicPropertyRegistry registry) {
+        registry.add("app.integrations.alipay.app-id", () -> TEST_APP_ID);
+        registry.add("app.integrations.alipay.app-private-key",
+                () -> base64(APP_KEY_PAIR.getPrivate().getEncoded()));
+        registry.add("app.integrations.alipay.alipay-public-key",
+                () -> base64(ALIPAY_KEY_PAIR.getPublic().getEncoded()));
+        registry.add("app.integrations.alipay.notify-url", () -> TEST_NOTIFY_URL);
+    }
 
     @Autowired WebApplicationContext context;
     @Autowired SysUserMapper users;
@@ -96,6 +138,7 @@ class TradingFlowContractIntegrationTest {
     @Autowired TravelRouteMapper routes;
     @Autowired DepartureMapper departures;
     @Autowired TravelOrderMapper orders;
+    @Autowired PaymentMapper payments;
     @Autowired RefundMapper refunds;
     @Autowired ReviewMapper reviews;
     @Autowired JwtTokenProvider tokens;
@@ -248,7 +291,7 @@ class TradingFlowContractIntegrationTest {
     }
 
     @Test
-    @DisplayName("同一幂等键重复发起支付返回同一支付单，有效期不随重试顺延")
+    @DisplayName("真实签名的收银台链接下同一幂等键重放：同一支付单、同一有效期、指向同一笔支付宝交易")
     void paymentStartIsIdempotentForTheSameKey() throws Exception {
         String orderNo = book(orderBody(1, 0), newKey(), 201);
         String key = newKey();
@@ -260,12 +303,30 @@ class TradingFlowContractIntegrationTest {
 
         assertEquals(first.get("paymentNo").asString(), replay.get("paymentNo").asString(),
                 "同键重放必须返回首次生成的支付单号");
-        assertEquals(first.get("paymentUrl").asString(), replay.get("paymentUrl").asString(),
-                "同键重放的收银台地址必须一致");
         assertEquals(first.get("expiresAt").asString(), replay.get("expiresAt").asString(),
                 "支付窗口锚定在首次发起支付的时刻，重试不得把它一次次往后顺延");
+        assertEquals("ALIPAY_SANDBOX", first.get("channel").asString());
+        assertEquals(ADULT_PRICE, first.get("amount").asString());
+
+        // 两次响应里的收银台地址都必须是官方 SDK 真签出来的链接（不是网关占位地址）：
+        // 网关 / method / RSA2 签名 / notify_url 参与签名 / out_trade_no 与金额都要能核对。
+        Map<String, String> firstParams =
+                signedCashierParams(first.get("paymentUrl").asString(), orderNo, ADULT_PRICE);
+        Map<String, String> replayParams =
+                signedCashierParams(replay.get("paymentUrl").asString(), orderNo, ADULT_PRICE);
+
+        // ⚠️ 幂等保证的是「同一笔支付宝交易」，不是「同一串 URL」：
+        // alipay.trade.page.pay 的公共参数含 timestamp，两次签发的 URL 天然不同字符串
+        // （实测：间隔 1.5s 必然不同，同一秒内才偶然相同），因此这里绝不断言 URL 逐字相等，
+        // 而是对齐真正决定「是哪一笔交易」的三项。
+        assertEquals(firstParams.get("biz_content"), replayParams.get("biz_content"),
+                "重放必须指向同一笔支付宝交易：out_trade_no / 金额 / 商品名逐字一致");
+        assertEquals(firstParams.get("notify_url"), replayParams.get("notify_url"),
+                "重放的链接必须仍把支付结果回传到本系统的 notify_url");
+
         assertEquals("WAIT_PAY", orderOf(orderNo).status, "发起支付不得推进订单状态");
         assertEquals(1, reserved(), "重放不得重复占用名额");
+        assertEquals(1, paymentsFor(orderNo).size(), "重放不得产生第二张支付单");
     }
 
     @Test
@@ -669,6 +730,50 @@ class TradingFlowContractIntegrationTest {
         return current.maxPeople - current.reservedPeople - current.confirmedPeople;
     }
 
+    /** 某张订单下的支付单，用于验证「重放不得产生第二张支付单」。 */
+    private List<Payment> paymentsFor(String orderNo) {
+        return payments.selectList(new QueryWrapper<Payment>().eq("order_id", orderOf(orderNo).id));
+    }
+
+    /**
+     * 解开收银台链接的查询串，并断言它是一条<b>真实签发</b>的 {@code alipay.trade.page.pay} 请求。
+     *
+     * <p>同步 dev 之后收银台地址不再是我们自己拼的网关占位地址，而是官方 SDK 的
+     * {@code pageExecute} 组装并 RSA2 签名的结果，因此只判「非空」等于没验证：这里逐项核对
+     * 网关、{@code method}、{@code sign_type}、签名本体、{@code app_id}，以及
+     * {@code notify_url} 是否参与签名、{@code biz_content} 里的 {@code out_trade_no} 与金额是否正确。</p>
+     *
+     * @return 解码后的查询参数，供调用方继续对齐「是不是同一笔交易」
+     */
+    private Map<String, String> signedCashierParams(String paymentUrl, String orderNo, String amount)
+            throws Exception {
+        assertTrue(paymentUrl.startsWith("https://openapi-sandbox.dl.alipaydev.com/gateway.do?"),
+                "收银台地址必须落在支付宝沙箱网关上，实际是：" + paymentUrl);
+
+        Map<String, String> params = new LinkedHashMap<>();
+        for (String pair : paymentUrl.substring(paymentUrl.indexOf('?') + 1).split("&")) {
+            int eq = pair.indexOf('=');
+            params.put(URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+                    URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+        }
+
+        assertEquals("alipay.trade.page.pay", params.get("method"), "必须是电脑网站支付");
+        assertEquals("RSA2", params.get("sign_type"), "契约要求 RSA2");
+        assertEquals(TEST_APP_ID, params.get("app_id"), "app_id 必须是本应用");
+        assertFalse(params.get("sign") == null || params.get("sign").isBlank(),
+                "收银台链接必须带签名，否则不是真实签发");
+        assertEquals(TEST_NOTIFY_URL, params.get("notify_url"),
+                "notify_url 必须出现在链接里（参与签名），否则付款结果回不来");
+        assertFalse(params.get("timestamp") == null || params.get("timestamp").isBlank(),
+                "签名必须带 timestamp");
+
+        JsonNode biz = json.readTree(params.get("biz_content"));
+        assertEquals(orderNo, biz.get("out_trade_no").asString(),
+                "out_trade_no 必须是订单号，支付宝回调才能把交易号对回订单");
+        assertEquals(amount, biz.get("total_amount").asString(), "金额必须与订单应付一致");
+        return params;
+    }
+
     /** 拉订单详情并校验信封，返回契约 data 节点。 */
     private JsonNode detail(String orderNo) throws Exception {
         return read(get("/api/orders/" + orderNo).header("Authorization", buyerToken)).get("data");
@@ -765,21 +870,31 @@ class TradingFlowContractIntegrationTest {
     /**
      * 模拟支付宝异步通知。
      *
+     * <p>签名按<b>官方 V1 口径</b>（{@code getSignCheckContentV1} + {@code rsaSign}）现场算出，
+     * 与 {@code AlipayGatewayClient} 内部调用的 {@code rsaCheckV1} 同源；报文里还带 {@code app_id}，
+     * 因为配置齐全后控制器会核对通知声明的归属。</p>
+     *
      * @param validSignature false 时故意写坏签名，用于验证伪造回调被拒
      * @param amount         null 表示不携带金额字段
      * @return 契约约定的 text/plain 确认文本（success / failure）
      */
     private String alipayNotify(String orderNo, String tradeNo, String result, String amount,
                                 boolean validSignature) throws Exception {
-        var request = post("/api/payments/alipay/notify")
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .param("orderNo", orderNo)
-                .param("tradeNo", tradeNo)
-                .param("result", result)
-                .param("signature", validSignature ? hmac(orderNo, tradeNo, result) : "AAAAinvalidSignatureAAAA");
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("orderNo", orderNo);
+        params.put("tradeNo", tradeNo);
+        params.put("result", result);
+        params.put("app_id", TEST_APP_ID);
         if (amount != null) {
-            request = request.param("total_amount", amount);
+            params.put("total_amount", amount);
         }
+        params.put("sign_type", "RSA2");
+        // sign 必须在算完签名之后才放进 Map：SDK 的签名内容取自「除 sign / sign_type 之外的参数」
+        params.put("sign", validSignature ? notifySignature(params) : BROKEN_SIGNATURE);
+
+        var request = post("/api/payments/alipay/notify")
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED);
+        params.forEach(request::param);
         MockHttpServletResponse response = mvc.perform(request)
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
@@ -787,12 +902,32 @@ class TradingFlowContractIntegrationTest {
         return new String(response.getContentAsByteArray(), StandardCharsets.UTF_8);
     }
 
-    /** 与 PaymentController 沙箱适配点一致的 HmacSHA256 签名。 */
-    private static String hmac(String orderNo, String tradeNo, String result) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(CALLBACK_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        byte[] digest = mac.doFinal((orderNo + "|" + tradeNo + "|" + result).getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(digest);
+    /**
+     * 用「支付宝侧」私钥按官方口径对通知签名。
+     *
+     * <p>刻意不自己拼串：签名口径必须与 {@code rsaCheckV1} 完全同源，否则用例就成了「自证自话」。
+     * {@code getSignCheckContentV1} 会<b>就地删除</b>传入 Map 的 {@code sign}/{@code sign_type}，
+     * 所以这里传副本，避免把调用方的参数表改坏。</p>
+     */
+    private static String notifySignature(Map<String, String> params) throws Exception {
+        return AlipaySignature.rsaSign(
+                AlipaySignature.getSignCheckContentV1(new LinkedHashMap<>(params)),
+                base64(ALIPAY_KEY_PAIR.getPrivate().getEncoded()), "utf-8", "RSA2");
+    }
+
+    /** 现场生成 RSA 密钥对，测试不联网、也不依赖仓库里提交的密钥。 */
+    private static KeyPair keyPair() {
+        try {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+            generator.initialize(2048);
+            return generator.generateKeyPair();
+        } catch (Exception ex) {
+            throw new IllegalStateException("无法生成测试用 RSA 密钥对", ex);
+        }
+    }
+
+    private static String base64(byte[] der) {
+        return Base64.getEncoder().encodeToString(der);
     }
 
     // ------------------------------------------------------------------

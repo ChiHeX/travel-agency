@@ -3,6 +3,7 @@ package com.travelagency.domain.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
@@ -49,7 +50,8 @@ import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.mapper.TravelerMapper;
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,6 +71,8 @@ import java.util.stream.Collectors;
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final TravelOrderMapper orderMapper;
     private final DepartureMapper departureMapper;
     private final TravelRouteMapper routeMapper;
@@ -81,6 +85,7 @@ public class OrderService {
     private final SysUserMapper sysUserMapper;
     private final IdempotencyRecordMapper idempotencyRecordMapper;
     private final TravelerMapper travelerMapper;
+    private final AlipayGatewayClient alipayGatewayClient;
 
     /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
@@ -97,9 +102,6 @@ public class OrderService {
      */
     private static final long PAYMENT_WINDOW_MINUTES = 30L;
 
-    @Value("${app.integrations.alipay.gateway-url:https://openapi-sandbox.dl.alipaydev.com/gateway.do}")
-    private String alipayGatewayUrl;
-
     public OrderService(
             TravelOrderMapper orderMapper,
             DepartureMapper departureMapper,
@@ -112,7 +114,8 @@ public class OrderService {
             MessageMapper messageMapper,
             SysUserMapper sysUserMapper,
             IdempotencyRecordMapper idempotencyRecordMapper,
-            TravelerMapper travelerMapper) {
+            TravelerMapper travelerMapper,
+            AlipayGatewayClient alipayGatewayClient) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
@@ -125,6 +128,7 @@ public class OrderService {
         this.sysUserMapper = sysUserMapper;
         this.idempotencyRecordMapper = idempotencyRecordMapper;
         this.travelerMapper = travelerMapper;
+        this.alipayGatewayClient = alipayGatewayClient;
     }
 
     @Transactional
@@ -354,6 +358,20 @@ public class OrderService {
         return toDetail(order);
     }
 
+    /**
+     * 发起支付宝沙箱支付，返回收银台跳转信息。
+     *
+     * <p><b>配置不齐就拒绝，绝不给出可付款链接。</b>收银台链接一旦返回给用户，就等于系统声明
+     * 「这笔单现在可以付款」；而付款结果只能由支付宝回调 {@code notify_url} 回传、再由本系统用
+     * 支付宝公钥验签。因此只要 {@code ALIPAY_GATEWAY_URL} / {@code ALIPAY_APP_ID} /
+     * {@code ALIPAY_APP_PRIVATE_KEY} / {@code ALIPAY_PUBLIC_KEY} / {@code ALIPAY_NOTIFY_URL}
+     * 里任何一项没配，就在这里明确拒绝，而不是生成一个「用户付得进去、结果回不来」的链接
+     * —— 那会让用户付完钱后订单永远停在待支付。</p>
+     *
+     * <p>检查位置在订单状态校验<b>之后</b>、任何写库与生成链接<b>之前</b>：订单状态不对时优先报
+     * 状态冲突（那才是用户侧的因），避免把「订单已支付/已取消」误报成「支付未配置」；
+     * 同时保证被拒绝的请求<b>不产生任何副作用</b>（不推进 payment、不落库）。</p>
+     */
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId) {
         return startPayment(orderNo, userId, null);
@@ -369,6 +387,11 @@ public class OrderService {
      *
      * <p>幂等键绑定到具体订单：若同一用户把同一个键用到另一张订单上，属调用方误用，
      * 直接拒绝而不是返回另一笔订单的支付信息。</p>
+     *
+     * <p>与「配置不齐就拒绝」的闸门合流后的顺序是：<b>重放判定 → 属主与订单状态校验 →
+     * 配置齐全性校验 → 写 payment 与回填幂等记录 → 用适配器签出真实收银台链接</b>。
+     * 重放判定放在最前，是因为重放属于「原请求的结果」而不是一次新的发起：订单可能已经被
+     * 那次支付推进到非待支付状态，此时再走状态校验会把重放误报成 409，让调用方以为请求失败。</p>
      */
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId, String idempotencyKey) {
@@ -383,6 +406,13 @@ public class OrderService {
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许支付");
+        }
+        if (!alipayGatewayClient.isCashierConfigurationComplete()) {
+            String missing = String.join("、", alipayGatewayClient.missingCashierConfiguration());
+            log.error("支付尚未配置完成，已拒绝发起支付（fail-closed）：orderNo={}, 缺少={}",
+                    orderNo, missing);
+            throw new BusinessException(409, "PAYMENT_NOT_CONFIGURED",
+                    "支付尚未配置完成，无法发起支付（缺少配置项：" + missing + "）");
         }
         Payment payment = paymentFor(order.id);
         payment.status = PaymentStatus.PENDING;
@@ -433,7 +463,22 @@ public class OrderService {
     private PaymentStartResponse startPaymentResponse(TravelOrder order, Payment payment, LocalDateTime windowStart) {
         LocalDateTime anchor = windowStart == null ? LocalDateTime.now() : windowStart;
         return new PaymentStartResponse(order.orderNo, payment.paymentNo, payment.channel,
-                order.totalAmount, alipayGatewayUrl, anchor.plusMinutes(PAYMENT_WINDOW_MINUTES));
+                order.totalAmount, cashierUrl(order), anchor.plusMinutes(PAYMENT_WINDOW_MINUTES));
+    }
+
+    /**
+     * 生成收银台地址：到这里配置已由 {@link #startPayment} 校验齐全，直接产出真实链接。
+     *
+     * <p>方法名保留「cashierUrl」是因为语义没变，但实现里<b>不再有「未配置就回退网关占位地址」</b>
+     * 那条分支 —— 占位地址看着能返回 200，实际用户付不了款、订单也不会更新，
+     * 属于把配置问题伪装成成功响应，正是本次评审要求去掉的东西。</p>
+     *
+     * <p>链接的有效期沿用调用方给定的窗口锚点（见 {@link #startPaymentResponse}）：配置齐备
+     * 只决定「签得出来」，窗口不滑动由幂等重放保证，两件事互不耦合。</p>
+     */
+    private String cashierUrl(TravelOrder order) {
+        return alipayGatewayClient.buildCashierUrl(
+                order.orderNo, order.totalAmount, "旅行社团购订单 " + order.orderNo);
     }
 
     /**

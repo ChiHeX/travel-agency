@@ -17,10 +17,14 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.WebApplicationContext;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -29,7 +33,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 // JwtTokenProvider 会在容器启动时校验签名密钥（缺失即启动失败），
 // 这里为测试上下文注入固定密钥，避免集成测试依赖开发者本机的 JWT_SECRET 环境变量。
-@TestPropertySource(properties = "app.jwt.secret=integration-test-jwt-secret-at-least-32-bytes-long")
+@TestPropertySource(properties = {
+        "app.jwt.secret=integration-test-jwt-secret-at-least-32-bytes-long",
+        // 显式清空支付宝配置：本类要断言「配置不齐时发起支付 fail-closed」，
+        // 不能让开发者本机恰好导出的 ALIPAY_* 环境变量把前提改成「配置齐全」。
+        "app.integrations.alipay.gateway-url=",
+        "app.integrations.alipay.app-id=",
+        "app.integrations.alipay.app-private-key=",
+        "app.integrations.alipay.alipay-public-key=",
+        "app.integrations.alipay.notify-url="})
 @Transactional
 @EnabledIfEnvironmentVariable(named = "TRAVEL_MYSQL_TEST", matches = "true")
 class Pr9ContractIntegrationTest {
@@ -37,6 +49,10 @@ class Pr9ContractIntegrationTest {
     @Autowired SysUserMapper users;
     @Autowired GuideMapper guides;
     @Autowired TravelGuideArticleMapper articles;
+    @Autowired TravelRouteMapper routes;
+    @Autowired DepartureMapper departures;
+    @Autowired TravelOrderMapper orders;
+    @Autowired PaymentMapper payments;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
     @Autowired PasswordEncoder passwords;
@@ -247,5 +263,92 @@ class Pr9ContractIntegrationTest {
         mvc.perform(post("/api/orders/TA_missing/pay").header("Authorization", adminToken)
                         .header("Idempotency-Key", "short"))
                 .andExpect(status().isUnprocessableContent());
+    }
+
+    /**
+     * 造一张「待支付且已有支付单」的订单，真库写入，跑完随 {@code @Transactional} 回滚。
+     *
+     * <p>刻意把支付单也造出来（与 {@code OrderService.create} 的真实效果一致）：
+     * 这样用例断言的是「配置闸门把请求挡在业务之前」，而不是靠「支付单不存在会先报 404」这种偶然顺序。
+     * </p>
+     */
+    private TravelOrder waitPayOrder(SysUser owner) {
+        TravelRoute route = new TravelRoute();
+        route.name = "Regression route " + UUID.randomUUID().toString().substring(0, 8);
+        route.departureCity = "上海";
+        route.destination = "杭州";
+        route.durationDays = 2;
+        route.status = "PUBLISHED";
+        routes.insert(route);
+
+        Departure departure = new Departure();
+        departure.routeId = route.id;
+        departure.startDate = LocalDate.now().plusDays(30);
+        departure.endDate = LocalDate.now().plusDays(31);
+        departure.adultPrice = new BigDecimal("1000.00");
+        departure.childPrice = new BigDecimal("500.00");
+        departure.maxPeople = 10;
+        departure.status = "OPEN";
+        departures.insert(departure);
+
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "TA" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        order.userId = owner.id;
+        order.routeId = route.id;
+        order.departureId = departure.id;
+        order.contactName = "Regression test";
+        order.contactPhone = "13800138000";
+        order.adultCount = 1;
+        order.childCount = 0;
+        order.adultUnitPrice = new BigDecimal("1000.00");
+        order.childUnitPrice = new BigDecimal("500.00");
+        order.totalAmount = new BigDecimal("1000.00");
+        order.status = "WAIT_PAY";
+        order.paymentStatus = "UNPAID";
+        orders.insert(order);
+
+        Payment payment = new Payment();
+        payment.orderId = order.id;
+        payment.paymentNo = "PAY" + order.orderNo;
+        payment.channel = "ALIPAY_SANDBOX";
+        payment.amount = order.totalAmount;
+        payment.status = "PENDING";
+        payments.insert(payment);
+        return order;
+    }
+
+    /**
+     * 支付宝配置不齐时，发起支付必须走真实 HTTP 入口 fail-closed：409 + 明确错误码，
+     * 且响应里<b>不能出现任何可付款链接</b>，订单与支付单也不得被推进。
+     *
+     * <p>这条用例补的是单测覆盖不到的一层：{@code BusinessException} 到契约响应
+     * （HTTP 状态码 + {@code code}/{@code message}/{@code data:null} 信封）的映射。</p>
+     */
+    @Test
+    void paymentStartFailsClosedWhenAlipayConfigurationIncomplete() throws Exception {
+        SysUser buyer = user();
+        String buyerToken = bearer(buyer, "USER");
+        TravelOrder order = waitPayOrder(buyer);
+
+        mvc.perform(post("/api/orders/" + order.orderNo + "/pay")
+                        .header("Authorization", buyerToken)
+                        .header("Idempotency-Key", "regression-pay-not-configured"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PAYMENT_NOT_CONFIGURED"))
+                .andExpect(jsonPath("$.message", containsString("支付尚未配置完成")))
+                // 提示要点名缺哪一项，运维不必翻代码
+                .andExpect(jsonPath("$.message", containsString("ALIPAY_PUBLIC_KEY")))
+                // 没有支付跳转信息 —— 这正是「不生成可付款链接」在契约层面的体现
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        // 被拒绝的请求不得留下任何推进痕迹
+        TravelOrder reloaded = orders.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<TravelOrder>()
+                        .eq("order_no", order.orderNo));
+        assertEquals("WAIT_PAY", reloaded.status);
+        assertEquals("UNPAID", reloaded.paymentStatus);
+        assertEquals(1L, payments.selectCount(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<Payment>()
+                        .eq("order_id", order.id)).longValue());
     }
 }

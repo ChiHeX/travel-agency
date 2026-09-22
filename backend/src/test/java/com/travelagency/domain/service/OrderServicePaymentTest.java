@@ -5,6 +5,7 @@ import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.PaymentStartResponse;
+import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.TravelOrder;
@@ -28,8 +29,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,13 +43,20 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 成员 B 交易模块：支付回调幂等。
- * 支付宝会重复投递异步通知，重复处理绝不能把订单推进两次。
+ * 成员 B 交易模块：支付回调幂等与发起支付的幂等键。
+ * 支付宝会重复投递异步通知，重复处理绝不能把订单推进两次；
+ * 同一幂等键重试 {@code POST /orders/{orderNo}/pay} 也只能真正发起一次支付。
+ *
+ * <p>同步 dev 之后发起支付多了「配置不齐就 409 PAYMENT_NOT_CONFIGURED」的闸门，
+ * 因此本类里凡是会走到「生成收银台链接」的用例都要先 {@link #givenCashierConfigured()}
+ * 声明配置齐备；闸门本身的用例见文件末尾「发起支付：配置闸门」一节。</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -229,6 +239,202 @@ class OrderServicePaymentTest {
         assertEquals("RESOURCE_NOT_FOUND", ex.getCode());
     }
 
+    // ------------------------------------------------- 发起支付的幂等键（Idempotency-Key）
+
+    /** 构造一条幂等记录；resourceNo 为 null 表示首个请求还没回填业务单号。 */
+    private static IdempotencyRecord idempotency(String resourceNo, LocalDateTime createdAt) {
+        IdempotencyRecord record = new IdempotencyRecord();
+        record.id = 501L;
+        record.userId = 9L;
+        record.scope = "START_PAYMENT";
+        record.idemKey = "IDEM-PAY-0001";
+        record.resourceType = resourceNo == null ? null : "PAYMENT";
+        record.resourceNo = resourceNo;
+        record.createdAt = createdAt;
+        return record;
+    }
+
+    /** 让「重放」分支生效：同一幂等键再次插入会撞唯一键。 */
+    private void givenKeyAlreadyClaimed(IdempotencyRecord existing) {
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class)))
+                .thenThrow(new DuplicateKeyException("uk_idempotency_user_scope_key"));
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(existing);
+    }
+
+    /**
+     * 让「配置齐备」分支生效：适配器校验通过，并且签得出的是一条<b>真实收银台链接</b>。
+     *
+     * <p>同步 dev 之后发起支付多了一道「配置不齐就 409」的闸门，凡是走到「生成链接」这一步的
+     * 用例都必须显式声明配置齐备；否则 mock 的默认返回 false 会让用例死在闸门上，
+     * 看起来像幂等逻辑坏了，其实是前提没给。</p>
+     */
+    private void givenCashierConfigured() {
+        when(alipayGatewayClient.isCashierConfigurationComplete()).thenReturn(true);
+        when(alipayGatewayClient.buildCashierUrl(anyString(), any(), anyString())).thenReturn(CASHIER_URL);
+    }
+
+    @Test
+    @DisplayName("幂等：同一幂等键重复发起支付只返回同一个支付单，且不改写支付单、不滑动有效期")
+    void startPaymentReplaysSamePaymentWithoutTouchingTheRow() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.UNPAID);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        givenCashierConfigured();
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        // 首次：抢占成功（insert 返回 1），随后回读拿到窗口锚点
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class))).thenReturn(1);
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(idempotency(null, anchor));
+
+        PaymentStartResponse first = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(first.paymentNo(), replay.paymentNo());
+        // 有效期锚定在首次抢占幂等记录的时刻：重试不会把支付窗口一次次往后顺延
+        assertEquals(anchor.plusMinutes(30), first.expiresAt());
+        assertEquals(first.expiresAt(), replay.expiresAt());
+        // 支付单只在首次被改写一次，重放没有二次副作用
+        verify(paymentMapper, times(1)).updateById(p);
+    }
+
+    @Test
+    @DisplayName("配置齐备时重放：支付单与有效期锚点不变，链接每次都由适配器重新签发（同一下单号）")
+    void startPaymentReplaysSamePaymentAndWindowWithNewlySignedLink() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.UNPAID);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        givenCashierConfigured();
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        when(idempotencyRecordMapper.insert(any(IdempotencyRecord.class))).thenReturn(1);
+        when(idempotencyRecordMapper.selectOne(any())).thenReturn(idempotency(null, anchor));
+
+        PaymentStartResponse first = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        // 幂等口径：支付单与支付窗口锚点都必须与首次一致
+        assertEquals(first.paymentNo(), replay.paymentNo());
+        assertEquals(anchor.plusMinutes(30), first.expiresAt());
+        assertEquals(first.expiresAt(), replay.expiresAt());
+
+        // 但收银台链接是「每次现签」的：两次响应都来自适配器，且都用同一个下单号与金额。
+        // 这是实际行为，也是对的——alipay.trade.page.pay 的公共参数含 timestamp，
+        // 想让重放返回逐字相同的 URL 只能先把链接存库，而契约（openapi.yaml）只要求
+        // paymentUrl 是 uri，真正决定「是不是同一笔交易」的是 out_trade_no。
+        assertEquals(CASHIER_URL, first.paymentUrl());
+        assertEquals(CASHIER_URL, replay.paymentUrl());
+        verify(alipayGatewayClient, times(2)).buildCashierUrl(anyString(), any(), anyString());
+        verify(alipayGatewayClient, times(2))
+                .buildCashierUrl(eq(o.orderNo), eq(o.totalAmount), contains(o.orderNo));
+
+        // 业务侧仍然只写一次：重放没有二次副作用
+        verify(paymentMapper, times(1)).updateById(p);
+    }
+
+    @Test
+    @DisplayName("幂等：订单已支付后用同一键重试，返回首次的支付单而不是 409")
+    void startPaymentReplayWinsOverStateCheck() {
+        // 订单已推进到 PAID_WAIT_CONFIRM；同一幂等键的重试属于原请求的重放，应拿到首次结果
+        TravelOrder o = order(55L, OrderStatus.PAID_WAIT_CONFIRM, PaymentStatus.PAID);
+        Payment p = payment(55L, PaymentStatus.PAID);
+        givenCashierConfigured();
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, LocalDateTime.now().minusMinutes(5)));
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        when(orderMapper.selectById(any())).thenReturn(o);
+
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(p.paymentNo, replay.paymentNo());
+        // 重放是重新签发（不是原样回放首次那条 URL），配置齐备时拿到的仍是适配器产出的链接。
+        // 订单状态被推进不会把重放变成 409 —— 重放判定仍然排在状态校验之前。
+        assertEquals(CASHIER_URL, replay.paymentUrl());
+        assertEquals(OrderStatus.PAID_WAIT_CONFIRM, o.status);
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        // ⚠️ 这条断言本轮评审后【反向】了：重放会重新签发链接，所以它必须查一次配置。
+        // 原先断言 never() 是在守护「重放短路在配置校验之前」，而那个顺序正是本次要修的缺陷
+        // （首次成功后部署漏配公钥/回调地址时，重放会签出一条付款结果回不来的链接）。
+        // 用 atLeastOnce 而不是裸 verify：断言的是「重放必经配置校验」这个语义，
+        // 而不是「恰好只查一次」—— 后者会在闸门多走一处（合法的重构）时误报。
+        verify(alipayGatewayClient, atLeastOnce()).isCashierConfigurationComplete();
+    }
+
+    @Test
+    @DisplayName("幂等：首个请求仍在处理中（支付单号未回填）时报 409，而不是给出空的支付信息")
+    void startPaymentReplayInProgressIsRejected() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        givenKeyAlreadyClaimed(idempotency(null, LocalDateTime.now()));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("IDEMPOTENT_REQUEST_IN_PROGRESS", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("幂等键绑定到订单：同一个键用到另一张订单上直接拒绝")
+    void startPaymentRejectsKeyReusedOnAnotherOrder() {
+        TravelOrder recorded = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.PENDING);
+        recorded.orderNo = "TA20270301000002ZZZZ9999";
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, LocalDateTime.now()));
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        when(orderMapper.selectById(any())).thenReturn(recorded);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment("TA20270301000001ABCD1234", 9L, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("IDEMPOTENCY_KEY_REUSED", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("不带幂等键、配置齐备时：改支付单为 PENDING，按当前时刻给 30 分钟窗口并返回已签名链接")
+    void startPaymentWithoutKeyKeepsLegacyBehaviour() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.UNPAID);
+        givenCashierConfigured();
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+
+        PaymentStartResponse response = orderService.startPayment(o.orderNo, o.userId);
+
+        assertEquals(PaymentStatus.PENDING, p.status);
+        assertEquals(p.paymentNo, response.paymentNo());
+        assertEquals(o.totalAmount, response.amount());
+        assertEquals(CASHIER_URL, response.paymentUrl());
+        assertTrue(response.expiresAt().isAfter(LocalDateTime.now().plusMinutes(29)));
+        verify(paymentMapper).updateById(p);
+        verify(idempotencyRecordMapper, never()).insert(any(IdempotencyRecord.class));
+    }
+
+    @Test
+    @DisplayName("状态闸门没有被幂等放宽：不带幂等键时非待支付订单仍报 409，且不触碰适配器")
+    void startPaymentRejectsNonWaitPayOrderWithoutKey() {
+        TravelOrder o = order(55L, OrderStatus.CONFIRMED, PaymentStatus.PAID);
+        Payment p = payment(55L, PaymentStatus.PAID);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("ORDER_STATE_CONFLICT", ex.getCode());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        // 状态不对时连配置齐全性都不必问，更不该去签链接
+        verify(alipayGatewayClient, never()).isCashierConfigurationComplete();
+        verify(alipayGatewayClient, never()).buildCashierUrl(anyString(), any(), anyString());
+    }
+
     // ---------------------------------------------------------------- 发起支付：配置闸门
 
     @Test
@@ -269,6 +475,56 @@ class OrderServicePaymentTest {
         // 注意这里【没有】stub 配置齐全性，mock 默认返回 false，能过就说明状态校验确实在前面。
         assertEquals(409, ex.getStatus());
         assertEquals("ORDER_STATE_CONFLICT", ex.getCode());
+    }
+
+    @Test
+    @DisplayName("配置闸门对重放同样生效：已有幂等记录但当前缺公钥/回调地址时，409 且不重签链接、不改写支付单")
+    void startPaymentReplayFailsClosedWhenConfigurationIncomplete() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+        // 首次请求时配置是齐的（链接已经签出去过一次），这里刻意【不】调用 givenCashierConfigured()：
+        // 模拟「首次成功之后，部署漏配了支付宝公钥或回调地址」。
+        // 若闸门只守在首次路径，这条重放会重新签出一条可付款、但付款结果回不来也验不了签的链接。
+        when(alipayGatewayClient.isCashierConfigurationComplete()).thenReturn(false);
+        when(alipayGatewayClient.missingCashierConfiguration())
+                .thenReturn(List.of("ALIPAY_PUBLIC_KEY", "ALIPAY_NOTIFY_URL"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("PAYMENT_NOT_CONFIGURED", ex.getCode());
+        assertTrue(ex.getMessage().contains("ALIPAY_PUBLIC_KEY"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("ALIPAY_NOTIFY_URL"), ex.getMessage());
+
+        // 关键证据：重放虽然只是对既有支付单的重复请求，也不许产生新的可付款链接、不许改写支付单。
+        // 少了这两条断言，「重放绕过配置闸门」这个缺陷在测试里是看不见的 —— 重放照样返回 200。
+        verify(alipayGatewayClient, never()).buildCashierUrl(anyString(), any(), anyString());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("配置齐备时重放不受闸门影响：仍返回首次的支付单与新签链接，不误报 PAYMENT_NOT_CONFIGURED")
+    void startPaymentReplayStaysGreenWhenConfigurationIsComplete() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        givenCashierConfigured();
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(p.paymentNo, replay.paymentNo());
+        assertEquals(anchor.plusMinutes(30), replay.expiresAt());
+        assertEquals(CASHIER_URL, replay.paymentUrl());
+        // 闸门是「读」而不是「写」：重放依旧不碰 payment 行
+        verify(paymentMapper, never()).updateById(any(Payment.class));
     }
 
     @Test

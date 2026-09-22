@@ -66,6 +66,11 @@ app:
       notify-url: ${ALIPAY_NOTIFY_URL:}
       # 可选：支付宝商户 UID。配置后回调会一并核对 seller_id，进一步收紧归属校验。
       seller-id: ${ALIPAY_SELLER_ID:}
+      # ⚠️ 后台「同意退款」会调用 alipay.trade.refund 真出款，出款前按「网关地址 + app-id +
+      # app-private-key」三项校验（isRefundConfigurationComplete），缺任意一项返回
+      # 409 REFUND_NOT_CONFIGURED；出款未成功返回 503 REFUND_FAILED，退款单保持 APPLYING 可重试。
+      # 与收银台相比少了公钥与 notify-url —— 退款是同步接口，结果由本次响应直接给出。
+      # 注意：这两项缺失不会阻止出款，但会阻止发起支付（收银台需要它们闭环）。
       # 旧的回调共享密钥，仅在【公钥与 APPID 都未配置】时作为本地开发回退使用（HMAC 适配点）。
       # 只要公钥与 APPID 配齐，回调一律走官方 SDK 验签，本项不再参与；
       # 若两者只配其一，回调会被直接拒绝，不会降级到本项。

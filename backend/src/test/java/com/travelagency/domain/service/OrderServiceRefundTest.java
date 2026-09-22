@@ -5,6 +5,7 @@ import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.exception.RefundPendingConfirmationException;
 import com.travelagency.domain.dto.RefundRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.entity.Message;
@@ -38,7 +39,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -75,7 +78,7 @@ class OrderServiceRefundTest {
     private IdempotencyRecordMapper idempotencyRecordMapper;
     @Mock
     private TravelerMapper travelerMapper;
-    /** 支付宝沙箱适配器：仅在生成收银台地址时用到，测试中给默认 mock（未配置 → 回退占位地址）。 */
+    /** 支付宝沙箱适配器：收银台与退款出款都经它，用例按需桩「配置齐备」与出款结果。 */
     @Mock
     private AlipayGatewayClient alipayGatewayClient;
 
@@ -86,6 +89,18 @@ class OrderServiceRefundTest {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
                 idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+    }
+
+    /**
+     * 走「审核通过」必须先把出款链路桩成可用：配置齐备 + 支付宝返回成功。
+     *
+     * <p>不加这两条桩，被测代码会在出款闸门处停下（{@code isRefundConfigurationComplete()}
+     * 默认返回 false → 409），根本走不到状态流转，用例会以与意图无关的原因失败。</p>
+     */
+    private void givenRefundPayoutSucceeds(String orderNo) {
+        when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(true);
+        when(alipayGatewayClient.refund(any(), any(), any(), any()))
+                .thenReturn(AlipayGatewayClient.RefundResult.succeeded("2027030122001400000000000001", orderNo));
     }
 
     private static TravelOrder order(long id, String status, String originalStatus) {
@@ -129,7 +144,7 @@ class OrderServiceRefundTest {
     // ---------------------------------------------------------------- 审核通过
 
     @Test
-    @DisplayName("审核通过：退款单转 REFUNDED、订单转 REFUNDED、支付单转 REFUNDED，并释放已确认名额")
+    @DisplayName("审核通过：先真出款，成功后才转 REFUNDED 并释放已确认名额")
     void approveSettlesOrderAndReleasesSeats() {
         Refund r = refund(70L, 55L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
         TravelOrder o = order(55L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
@@ -139,6 +154,7 @@ class OrderServiceRefundTest {
         when(paymentMapper.selectOne(any())).thenReturn(p);
         // 抢占 APPLYING → PROCESSING 成功
         when(refundMapper.update(any(), any())).thenReturn(1);
+        givenRefundPayoutSucceeds(o.orderNo);
 
         orderService.processRefund(70L, "APPROVE", "同意退款", 1L);
 
@@ -149,8 +165,11 @@ class OrderServiceRefundTest {
         assertEquals(PaymentStatus.REFUNDED, o.paymentStatus);
         assertEquals(PaymentStatus.REFUNDED, p.status);
 
-        // 先落 PROCESSING 再落 REFUNDED
-        verify(refundMapper, times(2)).updateById(r);
+        // 出款参数的契约：商户订单号＝orderNo、请求号由退款单主键派生且稳定、金额与退款单一致
+        verify(alipayGatewayClient).refund(o.orderNo, "RF70", new BigDecimal("2500.00"), r.reason);
+        // 状态推进全部走带旧状态条件的 UPDATE：入口抢占 APPLYING→PROCESSING、出口幂等闸门 →REFUNDED。
+        // 不再用 updateById 直接覆盖，是因为出口那次必须靠影响行数判断「是不是只有我推进了这一次」。
+        verify(refundMapper, times(2)).update(any(), any());
         // 释放名额（原状态为 CONFIRMED → 减少 confirmed_people）
         verify(departureMapper).update(any(), any());
         // CONFIRMED 订单退款要回退线路的有效报名数
@@ -167,6 +186,7 @@ class OrderServiceRefundTest {
         when(orderMapper.selectById(56L)).thenReturn(o);
         when(paymentMapper.selectOne(any())).thenReturn(payment(56L, PaymentStatus.PAID));
         when(refundMapper.update(any(), any())).thenReturn(1);
+        givenRefundPayoutSucceeds(o.orderNo);
 
         orderService.processRefund(71L, "APPROVE", "同意", 1L);
 
@@ -174,6 +194,192 @@ class OrderServiceRefundTest {
         verify(departureMapper).update(any(), any());
         // 未确认的订单没有占用 valid_booking_count，不应回退
         verify(routeMapper, never()).update(any(), any());
+    }
+
+    // ---------------------------------------------------------------- 出款（本案重点）
+
+    @Test
+    @DisplayName("出款配置不齐：拒绝审核通过，不落 REFUNDED、不释放名额、不调支付宝")
+    void approveFailsClosedWhenPayoutIsNotConfigured() {
+        Refund r = refund(90L, 70L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(70L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(90L)).thenReturn(r);
+        when(orderMapper.selectById(70L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
+        when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(false);
+        when(alipayGatewayClient.missingRefundConfiguration())
+                .thenReturn(java.util.List.of("ALIPAY_APP_ID", "ALIPAY_APP_PRIVATE_KEY"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.processRefund(90L, "APPROVE", "同意", 1L));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("REFUND_NOT_CONFIGURED", ex.getCode());
+        // 缺失项以环境变量名给出，便于运维定位，且不泄露密钥
+        assertTrue(ex.getMessage().contains("ALIPAY_APP_ID"), "错误信息应指出缺哪个变量");
+        assertTrue(ex.getMessage().contains("ALIPAY_APP_PRIVATE_KEY"));
+        // 关键：钱没退，就不能有任何「已退款」的痕迹
+        verify(alipayGatewayClient, never()).refund(any(), any(), any(), any());
+        assertEquals(RefundStatus.APPLYING, r.status);
+        assertEquals(OrderStatus.REFUND_APPLYING, o.status);
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("支付宝退款未成功：抛出 503 REFUND_FAILED，且名额、状态、支付单都不动")
+    void approveFailsClosedWhenGatewayRejectsTheRefund() {
+        Refund r = refund(91L, 71L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(71L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(91L)).thenReturn(r);
+        when(orderMapper.selectById(71L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
+        when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(true);
+        when(alipayGatewayClient.refund(any(), any(), any(), any()))
+                .thenReturn(AlipayGatewayClient.RefundResult.failed(
+                        null, "ACQ.TRADE_NOT_EXIST", "交易不存在"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.processRefund(91L, "APPROVE", "同意", 1L));
+
+        // 503：API.md §7 把「第三方服务暂时不可用」定在 503，表里没有 502
+        assertEquals(503, ex.getStatus());
+        assertEquals("REFUND_FAILED", ex.getCode());
+        // 失败原因要能传到审核人眼里，否则无从判断该不该重试
+        assertTrue(ex.getMessage().contains("ACQ.TRADE_NOT_EXIST"), "错误信息应带上支付宝错误码");
+        assertEquals(RefundStatus.APPLYING, r.status, "出款失败必须留在 APPLYING 供重试");
+        assertEquals(OrderStatus.REFUND_APPLYING, o.status);
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("出款结果未确认（超时且查询也无结论）：结果码与「明确失败」分开，且绝不落任何已退款痕迹")
+    void approveKeepsRefundPendingConfirmationWhenPayoutResultIsUnknown() {
+        Refund r = refund(93L, 73L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(73L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(93L)).thenReturn(r);
+        when(orderMapper.selectById(73L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
+        when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(true);
+        when(alipayGatewayClient.refund(any(), any(), any(), any()))
+                .thenReturn(AlipayGatewayClient.RefundResult.unconfirmed(
+                        "退款请求异常：Read timed out；查询也失败：Read timed out"));
+
+        RefundPendingConfirmationException ex = assertThrows(RefundPendingConfirmationException.class,
+                () -> orderService.processRefund(93L, "APPROVE", "同意", 1L));
+
+        // 与明确失败分开的结果码：调用方据此知道「钱可能已经退了，只能继续确认」
+        assertEquals(503, ex.getStatus());
+        assertEquals("REFUND_RESULT_UNCONFIRMED", ex.getCode());
+        // 钱没确认就不能有「已退款」痕迹，也不能动订单 / 支付单 / 名额 / 线路计数
+        assertEquals(OrderStatus.REFUND_APPLYING, o.status);
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        verify(messageMapper, never()).insert(any(Message.class));
+        // 待确认状态是留给事务提交的：这里绝不能再把它写回 APPLYING ——
+        // 一旦退回待审核，管理员就能「拒绝」，而拒绝会把已退款的订单恢复成已支付。
+        verify(refundMapper, never()).updateById(any(Refund.class));
+    }
+
+    @Test
+    @DisplayName("退款实际成功但结果未确认时：拒绝申请被拦下，订单保持已支付不被恢复")
+    void rejectIsRefusedWhilePayoutResultIsUnconfirmed() {
+        // PROCESSING 的由来：第一次「同意」时支付宝侧其实已经退款成功，但退款响应与随后的
+        // 结果查询都超时，于是退款单被落成持久的「待确认」。
+        Refund r = refund(94L, 74L, RefundStatus.PROCESSING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(74L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(94L)).thenReturn(r);
+        when(orderMapper.selectById(74L)).thenReturn(o);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.processRefund(94L, "REJECT", "材料不齐", 1L));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("REFUND_RESULT_UNCONFIRMED", ex.getCode());
+        // 关键：钱可能已经退出去，就绝不能再把订单恢复成申请前的 CONFIRMED
+        assertEquals(OrderStatus.REFUND_APPLYING, o.status);
+        verify(orderMapper, never()).updateById(any(TravelOrder.class));
+        verify(refundMapper, never()).updateById(any(Refund.class));
+        verify(refundMapper, never()).update(any(), any());
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("待确认重试：用同一请求号再次审核，拿到确定成功后才落 REFUNDED 并释放名额")
+    void approveRetryAfterUnconfirmedOutcomeConfirmsAndSettles() {
+        Refund r = refund(95L, 75L, RefundStatus.PROCESSING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(75L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(95L)).thenReturn(r);
+        when(orderMapper.selectById(75L)).thenReturn(o);
+        // 待确认重试没有可抢的状态迁移（进来时已是 PROCESSING ⇒ 抢占 0 行），
+        // 靠出口的幂等闸门判定这次确实由本请求推进 ⇒ 返回 1 行。
+        when(refundMapper.update(any(), any())).thenReturn(0, 1);
+        when(paymentMapper.selectOne(any())).thenReturn(payment(75L, PaymentStatus.PAID));
+        givenRefundPayoutSucceeds(o.orderNo);
+
+        orderService.processRefund(95L, "APPROVE", "再次审核", 1L);
+
+        assertEquals(RefundStatus.REFUNDED, r.status);
+        assertEquals(OrderStatus.REFUNDED, o.status);
+        assertEquals(PaymentStatus.REFUNDED, o.paymentStatus);
+        // 重试必须仍用同一个 out_request_no，支付宝才会把第二次当成同一笔退款而不重复出款
+        verify(alipayGatewayClient).refund(o.orderNo, "RF95", new BigDecimal("2500.00"), r.reason);
+        verify(departureMapper).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("待确认重试被并发抢先：幂等闸门只放行一个，名额不会被释放两次")
+    void unconfirmedRetryReleasesSeatsOnlyOnce() {
+        Refund r = refund(96L, 76L, RefundStatus.PROCESSING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(76L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(96L)).thenReturn(r);
+        when(orderMapper.selectById(76L)).thenReturn(o);
+        // 抢占 0 行（状态已是 PROCESSING）；出口闸门也 0 行 ⇒ 另一个并发重试已经把它推到 REFUNDED
+        when(refundMapper.update(any(), any())).thenReturn(0);
+        when(paymentMapper.selectOne(any())).thenReturn(payment(76L, PaymentStatus.PAID));
+        givenRefundPayoutSucceeds(o.orderNo);
+
+        orderService.processRefund(96L, "APPROVE", "再次审核", 1L);
+
+        // 出款那两次调用是安全的（请求号恒定 ⇒ 支付宝幂等），但**不可重复的副作用必须只发生一次**
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(orderMapper, never()).updateById(any(TravelOrder.class));
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("同一退款单重试时出款请求号恒定 —— 支付宝侧据此幂等，不会重复出款")
+    void payoutRequestNumberIsStableForTheSameRefund() {
+        Refund r = refund(92L, 72L, RefundStatus.APPLYING, OrderStatus.CONFIRMED);
+        TravelOrder o = order(72L, OrderStatus.REFUND_APPLYING, OrderStatus.CONFIRMED);
+        when(refundMapper.selectById(92L)).thenReturn(r);
+        when(orderMapper.selectById(72L)).thenReturn(o);
+        when(refundMapper.update(any(), any())).thenReturn(1);
+        // 成功路径会走到「支付单也要置为 REFUNDED」，缺这条桩会在 paymentFor 处中断
+        when(paymentMapper.selectOne(any())).thenReturn(payment(72L, PaymentStatus.PAID));
+        when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(true);
+        when(alipayGatewayClient.refund(any(), any(), any(), any()))
+                .thenReturn(AlipayGatewayClient.RefundResult.failed(null, "aop.unknown-error", "系统繁忙"));
+
+        // 第一次失败
+        assertThrows(BusinessException.class,
+                () -> orderService.processRefund(92L, "APPROVE", "同意", 1L));
+        // 后台原样重试（状态仍是 APPLYING）
+        when(alipayGatewayClient.refund(any(), any(), any(), any()))
+                .thenReturn(AlipayGatewayClient.RefundResult.succeeded("2027030122001400000000000009", o.orderNo));
+        orderService.processRefund(92L, "APPROVE", "同意", 1L);
+
+        assertEquals(RefundStatus.REFUNDED, r.status);
+        // 两次调用必须是同一个 out_request_no，否则支付宝会把重试当成新的一次退款
+        verify(alipayGatewayClient, times(2)).refund(eq(o.orderNo), eq("RF92"), any(), any());
     }
 
     // ---------------------------------------------------------------- 审核拒绝

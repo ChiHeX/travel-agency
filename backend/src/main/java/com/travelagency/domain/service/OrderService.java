@@ -12,6 +12,7 @@ import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.exception.RefundPendingConfirmationException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.DepartureView;
@@ -692,14 +693,66 @@ public class OrderService {
         return RefundView.from(saved == null ? refund : saved, order.orderNo);
     }
 
+    /**
+     * 后台审核退款：<b>同意时先真出款，成功才落状态</b>。
+     *
+     * <p>顺序是：抢占 {@code APPLYING → PROCESSING}（原子闸门，防并发双审）→ 出款闸门
+     * （{@link AlipayGatewayClient#isRefundConfigurationComplete()}）→
+     * <b>调 {@code alipay.trade.refund} → 成功之后</b>才释放名额、回退线路计数、
+     * 把退款单/订单/支付单落成 {@code REFUNDED}。</p>
+     *
+     * <p>出款刻意排在所有状态写入<b>之前</b>，是为了让「状态」与「钱」始终一致：
+     * 释放名额、落 {@code REFUNDED} 都是不可回退的对外事实，只有确实拿到支付宝的成功响应
+     * 才允许发生。</p>
+     *
+     * <p><b>出款没成功时有两条不同的出路，不能合并处理：</b></p>
+     * <ul>
+     *   <li><b>明确失败</b>（支付宝回了非空且非 {@code 10000} 的 {@code code}，钱确定没动）⇒
+     *       抛 {@code 503 REFUND_FAILED}，事务回滚，退款单退回 {@code APPLYING}，
+     *       名额与线路计数都不动 —— 审核人既能原样重试，也能拒绝。</li>
+     *   <li><b>结果未确认</b>（请求超时、{@code fund_change} 不是 {@code Y}，且用同一
+     *       {@code out_request_no} 查询也没查到确定结论）⇒ 钱<b>可能已经退出去</b>。
+     *       此时退回 {@code APPLYING} 是错的：拒绝分支会把订单恢复成申请前的状态，
+     *       于是出现「钱退了、后台显示退款被拒、订单仍已支付」，对不上账且无法自证。
+     *       因此改抛 {@link RefundPendingConfirmationException}，由
+     *       {@link #approveRefund} 上的 {@code noRollbackFor} 让事务<b>提交</b>，
+     *       把退款单落成持久的 {@code PROCESSING}（待确认）：结果确认前既不接受拒绝，
+     *       也不动订单；继续用同一请求号重试即可（{@code out_request_no} 恒定 ⇒ 支付宝幂等，
+     *       重试不会重复出款，且下一次可能查到确定结论而收敛）。</li>
+     * </ul>
+     *
+     * <p><b>状态推进只走条件更新，不靠事务回滚：</b>入口的抢占、出口的
+     * {@code → REFUNDED} 都是「带旧状态条件的 UPDATE + 影响行数」判定。后者兼作<b>幂等闸门</b>，
+     * 保证释放名额、改订单/支付单、回退线路计数这些<b>不可重复</b>的副作用
+     * 永远只发生一次（首次审批的并发由入口抢占挡住，「待确认重试」没有可抢的状态迁移，
+     * 由这道闸门兜底）。</p>
+     */
     @Transactional
     public void processRefund(Long refundId, String action, String comment, Long reviewerId) {
         if (!"APPROVE".equalsIgnoreCase(action) && !"REJECT".equalsIgnoreCase(action)) {
             throw new BusinessException(422, "VALIDATION_ERROR", "审核动作只能是 APPROVE 或 REJECT");
         }
         Refund refund = refundMapper.selectById(refundId);
-        if (refund == null || !RefundStatus.APPLYING.equals(refund.status)) {
+        if (refund == null) {
+            throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请不存在");
+        }
+        if (RefundStatus.REFUNDED.equals(refund.status) || RefundStatus.REJECTED.equals(refund.status)) {
             throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请不存在或已处理");
+        }
+        // PROCESSING 是「出款已发出去、结果还没确认」的**持久**状态（见方法末尾的说明）。
+        // 此时钱可能已经退给游客，因此：
+        //   - 拒绝必须被拦住 —— 拒绝分支会把订单恢复成申请前的状态，那会造出
+        //     「钱退了、后台显示退款被拒、订单仍已支付」这种对不上账且无法自证的组合；
+        //   - 同意放行，作为「用同一请求号重试确认」的入口（支付宝按 out_request_no 幂等，
+        //     重试不会重复出款，下一次可能查到确定结论而收敛）。
+        boolean approvingPendingPayout = false;
+        if (RefundStatus.PROCESSING.equals(refund.status)) {
+            if (!"APPROVE".equalsIgnoreCase(action)) {
+                throw new BusinessException(409, RefundPendingConfirmationException.CODE,
+                        "该退款已发起出款但结果尚未确认，不能拒绝或恢复订单；"
+                                + "请重试「同意」以确认退款结果（出款请求号恒定，重试不会重复出款）");
+            }
+            approvingPendingPayout = true;
         }
         TravelOrder order = orderMapper.selectById(refund.orderId);
         if (order == null) {
@@ -714,18 +767,66 @@ public class OrderService {
                 .set("reviewed_by", reviewerId)
                 .set("reviewed_at", LocalDateTime.now())
                 .set("review_comment", comment));
-        if (claimed != 1) {
+        // 抢到 APPLYING→PROCESSING 的那一次即本次审核；「待确认重试」不需要再抢（进来时已是
+        // PROCESSING，没有状态迁移可抢），由下面的 REFUNDED 幂等闸门保证副作用只发生一次。
+        // 其余情况说明另一位审核人已经先推进了这张退款单。
+        if (claimed != 1 && !approvingPendingPayout) {
             throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请已被其他审核人处理");
         }
         refund.reviewedBy = reviewerId;
         refund.reviewedAt = LocalDateTime.now();
         refund.reviewComment = comment;
         if ("APPROVE".equalsIgnoreCase(action)) {
-            refund.status = RefundStatus.PROCESSING;
-            refundMapper.updateById(refund);
-            releaseCapacity(order, refund.originalOrderStatus);
+            // 出款闸门：一旦把 REFUNDED 落库，对外就等于「钱已经退给游客了」。
+            // 配置不齐时绝不能落这个状态 —— 用户拿不到钱、后台却显示已退，比干脆不退款更糟。
+            // 判据与 startPayment 的收银台闸门同源（谓词分工见 AlipayGatewayClient 类注释）。
+            if (!alipayGatewayClient.isRefundConfigurationComplete()) {
+                throw new BusinessException(409, "REFUND_NOT_CONFIGURED",
+                        "退款出款尚未配置完成，缺少："
+                                + String.join("、", alipayGatewayClient.missingRefundConfiguration()));
+            }
+            // 出款排在「释放名额 / 落 REFUNDED」之前，让「没能确定钱退出去 ⇒ 这些不可回退的
+            // 对外事实一处都不发生」字面成立；失败后管理员也能原样重试。
+            // 重试安全的前提是 out_request_no 对同一退款单恒定（见 refundRequestNo），
+            // 支付宝按它幂等，不会重复出款。
+            AlipayGatewayClient.RefundResult payout = alipayGatewayClient.refund(
+                    order.orderNo, refundRequestNo(refund), refund.amount, refund.reason);
+            if (payout.unconfirmed()) {
+                // 「结果未知」与「明确失败」必须分开处置，否则会开出一条能把账做坏的出路：
+                // 若这里退回 APPLYING，管理员就还能点「拒绝」，而拒绝分支会恢复订单申请前的状态
+                // ⇒ 支付宝侧其实已经退款成功时，系统却显示「退款被拒、订单仍已支付」，
+                // 既对不上账，也没有任何重试入口能把它纠正回来。
+                // 所以把退款单落成持久的 PROCESSING（待确认）：approveRefund 上的 noRollbackFor
+                // 让本次事务提交，结果确认前「拒绝」与「恢复订单」都被入口守卫拦住。
+                // 继续确认的方式就是再调一次本方法（请求号恒定 ⇒ 不会重复出款）。
+                throw new RefundPendingConfirmationException(
+                        "支付宝已受理退款但结果尚未确认，退款单保持「处理中」待确认，"
+                                + "结果确认前不能拒绝该申请：" + payout.describe());
+            }
+            if (!payout.success()) {
+                // 明确失败（支付宝回了非空且非 10000 的 code）：钱确定没动，回滚回 APPLYING，
+                // 管理员既可原样重试，也可拒绝。
+                // 503 而不是 502：API.md §7 的状态码表把「第三方服务暂时不可用」定在 503，
+                // 表里没有 502，用 502 会让实现与冻结的状态码口径不一致。
+                throw new BusinessException(503, "REFUND_FAILED",
+                        "支付宝退款未成功，退款单保持待审核状态、可重试：" + payout.describe());
+            }
+            // 到这里钱已经退给游客了，才开始落状态与释放名额。
+            // 落 REFUNDED 兼作**幂等闸门**：只有把退款单从 APPLYING/PROCESSING 推到 REFUNDED 的
+            // 那一次，才允许执行释放名额、改订单/支付单、回退线路计数这些不可重复的副作用。
+            // 首次审批的并发双审由开头的 APPLYING→PROCESSING 抢占挡住；「待确认重试」没有可抢的
+            // 状态迁移（进来时已是 PROCESSING），由这道闸门兜底 ⇒ 两个并发重试只有一个能拿到 1 行，
+            // 另一个直接返回，名额只释放一次。
+            int finalized = refundMapper.update(null, new UpdateWrapper<Refund>()
+                    .eq("id", refundId)
+                    .ne("status", RefundStatus.REFUNDED)
+                    .set("status", RefundStatus.REFUNDED));
+            if (finalized != 1) {
+                // 另一个并发请求已经把这笔退款推到 REFUNDED，副作用归它做，这里不再重复。
+                return;
+            }
             refund.status = RefundStatus.REFUNDED;
-            refundMapper.updateById(refund);
+            releaseCapacity(order, refund.originalOrderStatus);
             order.status = OrderStatus.REFUNDED;
             order.paymentStatus = PaymentStatus.REFUNDED;
             orderMapper.updateById(order);
@@ -747,6 +848,20 @@ public class OrderService {
             orderMapper.updateById(order);
             notify(order.userId, "退款申请未通过", "订单 " + order.orderNo + " 的退款申请未通过。", "REFUND_REJECTED");
         }
+    }
+
+    /**
+     * 本次退款的支付宝请求号（{@code out_request_no}），由退款单主键派生。
+     *
+     * <p><b>必须对同一退款单保持恒定</b>：支付宝按 {@code out_trade_no + out_request_no} 幂等，
+     * 同值重复请求返回首次结果而不会重复出款。这正是「出款成功但本地事务回滚」之后
+     * 管理员再点一次审核仍然安全的原因 —— 不需要额外的定时对账兜底。</p>
+     *
+     * <p>用主键而不是时间戳/随机数：退款被驳回后重新申请会生成<b>新</b>的退款单（新 id），
+     * 于是拿到新的请求号，也不会被上一次的失败结果粘住。</p>
+     */
+    static String refundRequestNo(Refund refund) {
+        return "RF" + refund.id;
     }
 
     @Transactional
@@ -812,8 +927,17 @@ public class OrderService {
      * 同意退款申请，返回审核后的退款记录。
      * 契约 {@code POST /admin/refunds/{refundId}/approve} 的 200 响应是 RefundEnvelope，
      * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。
+     *
+     * <p><b>{@code noRollbackFor} 是这条链路的关键，不是顺手加的：</b>
+     * 出款结果「未确认」时钱可能已经退出去，此时必须把退款单的 {@code PROCESSING}（待确认）
+     * 状态<b>落库</b>。若让它随事务回滚退回 {@code APPLYING}，管理员的「拒绝」就变成一条
+     * 能把已退款订单改回「已支付」的出路。所以这里让它提交，异常照常向上抛，
+     * 由全局异常处理器按 {@code 503 REFUND_RESULT_UNCONFIRMED} 回给调用方。</p>
+     *
+     * <p>提交的副作用只有退款单状态与审核留痕：释放名额、改订单/支付单、回退线路有效报名数
+     * 全部排在出款成功之后，未确认时一处都不会执行。</p>
      */
-    @Transactional
+    @Transactional(noRollbackFor = RefundPendingConfirmationException.class)
     public RefundView approveRefund(Long refundId, String comment, Long reviewerId) {
         processRefund(refundId, "APPROVE", comment, reviewerId);
         return refundDetail(refundId);

@@ -1351,6 +1351,35 @@ paths:
       tags: [Admin Orders]
       operationId: approveRefund
       summary: 同意退款申请
+      description: |
+        审核通过时**必须先真正完成出款，再落退款状态**：实现按
+        「抢占 APPLYING→PROCESSING → 校验出款配置 → 调支付宝 `alipay.trade.refund`
+        → 成功后才释放名额、回退线路有效报名数、把退款单 / 订单 / 支付单落成 `REFUNDED`」
+        的顺序执行。因此：
+
+        - 出款配置不齐（缺 `ALIPAY_APP_ID` / `ALIPAY_APP_PRIVATE_KEY` 等）→
+          `409 REFUND_NOT_CONFIGURED`，不产生任何「已退款」痕迹；
+        - 支付宝**明确拒绝**（回了非空且非 `10000` 的 `code`，钱确定没动）→
+          `503 REFUND_FAILED`，退款单退回 `APPLYING`，名额与线路计数都不变；
+          后台既可原样重试、也可拒绝（出款请求号对同一退款单恒定，支付宝据此幂等，
+          重试不会重复出款）；
+        - **出款结果无法确认** → `503 REFUND_RESULT_UNCONFIRMED`，退款单落成持久的
+          `PROCESSING`（处理中 / 待确认），**不是**退回 `APPLYING`。
+
+        最后一条是刻意的：此时钱**可能已经退出去**，若退回 `APPLYING`，「拒绝」就成了一条
+        危险的出路 —— 拒绝分支会恢复订单申请前的状态，于是出现「钱退了、后台显示退款被拒、
+        订单仍已支付」，事后无法自证，也没有任何重试入口能把它纠正回来。因此结果确认前：
+
+        - `POST /admin/refunds/{refundId}/reject` 一律 `409 REFUND_RESULT_UNCONFIRMED`；
+        - 订单状态、名额、线路有效报名数、支付单全部不动；
+        - 继续确认的方式是**再次调用本端点**（沿用同一 `out_request_no`，支付宝幂等 ⇒
+          不会重复出款），确认成功后同样收敛到 `200` 与 `REFUNDED`。
+
+        「出款结果无法确认」指：退款响应 `code=10000` 但 `fund_change` 不是 `Y`
+        （`N` 或字段缺失），或请求超时/网络异常，且随后用**同一个** `out_request_no`
+        调 `alipay.trade.fastpay.refund.query` 也没查到 `refund_status=REFUND_SUCCESS`。
+
+        即：**响应 200 才代表钱已退给游客**，`REFUNDED` 不会被提前写入。
       x-roles: [STAFF, ADMIN]
       requestBody:
         content:
@@ -1358,11 +1387,12 @@ paths:
             schema: { $ref: '#/components/schemas/RefundDecisionRequest' }
       responses:
         '200':
-          description: 审核后的退款记录
+          description: 审核后的退款记录（出款已成功）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RefundEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /admin/refunds/{refundId}/reject:
     parameters:
@@ -1371,6 +1401,17 @@ paths:
       tags: [Admin Orders]
       operationId: rejectRefund
       summary: 拒绝退款申请
+      description: |
+        只能拒绝仍处于 `APPLYING`（待审核）的退款申请。
+
+        退款单处于 `PROCESSING`（处理中 / 待确认）时一律返回
+        `409 REFUND_RESULT_UNCONFIRMED`：该状态说明出款请求已经发给支付宝、但结果尚未确认，
+        **钱可能已经退给游客**。此时若允许拒绝，拒绝分支会把订单恢复成申请前的状态，
+        造成「钱退了、后台显示退款被拒、订单仍已支付」—— 所以结果确认前既不能拒绝、
+        也不能恢复订单，只能通过 `POST /admin/refunds/{refundId}/approve` 重试确认
+        （沿用同一出款请求号，支付宝幂等，不会重复出款）。
+
+        对已进入终态（`REFUNDED` / `REJECTED`）的退款单返回 `409 REFUND_STATE_CONFLICT`。
       x-roles: [STAFF, ADMIN]
       requestBody:
         required: true
@@ -1985,6 +2026,30 @@ components:
                 code: INVALID_FORMAT
                 message: 手机号格式不正确
             traceId: 550e8400-e29b-41d4-a716-446655440000
+    ServiceUnavailable:
+      description: |
+        必要的数据库或第三方服务暂时不可用（API.md §7）。调用方可以稍后重试；
+        **任何情况下都不会把 `REFUNDED` 写进库** —— 只有响应 200 才代表钱已退给游客。
+
+        当前唯一的使用方是退款审核，它有两种语义不同的 `code`：
+
+        - `REFUND_FAILED`：第三方**明确拒绝**，钱确定没动，这次操作没有产生业务副作用。
+          例：`POST /admin/refunds/{refundId}/approve` 调用支付宝退款未获受理，
+          退款单退回 `APPLYING`，名额与线路有效报名数均未变动，原样重试安全。
+        - `REFUND_RESULT_UNCONFIRMED`：第三方是否成功**未知**，钱可能已经出去了。
+          此时唯一的业务副作用是把退款单落成持久的 `PROCESSING`（处理中 / 待确认）；
+          订单、名额、线路计数、支付单均不动。结果确认前该退款单不能拒绝（见
+          `POST /admin/refunds/{refundId}/reject` 的 409），只能再次调用同一端点
+          （沿用同一出款请求号，支付宝幂等）继续确认。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: REFUND_RESULT_UNCONFIRMED
+            message: 支付宝已受理退款但结果尚未确认，退款单保持「处理中」待确认，结果确认前不能拒绝该申请：REFUND_RESULT_UNCONFIRMED：退款请求异常：Read timed out；查询也失败：Read timed out
+            data: null
+            errors: []
+            traceId: 550e8400-e29b-41d4-a716-446655440000
 
   schemas:
     Id:
@@ -2036,6 +2101,14 @@ components:
     RefundStatus:
       type: string
       enum: [APPLYING, PROCESSING, REFUNDED, REJECTED]
+      description: |
+        - `APPLYING`：待审核，可以同意或拒绝。
+        - `PROCESSING`：处理中 / 待确认 —— 出款请求已发给支付宝，但结果尚未确认，
+          **钱可能已经退出去**。该状态会**落库**（不随请求失败回滚），因此外部可观察；
+          结果确认前不能拒绝退款、也不能把订单恢复成申请前的状态（见
+          `POST /admin/refunds/{refundId}/reject`），只能再次调用
+          `POST /admin/refunds/{refundId}/approve` 继续确认。
+        - `REFUNDED` / `REJECTED`：终态。
       example: APPLYING
     ReviewStatus:
       type: string

@@ -1,6 +1,7 @@
 package com.travelagency;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.OrderView;
@@ -34,11 +35,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.math.BigDecimal;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -50,6 +57,9 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * 名额守恒与退款审核的并发实测（计划项 B4）。
@@ -75,6 +85,36 @@ class DepartureCapacityConcurrencyIntegrationTest {
     private static final int CONCURRENT_ORDERS = 30;
     /** 并发审批线程数。 */
     private static final int THREADS = 8;
+
+    /** 测试用 APPID，只用于通过出款配置齐全性校验，不是真实沙箱账号。 */
+    private static final String TEST_APP_ID = "9021000168641134";
+    /** 现场生成的测试密钥对：不落盘、不提交、不联网。 */
+    private static final KeyPair APP_KEY_PAIR = keyPair();
+
+    /**
+     * 注入一份<b>齐全</b>的支付宝出款配置。
+     *
+     * <p>退款审核接入真实出款后会先过出款闸门（缺 APPID / 应用私钥即 409
+     * {@code REFUND_NOT_CONFIGURED}）。本类要测的是<b>并发审批闸门与名额守恒</b>，
+     * 前提必须是「配置没问题、能走到出款那一步」；否则所有线程都会在配置闸门处被拒，
+     * 跑出来的红是配置缺失而不是并发缺陷，等于没测。</p>
+     *
+     * <p>用动态属性而不是注解字面量，是因为密钥要现场生成、而注解只能写编译期常量。</p>
+     */
+    @DynamicPropertySource
+    static void alipayCredentials(DynamicPropertyRegistry registry) {
+        registry.add("app.integrations.alipay.app-id", () -> TEST_APP_ID);
+        registry.add("app.integrations.alipay.app-private-key",
+                () -> base64(APP_KEY_PAIR.getPrivate().getEncoded()));
+    }
+
+    /**
+     * 支付宝适配器的 spy：<b>只替换出款那一跳</b>。
+     *
+     * <p>退款是同步接口，走真实现就会真的出网；本环境既没有对应的支付宝交易、也不允许出网，
+     * 所以 {@code refund(...)} 必须被替换成成功响应（见 {@code setUp}），其余方法保持真实。</p>
+     */
+    @MockitoSpyBean AlipayGatewayClient alipayGatewayClient;
 
     @Autowired OrderService orderService;
     @Autowired DepartureMapper departures;
@@ -149,6 +189,15 @@ class DepartureCapacityConcurrencyIntegrationTest {
         departure.version = 0;
         departures.insert(departure);
         departureId = departure.id;
+
+        // 「出款这一跳」固定为成功：本类不测支付宝，只测并发审批闸门与名额守恒。
+        // 用 doAnswer(...).when(spy) 而【不是】when(spy.refund(...)) —— 后者在打桩阶段
+        // 就会真调一次被测方法，在这个类里等于当场发起一次真实网络请求。
+        // 商户订单号原样回填，保证返回值形状与真实响应一致。
+        doAnswer(invocation -> AlipayGatewayClient.RefundResult.succeeded(
+                "2027030122001400000000000001", invocation.getArgument(0)))
+                .when(alipayGatewayClient)
+                .refund(anyString(), anyString(), any(BigDecimal.class), anyString());
     }
 
     @AfterEach
@@ -367,6 +416,21 @@ class DepartureCapacityConcurrencyIntegrationTest {
 
     private static int valueOrZero(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    /** 现场生成的 2048 位 RSA 密钥对，仅用于让「出款配置齐全」判据成立：不出网、不落盘。 */
+    private static KeyPair keyPair() {
+        try {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+            generator.initialize(2048);
+            return generator.generateKeyPair();
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private static String base64(byte[] der) {
+        return Base64.getEncoder().encodeToString(der);
     }
 
     private CreateOrderRequest request(int adults) {

@@ -73,12 +73,16 @@ public class OrderController {
         return ApiResponse.ok(orderService.detail(orderNo, CurrentUser.required()));
     }
 
+    /**
+     * 发起支付。契约把 Idempotency-Key 标为必填：同一用户携带同一键重试时只会真正发起一次支付，
+     * 返回同一个支付单号，收银台链接的有效期也不会随重试向后顺延。
+     */
     @PostMapping("/{orderNo}/pay")
     public ApiResponse<PaymentStartResponse> pay(
             @PathVariable String orderNo,
             @RequestHeader("Idempotency-Key")
             @Size(min = 8, max = 128, message = IDEMPOTENCY_KEY_CONSTRAINT) String idempotencyKey) {
-        return ApiResponse.ok(orderService.startPayment(orderNo, CurrentUser.required().userId()));
+        return ApiResponse.ok(orderService.startPayment(orderNo, CurrentUser.required().userId(), idempotencyKey));
     }
 
     /**

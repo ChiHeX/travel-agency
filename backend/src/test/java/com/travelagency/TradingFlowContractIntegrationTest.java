@@ -6,6 +6,7 @@ import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Review;
 import com.travelagency.domain.entity.SysUser;
@@ -13,6 +14,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.PaymentMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.ReviewMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
@@ -38,6 +40,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -142,6 +145,7 @@ class TradingFlowContractIntegrationTest {
     @Autowired TravelRouteMapper routes;
     @Autowired DepartureMapper departures;
     @Autowired TravelOrderMapper orders;
+    @Autowired PaymentMapper payments;
     @Autowired RefundMapper refunds;
     @Autowired ReviewMapper reviews;
     @Autowired JwtTokenProvider tokens;
@@ -300,6 +304,62 @@ class TradingFlowContractIntegrationTest {
         assertEquals(first, replayed, "重复提交必须返回首次生成的订单号");
         assertEquals(1, reserved(), "重放不得重复占用名额");
         assertEquals(1, orders.selectCount(new QueryWrapper<TravelOrder>().eq("order_no", first)).intValue());
+    }
+
+    @Test
+    @DisplayName("真实签名的收银台链接下同一幂等键重放：同一支付单、同一有效期、指向同一笔支付宝交易")
+    void paymentStartIsIdempotentForTheSameKey() throws Exception {
+        String orderNo = book(orderBody(1, 0), newKey(), 201);
+        String key = newKey();
+
+        JsonNode first = read(post("/api/orders/" + orderNo + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key)).get("data");
+        JsonNode replay = read(post("/api/orders/" + orderNo + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key)).get("data");
+
+        assertEquals(first.get("paymentNo").asString(), replay.get("paymentNo").asString(),
+                "同键重放必须返回首次生成的支付单号");
+        assertEquals(first.get("expiresAt").asString(), replay.get("expiresAt").asString(),
+                "支付窗口锚定在首次发起支付的时刻，重试不得把它一次次往后顺延");
+        assertEquals("ALIPAY_SANDBOX", first.get("channel").asString());
+        assertEquals(ADULT_PRICE, first.get("amount").asString());
+
+        // 两次响应里的收银台地址都必须是官方 SDK 真签出来的链接（不是网关占位地址）：
+        // 网关 / method / RSA2 签名 / notify_url 参与签名 / out_trade_no 与金额都要能核对。
+        Map<String, String> firstParams =
+                signedCashierParams(first.get("paymentUrl").asString(), orderNo, ADULT_PRICE);
+        Map<String, String> replayParams =
+                signedCashierParams(replay.get("paymentUrl").asString(), orderNo, ADULT_PRICE);
+
+        // ⚠️ 幂等保证的是「同一笔支付宝交易」，不是「同一串 URL」：
+        // alipay.trade.page.pay 的公共参数含 timestamp，两次签发的 URL 天然不同字符串
+        // （实测：间隔 1.5s 必然不同，同一秒内才偶然相同），因此这里绝不断言 URL 逐字相等，
+        // 而是对齐真正决定「是哪一笔交易」的三项。
+        assertEquals(firstParams.get("biz_content"), replayParams.get("biz_content"),
+                "重放必须指向同一笔支付宝交易：out_trade_no / 金额 / 商品名逐字一致");
+        assertEquals(firstParams.get("notify_url"), replayParams.get("notify_url"),
+                "重放的链接必须仍把支付结果回传到本系统的 notify_url");
+
+        assertEquals("WAIT_PAY", orderOf(orderNo).status, "发起支付不得推进订单状态");
+        assertEquals(1, reserved(), "重放不得重复占用名额");
+        assertEquals(1, paymentsFor(orderNo).size(), "重放不得产生第二张支付单");
+    }
+
+    @Test
+    @DisplayName("同一幂等键换个订单号复用直接拒绝，不返回另一笔订单的支付信息")
+    void paymentStartRejectsKeyReusedOnAnotherOrder() throws Exception {
+        String firstOrder = book(orderBody(1, 0), newKey(), 201);
+        String secondOrder = book(orderBody(1, 0), newKey(), 201);
+        String key = newKey();
+
+        read(post("/api/orders/" + firstOrder + "/pay")
+                .header("Authorization", buyerToken).header("Idempotency-Key", key));
+
+        // 负例排在末尾：业务异常会污染参与事务，之后不能再走成功路径
+        mvc.perform(post("/api/orders/" + secondOrder + "/pay")
+                        .header("Authorization", buyerToken).header("Idempotency-Key", key))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
     }
 
     @Test
@@ -689,6 +749,50 @@ class TradingFlowContractIntegrationTest {
     private int availableSeats() {
         Departure current = departure();
         return current.maxPeople - current.reservedPeople - current.confirmedPeople;
+    }
+
+    /** 某张订单下的支付单，用于验证「重放不得产生第二张支付单」。 */
+    private List<Payment> paymentsFor(String orderNo) {
+        return payments.selectList(new QueryWrapper<Payment>().eq("order_id", orderOf(orderNo).id));
+    }
+
+    /**
+     * 解开收银台链接的查询串，并断言它是一条<b>真实签发</b>的 {@code alipay.trade.page.pay} 请求。
+     *
+     * <p>同步 dev 之后收银台地址不再是我们自己拼的网关占位地址，而是官方 SDK 的
+     * {@code pageExecute} 组装并 RSA2 签名的结果，因此只判「非空」等于没验证：这里逐项核对
+     * 网关、{@code method}、{@code sign_type}、签名本体、{@code app_id}，以及
+     * {@code notify_url} 是否参与签名、{@code biz_content} 里的 {@code out_trade_no} 与金额是否正确。</p>
+     *
+     * @return 解码后的查询参数，供调用方继续对齐「是不是同一笔交易」
+     */
+    private Map<String, String> signedCashierParams(String paymentUrl, String orderNo, String amount)
+            throws Exception {
+        assertTrue(paymentUrl.startsWith("https://openapi-sandbox.dl.alipaydev.com/gateway.do?"),
+                "收银台地址必须落在支付宝沙箱网关上，实际是：" + paymentUrl);
+
+        Map<String, String> params = new LinkedHashMap<>();
+        for (String pair : paymentUrl.substring(paymentUrl.indexOf('?') + 1).split("&")) {
+            int eq = pair.indexOf('=');
+            params.put(URLDecoder.decode(pair.substring(0, eq), StandardCharsets.UTF_8),
+                    URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8));
+        }
+
+        assertEquals("alipay.trade.page.pay", params.get("method"), "必须是电脑网站支付");
+        assertEquals("RSA2", params.get("sign_type"), "契约要求 RSA2");
+        assertEquals(TEST_APP_ID, params.get("app_id"), "app_id 必须是本应用");
+        assertFalse(params.get("sign") == null || params.get("sign").isBlank(),
+                "收银台链接必须带签名，否则不是真实签发");
+        assertEquals(TEST_NOTIFY_URL, params.get("notify_url"),
+                "notify_url 必须出现在链接里（参与签名），否则付款结果回不来");
+        assertFalse(params.get("timestamp") == null || params.get("timestamp").isBlank(),
+                "签名必须带 timestamp");
+
+        JsonNode biz = json.readTree(params.get("biz_content"));
+        assertEquals(orderNo, biz.get("out_trade_no").asString(),
+                "out_trade_no 必须是订单号，支付宝回调才能把交易号对回订单");
+        assertEquals(amount, biz.get("total_amount").asString(), "金额必须与订单应付一致");
+        return params;
     }
 
     /** 拉订单详情并校验信封，返回契约 data 节点。 */

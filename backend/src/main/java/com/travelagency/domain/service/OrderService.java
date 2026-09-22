@@ -91,6 +91,16 @@ public class OrderService {
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
     /** 申请退款动作的幂等作用域。 */
     private static final String SCOPE_APPLY_REFUND = "APPLY_REFUND";
+    /** 发起支付动作的幂等作用域。 */
+    private static final String SCOPE_START_PAYMENT = "START_PAYMENT";
+
+    /**
+     * 收银台链接的有效期长度（分钟）。
+     *
+     * <p>窗口从「首次发起支付的那一刻」起算，而不是每次读响应时的当前时刻：否则同一幂等键
+     * 每重试一次，契约返回的 {@code expiresAt} 就往后顺延一次，等于重试能无限延长支付窗口。</p>
+     */
+    private static final long PAYMENT_WINDOW_MINUTES = 30L;
 
     public OrderService(
             TravelOrderMapper orderMapper,
@@ -364,24 +374,129 @@ public class OrderService {
      */
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId) {
+        return startPayment(orderNo, userId, null);
+    }
+
+    /**
+     * 发起支付宝沙箱支付，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>此前该请求头只在控制器上做了长度校验就被丢弃，同一键重试会重复走一遍业务：
+     * 支付单状态被再写一次、契约返回的 {@code expiresAt} 也随每次重试向后滑动。
+     * 现在与 {@link #create} / {@link #applyRefund} 对齐——首次请求先抢占幂等记录，
+     * 业务成功后回填支付单号，后续重放请求直接返回首次生成的支付单信息。</p>
+     *
+     * <p>幂等键绑定到具体订单：若同一用户把同一个键用到另一张订单上，属调用方误用，
+     * 直接拒绝而不是返回另一笔订单的支付信息。</p>
+     *
+     * <p>与「配置不齐就拒绝」的闸门合流后的顺序是：<b>重放判定 → 属主与订单状态校验 →
+     * 配置齐全性校验 → 写 payment 与回填幂等记录 → 用适配器签出真实收银台链接</b>。
+     * 重放判定放在最前，是因为重放属于「原请求的结果」而不是一次新的发起：订单可能已经被
+     * 那次支付推进到非待支付状态，此时再走状态校验会把重放误报成 409，让调用方以为请求失败。</p>
+     *
+     * <p><b>配置闸门必须被首次与重放两条路径共用</b>（{@link #ensureCashierConfigured(String)}）：
+     * 重放同样会重新签发一次链接（见 {@link #replayStartPayment}），若只在首次路径把关，就会出现
+     * 「首次拿到链接 → 部署漏配支付宝公钥或回调地址 → 用原幂等键重试仍拿到可付款的链接」，
+     * 而这条链接的付款结果既回不来、也验不了签 —— 正是 PR #18 补上的保护要挡住的情形。</p>
+     *
+     * <p>闸门刻意<b>不</b>放在方法入口：状态冲突是用户侧的因、配置缺失是运维侧的问题，
+     * 顺序反了会把排障方向带偏（见 {@code startPaymentReportsStateConflictBeforeConfiguration}）。</p>
+     */
+    @Transactional
+    public PaymentStartResponse startPayment(String orderNo, Long userId, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_START_PAYMENT, idempotencyKey);
+            if (replay != null) {
+                return replayStartPayment(orderNo, replay);
+            }
+        }
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许支付");
         }
-        if (!alipayGatewayClient.isCashierConfigurationComplete()) {
-            String missing = String.join("、", alipayGatewayClient.missingCashierConfiguration());
-            log.error("支付尚未配置完成，已拒绝发起支付（fail-closed）：orderNo={}, 缺少={}",
-                    orderNo, missing);
-            throw new BusinessException(409, "PAYMENT_NOT_CONFIGURED",
-                    "支付尚未配置完成，无法发起支付（缺少配置项：" + missing + "）");
-        }
+        ensureCashierConfigured(orderNo);
         Payment payment = paymentFor(order.id);
         payment.status = PaymentStatus.PENDING;
         paymentMapper.updateById(payment);
-        LocalDateTime expiresAt = LocalDateTime.now().plusMinutes(30);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_START_PAYMENT, idempotencyKey, "PAYMENT", payment.paymentNo);
+        }
+        return startPaymentResponse(order, payment, paymentWindowStart(userId, idempotencyKey, idempotent));
+    }
+
+    /**
+     * 重放首次发起支付的结果。
+     *
+     * <p>记录已抢占但支付单号尚未回填，说明首个请求仍在处理中，此时不能凭一个还没有结果的
+     * 幂等键给出支付信息，返回 409 让调用方稍后重试。</p>
+     *
+     * <p>重放是<b>重新签发</b>一次链接，而不是把首次的 URL 原样回放（公共参数含参与签名的
+     * {@code timestamp}，两次签发必然不同）。签发能力依赖<b>当前</b>配置，而配置可能在两次请求
+     * 之间被改空，因此返回之前还要走一遍 {@link #ensureCashierConfigured(String)}。</p>
+     */
+    private PaymentStartResponse replayStartPayment(String orderNo, IdempotencyRecord replay) {
+        Payment payment = replay.resourceNo == null ? null
+                : paymentMapper.selectOne(new QueryWrapper<Payment>().eq("payment_no", replay.resourceNo));
+        if (payment == null) {
+            throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                    "相同幂等键的请求正在处理中，请稍后重试");
+        }
+        TravelOrder order = orderMapper.selectById(payment.orderId);
+        if (order == null || !order.orderNo.equals(orderNo)) {
+            throw new BusinessException(409, "IDEMPOTENCY_KEY_REUSED",
+                    "该幂等键已用于其他订单的支付请求，请更换 Idempotency-Key");
+        }
+        // 重放也要重新签发一次链接（公共参数含参与签名的 timestamp，链接必然与首次不同），
+        // 所以这里必须再走一遍配置闸门：否则「首次成功后部署漏配公钥/回调地址」的重试
+        // 仍会拿到一条可付款、但回调既回不来也验不了签的链接，把 PR #18 的保护绕过去。
+        // 闸门放在「确认这是一次真实重放」之后：幂等键仍在处理中、或键被用到别的订单上，
+        // 都是请求本身的问题，不该被运维侧的配置问题盖掉（否则调用方会找错方向）。
+        ensureCashierConfigured(orderNo);
+        return startPaymentResponse(order, payment, replay.createdAt);
+    }
+
+    /**
+     * 收银台配置闸门：首次发起与幂等重放<b>共用同一处校验</b>（见
+     * {@link #startPayment(String, Long, String)} 对顺序的说明）。
+     *
+     * <p>判据是 {@link AlipayGatewayClient#isCashierConfigurationComplete()}，即「这条支付链路能真正闭环」：
+     * 网关地址 + APPID + 应用私钥保证签得出请求，支付宝公钥 + 回调地址保证付款结果回得来、验得了签。
+     * 只判「签得出来」（{@code canBuildCashierUrl()}）是不够的 —— 那会放行一条用户付得了款、
+     * 系统永远停留在待支付的链接。</p>
+     *
+     * <p>失败信息只含环境变量名，不含任何密钥内容，可直接进日志与接口 message。</p>
+     */
+    private void ensureCashierConfigured(String orderNo) {
+        if (alipayGatewayClient.isCashierConfigurationComplete()) {
+            return;
+        }
+        String missing = String.join("、", alipayGatewayClient.missingCashierConfiguration());
+        log.error("支付尚未配置完成，已拒绝发起支付（fail-closed）：orderNo={}, 缺少={}", orderNo, missing);
+        throw new BusinessException(409, "PAYMENT_NOT_CONFIGURED",
+                "支付尚未配置完成，无法发起支付（缺少配置项：" + missing + "）");
+    }
+
+    /**
+     * 取支付窗口的起点。
+     *
+     * <p>首次请求用幂等记录的创建时刻、无幂等键时用当前时刻。用记录而不是「当前时刻」是为了让
+     * 同一键的重放返回完全一致的 {@code expiresAt}；记录查不到（理论上只会在无幂等键时发生）
+     * 则退化为当前时刻。</p>
+     */
+    private LocalDateTime paymentWindowStart(Long userId, String idempotencyKey, boolean idempotent) {
+        if (!idempotent) {
+            return LocalDateTime.now();
+        }
+        IdempotencyRecord record = idempotencyRecordMapper.selectOne(new QueryWrapper<IdempotencyRecord>()
+                .eq("user_id", userId).eq("scope", SCOPE_START_PAYMENT).eq("idem_key", idempotencyKey));
+        return record == null || record.createdAt == null ? LocalDateTime.now() : record.createdAt;
+    }
+
+    private PaymentStartResponse startPaymentResponse(TravelOrder order, Payment payment, LocalDateTime windowStart) {
+        LocalDateTime anchor = windowStart == null ? LocalDateTime.now() : windowStart;
         return new PaymentStartResponse(order.orderNo, payment.paymentNo, payment.channel,
-                order.totalAmount, cashierUrl(order), expiresAt);
+                order.totalAmount, cashierUrl(order), anchor.plusMinutes(PAYMENT_WINDOW_MINUTES));
     }
 
     /**
@@ -390,6 +505,9 @@ public class OrderService {
      * <p>方法名保留「cashierUrl」是因为语义没变，但实现里<b>不再有「未配置就回退网关占位地址」</b>
      * 那条分支 —— 占位地址看着能返回 200，实际用户付不了款、订单也不会更新，
      * 属于把配置问题伪装成成功响应，正是本次评审要求去掉的东西。</p>
+     *
+     * <p>链接的有效期沿用调用方给定的窗口锚点（见 {@link #startPaymentResponse}）：配置齐备
+     * 只决定「签得出来」，窗口不滑动由幂等重放保证，两件事互不耦合。</p>
      */
     private String cashierUrl(TravelOrder order) {
         return alipayGatewayClient.buildCashierUrl(

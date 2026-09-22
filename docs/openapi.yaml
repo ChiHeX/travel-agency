@@ -1351,6 +1351,19 @@ paths:
       tags: [Admin Orders]
       operationId: approveRefund
       summary: 同意退款申请
+      description: |
+        审核通过时**必须先真正完成出款，再落退款状态**：实现按
+        「抢占 APPLYING→PROCESSING → 校验出款配置 → 调支付宝 `alipay.trade.refund`
+        → 成功后才释放名额、回退线路有效报名数、把退款单 / 订单 / 支付单落成 `REFUNDED`」
+        的顺序执行。因此：
+
+        - 出款配置不齐（缺 `ALIPAY_APP_ID` / `ALIPAY_APP_PRIVATE_KEY` 等）→
+          `409 REFUND_NOT_CONFIGURED`，不产生任何「已退款」痕迹；
+        - 支付宝未成功受理 → `503 REFUND_FAILED`，退款单退回 `APPLYING`，
+          名额与线路计数都不变，后台可原样重试（出款请求号对同一退款单恒定，
+          支付宝据此幂等，重试不会重复出款）。
+
+        即：**响应 200 才代表钱已退给游客**，`REFUNDED` 不会被提前写入。
       x-roles: [STAFF, ADMIN]
       requestBody:
         content:
@@ -1358,11 +1371,12 @@ paths:
             schema: { $ref: '#/components/schemas/RefundDecisionRequest' }
       responses:
         '200':
-          description: 审核后的退款记录
+          description: 审核后的退款记录（出款已成功）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RefundEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /admin/refunds/{refundId}/reject:
     parameters:
@@ -1984,6 +1998,21 @@ components:
               - field: contactPhone
                 code: INVALID_FORMAT
                 message: 手机号格式不正确
+            traceId: 550e8400-e29b-41d4-a716-446655440000
+    ServiceUnavailable:
+      description: |
+        必要的数据库或第三方服务暂时不可用（API.md §7）。本状态码表示
+        **这次操作没有产生副作用**，调用方可以稍后原样重试。
+        例：`POST /admin/refunds/{refundId}/approve` 调用支付宝退款未获成功受理，
+        退款单保持 `APPLYING`，名额与线路有效报名数均未变动。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            code: REFUND_FAILED
+            message: 支付宝退款未成功，退款单保持待审核状态、可重试：ACQ.TRADE_NOT_EXIST：交易不存在
+            data: null
+            errors: []
             traceId: 550e8400-e29b-41d4-a716-446655440000
 
   schemas:

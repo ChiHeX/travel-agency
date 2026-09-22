@@ -2,6 +2,7 @@ package com.travelagency;
 
 import com.alipay.api.internal.util.AlipaySignature;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
@@ -28,6 +29,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
@@ -53,6 +55,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -139,6 +146,15 @@ class TradingFlowContractIntegrationTest {
     @Autowired ReviewMapper reviews;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
+
+    /**
+     * 支付宝适配器的 spy：<b>只替换出款那一跳</b>。
+     *
+     * <p>退款审核现在会真的调 {@code alipay.trade.refund}，而本环境既没有真实的支付宝交易、
+     * 也不允许出网，所以那一跳必须被替换成成功响应；其余方法（尤其 {@code verifyNotifySignature}
+     * 的官方验签）保持真实 —— 回调验签正是本类要验的东西，换成 mock 就等于没测。</p>
+     */
+    @MockitoSpyBean AlipayGatewayClient alipayGatewayClient;
 
     private MockMvc mvc;
     private SysUser buyer;
@@ -450,7 +466,8 @@ class TradingFlowContractIntegrationTest {
         assertEquals("REFUND_APPLYING", orderOf(orderNo).status, "申请后订单应进入退款申请中");
         assertEquals(1, confirmed(), "申请阶段还不释放名额");
 
-        // 成功路径：审核通过
+        // 成功路径：审核通过。出款那一跳替换为支付宝成功响应（见 givenPayoutSucceeds）
+        givenPayoutSucceeds(orderNo);
         mvc.perform(post("/api/admin/refunds/" + refundId + "/approve").header("Authorization", adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"comment\":\"已核验订单和退款条件。\"}"))
@@ -460,6 +477,10 @@ class TradingFlowContractIntegrationTest {
                 .andExpect(jsonPath("$.data.reviewedBy").isNotEmpty())
                 .andExpect(jsonPath("$.data.reviewedAt").isNotEmpty())
                 .andExpect(jsonPath("$.data.reviewComment").value("已核验订单和退款条件。"));
+
+        // 出款参数：商户订单号＝orderNo，请求号＝RF+退款单主键（支付宝侧的退款幂等键）
+        verify(alipayGatewayClient).refund(eq(orderNo), eq("RF" + refundId),
+                eq(new BigDecimal(ADULT_PRICE)), anyString());
 
         TravelOrder refunded = orderOf(orderNo);
         assertEquals("REFUNDED", refunded.status);
@@ -909,6 +930,19 @@ class TradingFlowContractIntegrationTest {
                 "adultCount", adults,
                 "childCount", children,
                 "travelers", travelers));
+    }
+
+    /**
+     * 让「退款出款」这一跳返回支付宝成功响应。
+     *
+     * <p>用 {@code doReturn(...).when(spy)} 而<b>不是</b> {@code when(spy.refund(...))}：
+     * 后者在<b>打桩阶段</b>就会真调一次被测方法（Mockito spy 的经典坑），
+     * 在这个类里等于当场发起一次真实网络请求。</p>
+     */
+    private void givenPayoutSucceeds(String orderNo) {
+        doReturn(AlipayGatewayClient.RefundResult.succeeded("2027030122001400000000000001", orderNo))
+                .when(alipayGatewayClient)
+                .refund(anyString(), anyString(), any(BigDecimal.class), anyString());
     }
 
     private static String newKey() {

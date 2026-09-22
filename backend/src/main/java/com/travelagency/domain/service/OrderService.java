@@ -574,6 +574,20 @@ public class OrderService {
         return RefundView.from(saved == null ? refund : saved, order.orderNo);
     }
 
+    /**
+     * 后台审核退款：<b>同意时先真出款，成功才落状态</b>。
+     *
+     * <p>顺序是：抢占 {@code APPLYING → PROCESSING}（原子闸门，防并发双审）→ 出款闸门
+     * （{@link AlipayGatewayClient#isRefundConfigurationComplete()}）→
+     * <b>调 {@code alipay.trade.refund} → 成功之后</b>才释放名额、回退线路计数、
+     * 把退款单/订单/支付单落成 {@code REFUNDED}。</p>
+     *
+     * <p>出款刻意排在所有状态写入<b>之前</b>，是为了让「状态」与「钱」始终一致：
+     * 释放名额、落 {@code REFUNDED} 都是不可回退的对外事实，只有确实拿到支付宝的成功响应
+     * 才允许发生。失败时本方法抛异常、整个事务回滚，退款单退回 {@code APPLYING}，
+     * 名额与线路计数都不动，审核人可以原样重试（{@code out_request_no} 恒定 ⇒ 支付宝幂等，
+     * 不会重复出款）。</p>
+     */
     @Transactional
     public void processRefund(Long refundId, String action, String comment, Long reviewerId) {
         if (!"APPROVE".equalsIgnoreCase(action) && !"REJECT".equalsIgnoreCase(action)) {
@@ -603,6 +617,29 @@ public class OrderService {
         refund.reviewedAt = LocalDateTime.now();
         refund.reviewComment = comment;
         if ("APPROVE".equalsIgnoreCase(action)) {
+            // 出款闸门：一旦把 REFUNDED 落库，对外就等于「钱已经退给游客了」。
+            // 配置不齐时绝不能落这个状态 —— 用户拿不到钱、后台却显示已退，比干脆不退款更糟。
+            // 判据与 startPayment 的收银台闸门同源（谓词分工见 AlipayGatewayClient 类注释）。
+            if (!alipayGatewayClient.isRefundConfigurationComplete()) {
+                throw new BusinessException(409, "REFUND_NOT_CONFIGURED",
+                        "退款出款尚未配置完成，缺少："
+                                + String.join("、", alipayGatewayClient.missingRefundConfiguration()));
+            }
+            // 出款放在「写任何状态」之前，让「出款失败 ⇒ 零写入」字面成立：
+            // 既不用靠事务回滚来保证一致性，失败后管理员也能原样重试。
+            // 重试安全的前提是 out_request_no 对同一退款单恒定（见 refundRequestNo），
+            // 支付宝按它幂等，不会重复出款。
+            AlipayGatewayClient.RefundResult payout = alipayGatewayClient.refund(
+                    order.orderNo, refundRequestNo(refund), refund.amount, refund.reason);
+            if (!payout.success()) {
+                // 503 而不是 502：API.md §7 的状态码表把「第三方服务暂时不可用」定在 503，
+                // 表里没有 502，用 502 会让实现与冻结的状态码口径不一致。
+                throw new BusinessException(503, "REFUND_FAILED",
+                        "支付宝退款未成功，退款单保持待审核状态、可重试：" + payout.describe());
+            }
+            // 到这里钱已经退给游客了，才开始落状态与释放名额。
+            // ⚠️ PROCESSING 只是同一事务内的中间标记，外部观察不到；防并发双审靠的是本方法
+            // 开头那次 APPLYING→PROCESSING 的条件更新（原子抢占），不是这里的写。
             refund.status = RefundStatus.PROCESSING;
             refundMapper.updateById(refund);
             releaseCapacity(order, refund.originalOrderStatus);
@@ -629,6 +666,20 @@ public class OrderService {
             orderMapper.updateById(order);
             notify(order.userId, "退款申请未通过", "订单 " + order.orderNo + " 的退款申请未通过。", "REFUND_REJECTED");
         }
+    }
+
+    /**
+     * 本次退款的支付宝请求号（{@code out_request_no}），由退款单主键派生。
+     *
+     * <p><b>必须对同一退款单保持恒定</b>：支付宝按 {@code out_trade_no + out_request_no} 幂等，
+     * 同值重复请求返回首次结果而不会重复出款。这正是「出款成功但本地事务回滚」之后
+     * 管理员再点一次审核仍然安全的原因 —— 不需要额外的定时对账兜底。</p>
+     *
+     * <p>用主键而不是时间戳/随机数：退款被驳回后重新申请会生成<b>新</b>的退款单（新 id），
+     * 于是拿到新的请求号，也不会被上一次的失败结果粘住。</p>
+     */
+    static String refundRequestNo(Refund refund) {
+        return "RF" + refund.id;
     }
 
     @Transactional

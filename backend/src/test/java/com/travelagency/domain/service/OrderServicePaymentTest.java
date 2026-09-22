@@ -43,6 +43,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -350,11 +351,17 @@ class OrderServicePaymentTest {
         PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
 
         assertEquals(p.paymentNo, replay.paymentNo());
-        // 重放拿到的还是首次那条已签名链接，订单状态变化不会把重放变成 409
+        // 重放是重新签发（不是原样回放首次那条 URL），配置齐备时拿到的仍是适配器产出的链接。
+        // 订单状态被推进不会把重放变成 409 —— 重放判定仍然排在状态校验之前。
         assertEquals(CASHIER_URL, replay.paymentUrl());
         assertEquals(OrderStatus.PAID_WAIT_CONFIRM, o.status);
         verify(paymentMapper, never()).updateById(any(Payment.class));
-        verify(alipayGatewayClient, never()).isCashierConfigurationComplete();
+        // ⚠️ 这条断言本轮评审后【反向】了：重放会重新签发链接，所以它必须查一次配置。
+        // 原先断言 never() 是在守护「重放短路在配置校验之前」，而那个顺序正是本次要修的缺陷
+        // （首次成功后部署漏配公钥/回调地址时，重放会签出一条付款结果回不来的链接）。
+        // 用 atLeastOnce 而不是裸 verify：断言的是「重放必经配置校验」这个语义，
+        // 而不是「恰好只查一次」—— 后者会在闸门多走一处（合法的重构）时误报。
+        verify(alipayGatewayClient, atLeastOnce()).isCashierConfigurationComplete();
     }
 
     @Test
@@ -468,6 +475,56 @@ class OrderServicePaymentTest {
         // 注意这里【没有】stub 配置齐全性，mock 默认返回 false，能过就说明状态校验确实在前面。
         assertEquals(409, ex.getStatus());
         assertEquals("ORDER_STATE_CONFLICT", ex.getCode());
+    }
+
+    @Test
+    @DisplayName("配置闸门对重放同样生效：已有幂等记录但当前缺公钥/回调地址时，409 且不重签链接、不改写支付单")
+    void startPaymentReplayFailsClosedWhenConfigurationIncomplete() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+        // 首次请求时配置是齐的（链接已经签出去过一次），这里刻意【不】调用 givenCashierConfigured()：
+        // 模拟「首次成功之后，部署漏配了支付宝公钥或回调地址」。
+        // 若闸门只守在首次路径，这条重放会重新签出一条可付款、但付款结果回不来也验不了签的链接。
+        when(alipayGatewayClient.isCashierConfigurationComplete()).thenReturn(false);
+        when(alipayGatewayClient.missingCashierConfiguration())
+                .thenReturn(List.of("ALIPAY_PUBLIC_KEY", "ALIPAY_NOTIFY_URL"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001"));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("PAYMENT_NOT_CONFIGURED", ex.getCode());
+        assertTrue(ex.getMessage().contains("ALIPAY_PUBLIC_KEY"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("ALIPAY_NOTIFY_URL"), ex.getMessage());
+
+        // 关键证据：重放虽然只是对既有支付单的重复请求，也不许产生新的可付款链接、不许改写支付单。
+        // 少了这两条断言，「重放绕过配置闸门」这个缺陷在测试里是看不见的 —— 重放照样返回 200。
+        verify(alipayGatewayClient, never()).buildCashierUrl(anyString(), any(), anyString());
+        verify(paymentMapper, never()).updateById(any(Payment.class));
+    }
+
+    @Test
+    @DisplayName("配置齐备时重放不受闸门影响：仍返回首次的支付单与新签链接，不误报 PAYMENT_NOT_CONFIGURED")
+    void startPaymentReplayStaysGreenWhenConfigurationIsComplete() {
+        TravelOrder o = order(55L, OrderStatus.WAIT_PAY, PaymentStatus.UNPAID);
+        Payment p = payment(55L, PaymentStatus.PENDING);
+        LocalDateTime anchor = LocalDateTime.now().minusMinutes(5);
+        givenCashierConfigured();
+        when(orderMapper.selectById(any())).thenReturn(o);
+        when(paymentMapper.selectOne(any())).thenReturn(p);
+        givenKeyAlreadyClaimed(idempotency(p.paymentNo, anchor));
+
+        PaymentStartResponse replay = orderService.startPayment(o.orderNo, o.userId, "IDEM-PAY-0001");
+
+        assertEquals(p.paymentNo, replay.paymentNo());
+        assertEquals(anchor.plusMinutes(30), replay.expiresAt());
+        assertEquals(CASHIER_URL, replay.paymentUrl());
+        // 闸门是「读」而不是「写」：重放依旧不碰 payment 行
+        verify(paymentMapper, never()).updateById(any(Payment.class));
     }
 
     @Test

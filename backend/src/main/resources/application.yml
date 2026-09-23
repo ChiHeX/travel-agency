@@ -1,6 +1,8 @@
 spring:
   application:
     name: travel-agency-api
+  config:
+    import: optional:file:./config/application-local.properties,optional:file:./backend/config/application-local.properties
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/travel_agency?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${DB_USERNAME:travel}
@@ -36,7 +38,7 @@ app:
   jwt:
     # 必填：JWT 签名密钥。不提供默认值，缺失或过短时应用启动即失败（fail-fast），
     # 避免退回到源码里公开可见的默认值（见 CONTRIBUTING §14：禁止提交 JWT Secret）。
-    # 本地开发请通过环境变量 JWT_SECRET 注入，例如至少 32 字节的随机字符串。
+    # 本地开发可在 Git 忽略的 backend/config/application-local.properties 中配置 JWT_SECRET。
     secret: ${JWT_SECRET:}
     expire-hours: ${JWT_EXPIRE_HOURS:24}
   integrations:

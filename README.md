@@ -62,11 +62,10 @@ mvn -version
 
 ```powershell
 cd backend
-$env:JWT_SECRET = Read-Host "请输入至少 32 个 UTF-8 字节的随机 JWT 密钥"
 mvn -ntp spring-boot:run
 ```
 
-如果本机命令不是 `mvn`，请替换为对应的 Maven 可执行命令；也可以在 IDEA 中直接运行 `com.travelagency.TravelAgencyApplication`。
+本地 JWT 密钥保存在 Git 忽略的 `backend/config/application-local.properties` 中，配置项为 `JWT_SECRET`。从仓库根目录或 `backend` 目录启动均会读取该文件；新开发环境需自行创建该文件并填写至少 32 个 UTF-8 字节的随机密钥。也可以通过 `JWT_SECRET` 环境变量覆盖。若本机命令不是 `mvn`，请替换为对应的 Maven 可执行命令；也可以在 IDEA 中直接运行 `com.travelagency.TravelAgencyApplication`。
 
 API 地址：`http://localhost:8080`；健康检查：`GET /api/health`。
 
@@ -120,8 +119,7 @@ ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID
 ALIPAY_CALLBACK_SECRET
 ```
 
-`JWT_SECRET` 是后端启动必填项，必须通过运行环境注入至少 32 个 UTF-8 字节的随机强密钥；
-缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥（启动命令见上文「本地启动」）。
+JWT 签名密钥是后端启动必填项，本地可放在上述 Git 忽略的配置文件中，部署环境应通过 `JWT_SECRET` 注入。密钥必须至少有 32 个 UTF-8 字节；缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥。
 
 ### 支付宝沙箱
 

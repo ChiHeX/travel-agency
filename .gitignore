@@ -1,5 +1,6 @@
 # Java / Maven
 backend/target/
+backend/config/application-local.properties
 *.class
 *.log
 

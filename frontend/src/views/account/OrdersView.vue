@@ -87,15 +87,14 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container narrow-container page-section">
-      <div class="section-head">
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
         <div>
-          <span class="eyebrow">YOUR JOURNEYS</span>
-          <h2>我的跟团订单</h2>
+          <h1>我的订单</h1>
           <p>从下单、付款到出团履约，全程跟踪订单实时动态。</p>
         </div>
-      </div>
+      </header>
 
       <!-- Segmented Status Tabs -->
       <div class="status-tab-bar">
@@ -212,16 +211,11 @@ onMounted(load)
           />
         </div>
       </div>
-    </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.account-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
 .status-tab-bar {
   display: flex;
   align-items: center;
@@ -238,7 +232,7 @@ onMounted(load)
 
 .status-tab-btn {
   padding: 6px 14px;
-  border-radius: var(--radius-full);
+  border-radius: var(--account-radius-action);
   background: white;
   border: 1px solid var(--border-line);
   font-size: 13px;
@@ -260,7 +254,6 @@ onMounted(load)
   color: white;
   border-color: var(--brand-blue);
   font-weight: 600;
-  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.25);
 }
 
 .orders-list {
@@ -330,7 +323,7 @@ onMounted(load)
   width: 112px;
   height: 72px;
   margin-right: 16px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--account-radius-surface);
   object-fit: cover;
 }
 
@@ -413,7 +406,7 @@ onMounted(load)
   min-height: 32px;
   padding: 0 14px;
   font-size: 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--account-radius-action);
 }
 
 @media (max-width: 640px) {

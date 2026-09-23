@@ -55,15 +55,14 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container narrow-container page-section">
-      <div class="section-head">
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
         <div>
-          <span class="eyebrow">NOTIFICATIONS</span>
-          <h2>消息中心</h2>
+          <h1>消息</h1>
           <p>出团通知、支付状态、订单确认与售后提醒都会实时同步在这里。</p>
         </div>
-      </div>
+      </header>
 
       <div class="message-toolbar">
         <el-checkbox v-model="unreadOnly" :disabled="loading" @change="changePage(1)">只看未读</el-checkbox>
@@ -96,12 +95,11 @@ onMounted(load)
           </div>
         </article>
       </div>
-      <el-pagination v-if="!loading && !error && total > 10" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="10" :total="total" @current-change="changePage" />
-
       <div v-else class="empty-box">
         暂无任何通知消息，当您的订单产生状态变更时将在此呈现。
       </div>
-    </div>
+      <el-pagination v-if="!loading && !error && total > 10" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="10" :total="total" @current-change="changePage" />
+    </main>
   </div>
 </template>
 
@@ -109,11 +107,6 @@ onMounted(load)
 .message-toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .msg-head-row { flex-wrap: wrap; }
 .msg-content-wrap { min-width: 0; overflow-wrap: anywhere; }
-.account-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
 .messages-list {
   display: flex;
   flex-direction: column;

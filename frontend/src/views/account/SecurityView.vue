@@ -49,23 +49,50 @@ async function submit() {
 </script>
 
 <template>
-  <div class="container narrow-container page-section">
-    <div class="section-head"><div><h2>账号安全</h2><p>修改密码后，请使用新密码重新登录。</p></div></div>
-    <form class="admin-panel security-form" @submit.prevent="submit">
-      <fieldset :disabled="submitting">
-        <div class="form-field"><label for="current-password">原密码</label><input id="current-password" v-model="form.currentPassword" type="password" autocomplete="current-password" minlength="8" maxlength="72" required /></div>
-        <div class="form-field"><label for="new-password">新密码</label><input id="new-password" v-model="form.newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="72" required /><small>8–72 位，建议组合大小写字母、数字与符号；中文、emoji 每个字符约占 3–4 字节，整体不超过 72 字节。</small><span v-if="strength">密码强度：{{ strength }}</span></div>
-        <div class="form-field"><label for="confirm-password">确认新密码</label><input id="confirm-password" v-model="form.confirmation" type="password" autocomplete="new-password" maxlength="72" required /></div>
-        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-        <button class="primary-button" type="submit" :disabled="submitting">{{ submitting ? '正在修改…' : '保存新密码' }}</button>
-      </fieldset>
-    </form>
+  <div class="account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
+        <div>
+          <h1>账号安全</h1>
+          <p>修改密码后，请使用新密码重新登录。</p>
+        </div>
+      </header>
+      <section class="settings-section" aria-labelledby="password-heading">
+        <div class="settings-heading">
+          <h2 id="password-heading">修改密码</h2>
+          <p>请先验证原密码，再设置新密码。</p>
+        </div>
+        <form class="security-form" @submit.prevent="submit">
+          <fieldset :disabled="submitting">
+            <div class="settings-fields">
+              <div class="setting-row">
+                <div class="setting-label"><label for="current-password">原密码</label></div>
+                <div class="setting-control"><input id="current-password" v-model="form.currentPassword" type="password" autocomplete="current-password" minlength="8" maxlength="72" required /></div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label"><label for="new-password">新密码</label></div>
+                <div class="setting-control password-entry">
+                  <input id="new-password" v-model="form.newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="72" required />
+                  <p>8–72 位，且不超过 72 个 UTF-8 字节。<span v-if="strength">密码强度：{{ strength }}</span></p>
+                </div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label"><label for="confirm-password">确认新密码</label></div>
+                <div class="setting-control"><input id="confirm-password" v-model="form.confirmation" type="password" autocomplete="new-password" maxlength="72" required /></div>
+              </div>
+              <div class="settings-actions">
+                <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+                <button class="primary-button" type="submit" :disabled="submitting">{{ submitting ? '正在修改…' : '保存新密码' }}</button>
+              </div>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.security-form { max-width: 560px; }
 fieldset { border: 0; min-width: 0; }
-small { color: var(--text-secondary); }
-.form-error { color: var(--status-red); margin: 12px 0; }
+.password-entry span { margin-left: 12px; }
 </style>

@@ -114,18 +114,17 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container narrow-container page-section">
-      <div class="section-head">
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
         <div>
-          <span class="eyebrow">SAVED TRAVELERS</span>
-          <h2>常用出行人管理</h2>
+          <h1>常用出行人</h1>
           <p>提前保存出行人资料，报名下单时可一键带入；已生成历史订单不受后续修改影响。</p>
         </div>
         <button type="button" class="primary-button" @click="open()">
           + 新增出行人
         </button>
-      </div>
+      </header>
 
       <div class="admin-panel">
         <RequestState v-if="error" :error="error" @retry="load" />
@@ -164,7 +163,7 @@ onMounted(load)
           暂无常用出行人资料，点击右上角“+ 新增出行人”添加常用朋友或家人。
         </div>
       </div>
-    </div>
+    </main>
 
     <!-- Edit Dialog -->
     <el-dialog
@@ -239,11 +238,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.account-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
 .action-divider {
   color: var(--border-strong);
   margin: 0 6px;

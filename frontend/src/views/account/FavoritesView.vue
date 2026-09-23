@@ -54,15 +54,14 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container page-section">
-      <div class="section-head">
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
         <div>
-          <span class="eyebrow">SAVED EXPERIENCES</span>
-          <h2>我的心愿收藏</h2>
+          <h1>我的收藏</h1>
           <p>收藏您心仪的跟团游路线，随时查看最新团期与特惠价格。</p>
         </div>
-      </div>
+      </header>
 
       <div v-if="loading" class="favorites-grid">
         <div v-for="i in 3" :key="i" class="skeleton-card">
@@ -99,16 +98,11 @@ onMounted(load)
       <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
         <el-pagination background layout="prev, pager, next" :current-page="page" :page-size="pageSize" :total="total" @current-change="changePage" />
       </div>
-    </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.account-page {
-  background: var(--app-bg);
-  min-height: calc(100vh - 64px);
-}
-
 .favorites-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

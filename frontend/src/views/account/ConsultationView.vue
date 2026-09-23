@@ -48,17 +48,18 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container consultation-layout page-section">
-      <!-- Left: Create Consultation Form -->
-      <div class="consultation-form-col">
-        <div class="section-head">
-          <div>
-            <span class="eyebrow">HELP &amp; INQUIRY</span>
-            <h2>在线咨询客服</h2>
-            <p>工单式咨询服务，行程顾问与技术人员将直接为您解答疑问。</p>
-          </div>
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
+        <div>
+          <h1>咨询</h1>
+          <p>向客服提交问题，并查看历史答复。</p>
         </div>
+      </header>
+
+      <div class="consultation-layout">
+        <div class="consultation-form-col">
+          <div class="settings-heading"><h2>发起咨询</h2></div>
 
         <div class="admin-panel form-panel-box">
           <form class="consultation-form" @submit.prevent="submit">
@@ -85,16 +86,10 @@ onMounted(load)
             </button>
           </form>
         </div>
-      </div>
-
-      <!-- Right: History List -->
-      <div class="consultation-history-col">
-        <div class="section-head compact-head">
-          <div>
-            <span class="eyebrow">HISTORY</span>
-            <h2>历史咨询记录</h2>
-          </div>
         </div>
+
+        <div class="consultation-history-col">
+          <div class="settings-heading"><h2>历史记录</h2></div>
 
         <RequestState v-if="error" :error="error" @retry="load" />
         <div v-else-if="loading">
@@ -131,23 +126,27 @@ onMounted(load)
           暂无历史咨询记录。
         </div>
         <el-pagination v-if="!loading && !error && total > 10" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="10" :total="total" @current-change="changePage" />
+        </div>
       </div>
-    </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.account-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
 .consultation-layout {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
-  gap: 36px;
+  gap: 28px;
   align-items: flex-start;
 }
+
+.settings-heading {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #d9d9df;
+}
+
+.settings-heading h2 { font-size: 18px; }
 
 .form-panel-box {
   padding: 24px;

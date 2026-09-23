@@ -34,8 +34,14 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="container narrow-container page-section">
-    <div class="section-head"><div><h2>我的评价</h2><p>按已完成行程分页查看评价，也可以为尚未评价的行程分享体验。</p></div></div>
+  <div class="account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
+        <div>
+          <h1>我的评价</h1>
+          <p>按已完成行程分页查看评价，也可以为尚未评价的行程分享体验。</p>
+        </div>
+      </header>
     <RequestState :loading="loading" :error="error" :empty="!rows.length" empty-text="暂无已完成行程，行程结束后可在这里评价。" @retry="load">
       <div class="review-list">
         <article v-for="row in rows" :key="row.order.orderNo" class="admin-panel">
@@ -51,6 +57,7 @@ onMounted(load)
       </div>
     </RequestState>
     <el-pagination v-if="!loading && !error && total > size" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="size" :total="total" @current-change="changePage" />
+    </main>
   </div>
 </template>
 

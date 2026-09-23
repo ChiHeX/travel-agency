@@ -15,7 +15,7 @@ const loginLocation = computed(() => ({
   query: route.path.startsWith('/auth/') ? route.query : { redirect: route.fullPath }
 }))
 const unreadCount = ref(0)
-const sheetSize = ref(['latest-guides', 'city-guides', 'article-publishers', 'publisher-guides', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
+const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
 let dragStart = null
 let sheetDragged = false
 
@@ -62,8 +62,8 @@ provide('openDrawer', openDrawer)
 provide('isDrawerOpen', isDrawerOpen)
 
 const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF') || auth.hasRole('GUIDE'))
-const guideViews = ['articles', 'latest-guides', 'city-guides', 'article-publishers', 'publisher-guides', 'article-detail', 'attraction-detail']
-const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', ...guideViews].includes(route.name))
+const guideViews = ['guides']
+const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', ...guideViews].includes(route.name))
 
 async function refreshUnread() {
   if (auth.isLoggedIn) {
@@ -76,7 +76,7 @@ provide('refreshUnread', refreshUnread)
 watch(() => auth.isLoggedIn, refreshUnread, { immediate: true })
 watch(() => route.path, () => {
   isDrawerOpen.value = route.name !== 'home'
-  sheetSize.value = ['latest-guides', 'city-guides', 'article-publishers', 'publisher-guides', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
+  sheetSize.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
   refreshUnread()
 })
 
@@ -89,7 +89,7 @@ function handleTabClick(routeName) {
 
   const isCurrentActive =
     (routeName === 'search' && route.name === 'search') ||
-    (routeName === 'articles' && guideViews.includes(route.name)) ||
+    (routeName === 'guides' && guideViews.includes(route.name)) ||
     (routeName === 'routes' && (route.name === 'routes' || route.name === 'route-detail'))
 
   if (isCurrentActive) {
@@ -129,7 +129,7 @@ function logout() {
       <RouterLink to="/" @click="goHome">行迹</RouterLink>
       <button @click="handleTabClick('search')">搜索</button>
       <button @click="handleTabClick('routes')">线路</button>
-      <button @click="handleTabClick('articles')">指南</button>
+      <button @click="handleTabClick('guides')">指南</button>
       <RouterLink :to="auth.isLoggedIn ? '/account/profile' : loginLocation">{{ auth.isLoggedIn ? '我的' : '登录' }}</RouterLink>
     </nav>
     <!-- ==========================================================================
@@ -179,13 +179,13 @@ function logout() {
           <span v-if="isSidebarExpanded" class="tab-title">搜索</span>
         </button>
 
-        <!-- Tab 2: 指南 (Articles / Guides) -->
+        <!-- Tab 2: 指南 -->
         <button
           type="button"
           class="rail-tab-item"
           :class="{ active: isDrawerOpen && guideViews.includes(route.name) }"
           title="指南"
-          @click="handleTabClick('articles')"
+          @click="handleTabClick('guides')"
         >
           <div class="tab-icon-box">
             <AppIcon name="guides" size="18" />
@@ -545,7 +545,7 @@ function logout() {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: #5856d6;
+  background: var(--theme-blue);
   color: white;
   display: grid;
   place-items: center;

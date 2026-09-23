@@ -9,11 +9,8 @@ import RouteDetailView from '@/views/public/RouteDetailView.vue'
 import LoginView from '@/views/public/LoginView.vue'
 import RegisterView from '@/views/public/RegisterView.vue'
 import ArticlesView from '@/views/public/ArticlesView.vue'
-import LatestGuidesView from '@/views/public/LatestGuidesView.vue'
-import CityGuidesView from '@/views/public/CityGuidesView.vue'
+import GuidesView from '@/views/public/GuidesView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
-import GuidePublishersView from '@/views/public/GuidePublishersView.vue'
-import PublisherGuidesView from '@/views/public/PublisherGuidesView.vue'
 import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
 import OrderCreateView from '@/views/account/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
@@ -46,11 +43,12 @@ const routes = [
       { path: 'search', name: 'search', component: SearchView },
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
+      { path: 'guides', name: 'guides', component: GuidesView },
       { path: 'articles', name: 'articles', component: ArticlesView },
-      { path: 'articles/latest', name: 'latest-guides', component: LatestGuidesView },
-      { path: 'articles/cities/:city', name: 'city-guides', component: CityGuidesView },
-      { path: 'articles/publishers', name: 'article-publishers', component: GuidePublishersView },
-      { path: 'articles/publishers/:id', name: 'publisher-guides', component: PublisherGuidesView },
+      { path: 'articles/latest', redirect: { name: 'articles' } },
+      { path: 'articles/cities/:city', redirect: (to) => ({ name: 'articles', query: { destination: to.params.city } }) },
+      { path: 'articles/publishers', redirect: { name: 'articles' } },
+      { path: 'articles/publishers/:id', redirect: { name: 'articles' } },
       { path: 'articles/:id', name: 'article-detail', component: ArticleDetailView },
       { path: 'attractions/:id', name: 'attraction-detail', component: AttractionDetailView },
       { path: 'auth/login', name: 'login', component: LoginView },

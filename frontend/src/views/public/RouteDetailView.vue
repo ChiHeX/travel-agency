@@ -203,6 +203,13 @@ onMounted(load)
           </div>
         </div>
 
+        <div class="sheet-section">
+          <RouterLink :to="{ name: 'articles', query: { destination: data.route.destination } }" class="article-entry">
+            <span><strong>目的地攻略</strong><small>了解{{ data.route.destination }}的景点与旅行建议</small></span>
+            <AppIcon name="chevron-right" size="18" />
+          </RouterLink>
+        </div>
+
         <!-- Departures Section -->
         <div class="sheet-section">
           <div class="section-title-row">
@@ -597,6 +604,23 @@ onMounted(load)
 .route-overview-section {
   padding: 2px 2px 0;
 }
+
+.article-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--theme-blue);
+}
+
+.article-entry strong,
+.article-entry small { display: block; }
+.article-entry strong { color: var(--text-primary); font-size: 13px; }
+.article-entry small { margin-top: 3px; color: var(--text-secondary); font-size: 11px; }
 
 .route-overview-head {
   display: flex;

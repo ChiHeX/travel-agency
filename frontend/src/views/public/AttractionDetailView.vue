@@ -8,7 +8,7 @@ import RequestState from '@/components/RequestState.vue'
 const route = useRoute()
 const router = useRouter()
 const place = ref(null)
-const relatedGuides = ref([])
+const relatedArticles = ref([])
 const nearbyPlaces = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -22,6 +22,7 @@ const mapUrl = computed(() => hasCoordinates.value
 async function load() {
   loading.value = true
   error.value = ''
+  relatedArticles.value = []
   try {
     let page = 1
     let pageResult
@@ -35,8 +36,12 @@ async function load() {
 
     if (!place.value) throw new Error('未找到该地点，可能已停止公开展示')
     nearbyPlaces.value = collected.filter((item) => String(item.id) !== String(place.value.id)).slice(0, 6)
-    const guideResult = await contentApi.articles({ page: 1, size: 100, destination: place.value.city })
-    relatedGuides.value = (guideResult?.items || []).filter((item) => item.attractionId == null || String(item.attractionId) === String(place.value.id))
+    try {
+      const articleResult = await contentApi.articles({ page: 1, size: 100, destination: place.value.city })
+      relatedArticles.value = (articleResult?.items || []).filter((item) => String(item.attractionId) === String(place.value.id))
+    } catch (_) {
+      relatedArticles.value = []
+    }
   } catch (cause) {
     error.value = cause.message || '地点详情加载失败'
   } finally {
@@ -84,15 +89,16 @@ onMounted(load)
           </div>
         </section>
 
-        <section v-if="relatedGuides.length">
-          <h2>收录在指南中</h2>
-          <div class="horizontal-list">
-            <RouterLink v-for="guide in relatedGuides" :key="guide.id" :to="{ name: 'article-detail', params: { id: guide.id } }" class="guide-tile">
+        <section>
+          <h2>旅行攻略</h2>
+          <div v-if="relatedArticles.length" class="horizontal-list">
+            <RouterLink v-for="article in relatedArticles" :key="article.id" :to="{ name: 'article-detail', params: { id: article.id } }" class="guide-tile">
               <div class="tile-fallback"><AppIcon name="guides" size="25" /></div>
-              <img v-if="guide.coverUrl && !failedImages.has(String(guide.id))" :src="guide.coverUrl" :alt="guide.title" @error="markImageFailed(guide.id)" />
-              <strong>{{ guide.title }}</strong><small>{{ guide.authorName }}</small>
+              <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
+              <strong>{{ article.title }}</strong><small>{{ article.authorName }}</small>
             </RouterLink>
           </div>
+          <RouterLink :to="{ name: 'articles', query: { destination: place.city } }" class="more-articles">查看{{ place.city }}的攻略 <AppIcon name="chevron-right" size="16" /></RouterLink>
         </section>
 
         <section v-if="nearbyPlaces.length">
@@ -130,6 +136,7 @@ main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0
 .about-card .muted { color: #8e8e93; }
 .horizontal-list { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scrollbar-width: none; }.horizontal-list::-webkit-scrollbar { display: none; }
 .guide-tile { position: relative; overflow: hidden; border-radius: 17px; background: white; }.guide-tile img, .tile-fallback { width: 100%; height: 130px; object-fit: cover; }.guide-tile img { position: absolute; inset: 0 0 auto; }.tile-fallback { display: grid; place-items: center; color: #3184aa; background: #bfe7ef; }.guide-tile strong, .guide-tile small { position: relative; display: block; margin: 11px 13px 0; }.guide-tile strong { font-size: 15px; line-height: 1.2; }.guide-tile small { margin-top: 3px; margin-bottom: 12px; color: #8e8e93; }
+.more-articles { display: inline-flex; align-items: center; gap: 3px; margin-top: 12px; color: var(--theme-blue); font-size: 13px; font-weight: 700; }
 .nearby-list { grid-auto-columns: 60%; }.nearby-tile { min-height: 130px; padding: 17px; border-radius: 17px; display: grid; align-content: start; background: white; }.nearby-tile > span { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: white; background: #36c86c; }.nearby-tile strong { margin-top: 14px; font-size: 16px; line-height: 1.15; }.nearby-tile small { margin-top: 4px; color: #8e8e93; }
 .details-card > div { padding: 15px 20px; border-bottom: 1px solid #e5e5e8; }.details-card > div:last-child { border-bottom: 0; }.details-card small { color: #8e8e93; }.details-card p { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 15px; }
 </style>

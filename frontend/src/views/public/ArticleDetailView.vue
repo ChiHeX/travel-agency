@@ -27,10 +27,19 @@ async function load() {
   places.value = []
   try {
     article.value = await contentApi.article(route.params.id)
-    const city = article.value.city || article.value.destination
-    if (city) {
+    if (article.value.attractionId) {
       try {
-        places.value = (await contentApi.attractions({ page: 1, size: 100, city }))?.items || []
+        let page = 1
+        let result
+        do {
+          result = await contentApi.attractions({ page, size: 100 })
+          const matched = (result?.items || []).find((item) => String(item.id) === String(article.value.attractionId))
+          if (matched) {
+            places.value = [matched]
+            break
+          }
+          page += 1
+        } while (page <= (result?.totalPages || 1))
       } catch (_) {
         places.value = []
       }
@@ -52,15 +61,15 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="guide-detail">
+  <div class="article-detail">
     <RequestState v-if="error" :error="error" @retry="load" />
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="10" animated /></div>
     <template v-else-if="article">
       <header class="detail-hero" :class="{ 'without-cover': !article.coverUrl || heroImageFailed }">
         <img v-if="article.coverUrl && !heroImageFailed" :src="article.coverUrl" :alt="article.title" @error="heroImageFailed = true" />
         <span class="hero-overlay"></span>
-        <button type="button" class="floating-button back" aria-label="返回指南" @click="router.push({ name: 'articles' })"><AppIcon name="chevron-left" size="20" /></button>
-        <button type="button" class="floating-button share" aria-label="分享指南" @click="share"><AppIcon name="share" size="19" /></button>
+        <button type="button" class="floating-button back" aria-label="返回攻略列表" @click="router.push({ name: 'articles', query: article.destination ? { destination: article.destination } : {} })"><AppIcon name="chevron-left" size="20" /></button>
+        <button type="button" class="floating-button share" aria-label="分享攻略" @click="share"><AppIcon name="share" size="19" /></button>
         <div class="hero-content">
           <small>{{ article.authorName }}</small>
           <h1>{{ article.title }}</h1>
@@ -69,11 +78,11 @@ onMounted(load)
       </header>
 
       <div class="publisher-bar">
-        <RouterLink :to="{ name: 'publisher-guides', params: { id: article.authorId }, query: { name: article.authorName } }" class="publisher-link">
+        <div class="publisher-link">
           <span class="publisher-avatar">{{ article.authorName.slice(0, 1) }}</span>
-          <span><strong>{{ article.authorName }}</strong><small>{{ article.destination || article.city || '旅行指南' }} · {{ formatDate(article.publishedAt) }}</small></span>
-        </RouterLink>
-        <button type="button" class="source-button" @click="router.push({ name: 'publisher-guides', params: { id: article.authorId }, query: { name: article.authorName } })"><AppIcon name="compass" size="17" />主页</button>
+          <span><strong>{{ article.authorName }}</strong><small>{{ article.destination || article.city || '旅行攻略' }} · {{ formatDate(article.publishedAt) }}</small></span>
+        </div>
+        <button type="button" class="source-button" @click="router.push({ name: 'articles', query: article.destination ? { destination: article.destination } : {} })"><AppIcon name="compass" size="17" />更多攻略</button>
       </div>
 
       <main class="detail-content">
@@ -81,10 +90,9 @@ onMounted(load)
           <p v-for="(paragraph, index) in paragraphs" :key="index">{{ paragraph }}</p>
         </section>
 
-        <section class="places-section">
+        <section v-if="article.attractionId" class="places-section">
           <div class="section-heading">
-            <div><small>{{ article.city || article.destination || '目的地' }}</small><h2>本指南收录的地点</h2></div>
-            <span>{{ places.length }} 个地点</span>
+            <div><small>{{ article.city || article.destination || '目的地' }}</small><h2>关联景点</h2></div>
           </div>
           <div v-if="places.length" class="place-list">
             <RouterLink v-for="place in places" :key="place.id" :to="{ name: 'attraction-detail', params: { id: place.id }, query: { city: place.city } }" class="place-card">
@@ -98,11 +106,11 @@ onMounted(load)
               <AppIcon name="chevron-right" size="18" color="#8e8e93" />
             </RouterLink>
           </div>
-          <RequestState v-else empty empty-text="该指南暂未关联可展示地点" />
+          <RequestState v-else empty empty-text="关联景点暂不可查看" />
         </section>
 
         <RouterLink :to="{ name: 'routes', query: { keyword: article.destination || article.city || '' } }" class="route-action">
-          <span><strong>把指南变成一次旅程</strong><small>查看相关跟团线路</small></span>
+          <span><strong>探索相关线路</strong><small>查看目的地跟团游</small></span>
           <AppIcon name="chevron-right" size="18" />
         </RouterLink>
       </main>
@@ -112,7 +120,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.guide-detail { position: relative; height: 100%; overflow-y: auto; color: #121212; background: #dff4fb; }
+.article-detail { position: relative; height: 100%; overflow-y: auto; color: #121212; background: #dff4fb; }
 .loading-block { padding: 28px 22px; }
 .detail-hero { position: relative; min-height: 430px; display: flex; align-items: flex-end; overflow: hidden; color: white; background: #17384a; }
 .detail-hero.without-cover { min-height: 330px; background: linear-gradient(150deg,#17384a,#4b8da7 58%,#b8d8cb); }

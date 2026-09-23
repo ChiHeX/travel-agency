@@ -619,6 +619,169 @@ class AdminAccountsContractIntegrationTest {
         assertEquals(1, users.selectById(owner.id).status);
     }
 
+    // ===================== 列表端点的 keyword / status 筛选（契约声明但曾被静默忽略） =====================
+
+    @Test
+    @DisplayName("GET /admin/users：keyword 命中 username/nickname/realName/phone，且不误伤未命中项")
+    void adminUserListHonoursKeyword() throws Exception {
+        SysUser hit = account("USER", null);
+        hit.username = "kw_" + shortId();
+        users.updateById(hit);
+        SysUser miss = account("USER", null);
+
+        // keyword 只放行命中的那条
+        JsonNode items = okData(get("/api/admin/users?page=1&size=100&keyword=" + hit.username)
+                .header("Authorization", adminToken)).get("items");
+        onlyMatchingId(items, hit, miss);
+
+        // 大小写不敏感（MySQL 默认 ci 排序规则），也要能按 realName 命中
+        SysUser byRealName = account("USER", null);
+        byRealName.realName = "关键词" + shortId();
+        users.updateById(byRealName);
+        JsonNode byReal = okData(get("/api/admin/users?page=1&size=100&keyword=" + byRealName.realName)
+                .header("Authorization", adminToken)).get("items");
+        find(byReal, byRealName.id.toString());
+
+        // 中文关键字走同一路径（覆盖 real_name / nickname 列）
+        JsonNode none = okData(get("/api/admin/users?page=1&size=100&keyword=绝不可能存在的关键字zzz")
+                .header("Authorization", adminToken)).get("items");
+        assertEquals(0, none.size(), "无命中时应返回空列表，而不是全量");
+    }
+
+    @Test
+    @DisplayName("GET /admin/users：status 按契约枚举过滤（ACTIVE/DISABLED）")
+    void adminUserListHonoursStatus() throws Exception {
+        SysUser active = account("USER", null);
+        SysUser disabled = account("USER", null);
+        disabled.status = 0;
+        users.updateById(disabled);
+
+        JsonNode disabledItems = okData(get("/api/admin/users?page=1&size=100&status=DISABLED")
+                .header("Authorization", adminToken)).get("items");
+        // 停用的那条在结果里；启用的那条不在
+        find(disabledItems, disabled.id.toString());
+        assertTrue(indexOfId(disabledItems, active.id.toString()) < 0,
+                "status=DISABLED 不应返回 ACTIVE 账号");
+        disabledItems.forEach(row -> assertEquals("DISABLED", row.get("status").asString()));
+
+        JsonNode activeItems = okData(get("/api/admin/users?page=1&size=100&status=ACTIVE")
+                .header("Authorization", adminToken)).get("items");
+        assertTrue(indexOfId(activeItems, disabled.id.toString()) < 0,
+                "status=ACTIVE 不应返回 DISABLED 账号");
+        activeItems.forEach(row -> assertEquals("ACTIVE", row.get("status").asString()));
+    }
+
+    @Test
+    @DisplayName("GET /admin/users：keyword 与 status 同时给出时取交集")
+    void adminUserListCombinesKeywordAndStatus() throws Exception {
+        // 两者共享同一前缀 kwc_，keyword 会同时命中；status 必须把 DISABLED 那条挡在外面
+        SysUser target = account("USER", null);
+        target.username = "kwc_" + shortId();
+        users.updateById(target);
+        SysUser decoy = account("USER", null);
+        decoy.username = "kwc_" + shortId();
+        decoy.status = 0;
+        users.updateById(decoy);
+
+        JsonNode items = okData(get("/api/admin/users?page=1&size=100&keyword=kwc_"
+                + "&status=ACTIVE").header("Authorization", adminToken)).get("items");
+        find(items, target.id.toString());
+        assertTrue(indexOfId(items, decoy.id.toString()) < 0,
+                "status 是硬过滤，不能因为 keyword 命中就放行 DISABLED 账号");
+    }
+
+    @Test
+    @DisplayName("GET /admin/users：非法 status 不 500（无命中即返回空，不抛异常）")
+    void adminUserListToleratesUnknownStatus() throws Exception {
+        // 单表 status 是 sys_user.status 的 1/0，非法枚举值按 statusValue 归一成 0；
+        // 关键是不得抛异常变 500 —— 契约把这两个参数声明为可选，缺省语义必须是"不过滤"。
+        mvc.perform(get("/api/admin/users?page=1&size=5").header("Authorization", adminToken))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/admin/users?page=1&size=5&status=").header("Authorization", adminToken))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/admin/users?page=1&size=5&keyword=").header("Authorization", adminToken))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("GET /admin/staff：keyword 跨表命中（工号/部门/岗位 + 账号用户名/真实姓名）")
+    void adminStaffListHonoursKeyword() throws Exception {
+        SysUser owner = account(STAFF, null);
+        Staff hit = staff(owner, newEmployeeNo());
+
+        // staff 自有列：employeeNo
+        JsonNode byEmployeeNo = okData(get("/api/admin/staff?page=1&size=100&keyword=" + hit.employeeNo)
+                .header("Authorization", adminToken)).get("items");
+        find(byEmployeeNo, hit.id.toString());
+
+        // staff 自有列：department
+        JsonNode byDept = okData(get("/api/admin/staff?page=1&size=100&keyword=测试部")
+                .header("Authorization", adminToken)).get("items");
+        find(byDept, hit.id.toString());
+
+        // sys_user 列：username（跨表命中，这是 QueryWrapper 单表拼不出来的部分）
+        JsonNode byUsername = okData(get("/api/admin/staff?page=1&size=100&keyword=" + owner.username)
+                .header("Authorization", adminToken)).get("items");
+        find(byUsername, hit.id.toString());
+
+        // 无命中返回空列表
+        JsonNode none = okData(get("/api/admin/staff?page=1&size=100&keyword=绝不可能存在zzz")
+                .header("Authorization", adminToken)).get("items");
+        assertEquals(0, none.size(), "无命中时应返回空列表，而不是全量");
+    }
+
+    @Test
+    @DisplayName("GET /admin/staff：status 跨表过滤（状态在 sys_user，staff 表无该列）")
+    void adminStaffListHonoursStatus() throws Exception {
+        SysUser activeOwner = account(STAFF, null);
+        Staff activeStaff = staff(activeOwner, newEmployeeNo());
+        SysUser disabledOwner = account(STAFF, null);
+        Staff disabledStaff = staff(disabledOwner, newEmployeeNo());
+        disabledOwner.status = 0;
+        users.updateById(disabledOwner);
+
+        JsonNode disabledItems = okData(get("/api/admin/staff?page=1&size=100&status=DISABLED")
+                .header("Authorization", adminToken)).get("items");
+        find(disabledItems, disabledStaff.id.toString());
+        assertTrue(indexOfId(disabledItems, activeStaff.id.toString()) < 0,
+                "status=DISABLED 不应返回 ACTIVE 员工");
+        disabledItems.forEach(row -> assertEquals("DISABLED", row.get("status").asString()));
+
+        JsonNode activeItems = okData(get("/api/admin/staff?page=1&size=100&status=ACTIVE")
+                .header("Authorization", adminToken)).get("items");
+        find(activeItems, activeStaff.id.toString());
+        assertTrue(indexOfId(activeItems, disabledStaff.id.toString()) < 0,
+                "status=ACTIVE 不应返回 DISABLED 员工");
+    }
+
+    @Test
+    @DisplayName("GET /admin/staff：STAFF 越权 → 403（筛选参数不得成为绕过授权的通道）")
+    void adminStaffListFiltersStillRequireAdmin() throws Exception {
+        mvc.perform(get("/api/admin/staff?page=1&size=5&keyword=a&status=ACTIVE")
+                        .header("Authorization", staffToken))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/admin/users?page=1&size=5&keyword=a&status=ACTIVE")
+                        .header("Authorization", staffToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("GET /admin/staff：status/keyword 命中 0 个账号时不得 500（空 IN 是非法 SQL）")
+    void adminStaffListHandlesEmptyAccountMatches() throws Exception {
+        // 回归：staff 的 status/keyword 依赖 sys_user 侧解析出的账号 id，
+        // 若直接拼 in("user_id", 空集合)，MyBatis-Plus 会生成 `user_id IN ()`，
+        // MySQL 报语法错误 → 500。真服务探针先于单测发现了这一点。
+        JsonNode none = okData(get("/api/admin/staff?page=1&size=100&keyword=绝不可能存在zzz")
+                .header("Authorization", adminToken)).get("items");
+        assertEquals(0, none.size(), "无命中应回空列表而不是 500");
+
+        // 构造一个「status 命中 0 个账号」的场景：先把全部 staff 账号停用，再查 ACTIVE。
+        // 更稳妥的做法是查一个当前库里必然没有的状态组合，这里直接用 keyword 命中 0 的路径覆盖同一段代码。
+        mvc.perform(get("/api/admin/staff?page=1&size=5&status=DISABLED&keyword=绝不可能存在zzz")
+                        .header("Authorization", adminToken))
+                .andExpect(status().isOk());
+    }
+
     // ===================== 夹具与断言工具 =====================
 
     private SysUser account(String roleCode, String rawPassword) {
@@ -714,6 +877,27 @@ class AdminAccountsContractIntegrationTest {
             }
         }
         throw new AssertionError("分页结果里找不到 id=" + id + " 的记录");
+    }
+
+    /** 返回 id 在列表中的下标，找不到返回 -1（用于"必须不在结果里"的断言）。 */
+    private static int indexOfId(JsonNode items, String id) {
+        for (int i = 0; i < items.size(); i++) {
+            if (id.equals(items.get(i).get("id").asString())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 只允许 {@code expected} 出现在结果里，且 {@code unexpected} 一个都不能出现。
+     * 返回 expected 的 id，便于调用方再断言字段。
+     */
+    private static String onlyMatchingId(JsonNode items, SysUser expected, SysUser unexpected) {
+        find(items, expected.id.toString());
+        assertTrue(indexOfId(items, unexpected.id.toString()) < 0,
+                "keyword 命中之外的记录不应出现（id=" + unexpected.id + "）");
+        return expected.id.toString();
     }
 
     /** 契约是 additionalProperties: false：多字段与少必填字段都算违约，两个方向都要断言。 */

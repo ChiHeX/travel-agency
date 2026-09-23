@@ -449,14 +449,25 @@ public class AdminController {
      * 契约 required 的 {@code roles} 整个缺失、头像字段名还是 {@code avatar}（契约是 {@code avatarUrl}）。
      * 前端 {@code AdminUsersView} 用 {@code row.status === 'ACTIVE'} 判断状态，整数永远不相等，
      * 于是所有账号都被渲染成「已冻结」。这里改为复用 {@link UserView}（与契约 User 一一对应）。</p>
+     *
+     * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}；
+     * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
+     * 与本文件 {@code /admin/guides}、{@code /admin/attractions} 等同族端点的口径也不一致。
+     * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0。</p>
      */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<UserView>> users(
             @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size) {
-        Page<SysUser> result = userMapper.selectPage(pageOf(page, size),
-                new QueryWrapper<SysUser>().eq("deleted", 0).orderByDesc("created_at"));
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status) {
+        QueryWrapper<SysUser> query = new QueryWrapper<SysUser>().eq("deleted", 0);
+        if (status != null && !status.isBlank()) {
+            query.eq("status", statusValue(status.trim()));
+        }
+        appendKeyword(query, keyword, "username", "nickname", "real_name", "phone");
+        Page<SysUser> result = userMapper.selectPage(pageOf(page, size), query.orderByDesc("created_at"));
         Map<Long, Set<String>> roles = authService.rolesOfAll(
                 result.getRecords().stream().map(user -> user.id).toList());
         List<UserView> records = result.getRecords().stream()
@@ -509,14 +520,23 @@ public class AdminController {
      * <p>此前直出 {@link Staff} 实体：契约 required 的 {@code username}、{@code realName}、
      * {@code status} 都取自 {@code sys_user}，实体里一个都没有 —— 既缺必填字段，
      * 也违反「Controller 不得直接暴露 Entity」（docs/API.md §14）。</p>
+     *
+     * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}，
+     * 早先只接前两个，多传的筛选参数被静默忽略。这里两个参数都<b>跨表</b>：
+     * {@code username}/{@code realName}/{@code status} 在 {@code sys_user}，
+     * {@code employeeNo}/{@code department}/{@code position} 在 {@code staff}。
+     * MyBatis-Plus 的 {@code QueryWrapper} 单表拼不出跨表 OR，因此先在 {@code sys_user} 侧
+     * 解析出命中的账号 id，再据此约束 {@code staff} 查询；两个条件同时给出时取交集。</p>
      */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<StaffView>> staff(
             @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size) {
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status) {
         Page<Staff> result = staffMapper.selectPage(pageOf(page, size),
-                new QueryWrapper<Staff>().orderByDesc("created_at"));
+                staffFilter(keyword, status).orderByDesc("created_at"));
         Map<Long, SysUser> accounts = accountsOf(result.getRecords().stream().map(staff -> staff.userId).toList());
         List<StaffView> items = result.getRecords().stream()
                 .map(staff -> StaffView.from(staff, accounts.get(staff.userId)))
@@ -699,6 +719,57 @@ public class AdminController {
     /** 契约 AccountStatus（ACTIVE/DISABLED）→ {@code sys_user.status}（1/0）；非法值已被 DTO 约束挡在 422。 */
     private static int statusValue(String status) {
         return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
+    }
+
+    /**
+     * 拼 {@code GET /admin/staff} 的筛选条件（契约的 {@code keyword} + {@code status}）。
+     *
+     * <p>两个参数都跨表：{@code status} 只在 {@code sys_user}，
+     * {@code keyword} 则同时覆盖 {@code sys_user}（username/real_name/phone）与
+     * {@code staff}（employee_no/department/position）。{@code QueryWrapper} 是单表的，
+     * 拼不出跨表 OR，所以这里分两步：</p>
+     * <ol>
+     *   <li>先在 {@code sys_user} 侧解析出命中的账号 id 集合（status 与账号字段的 keyword 一起做）；</li>
+     *   <li>再用一个嵌套 {@code and(...)} 把「staff 自有字段 like」与「user_id in (命中的账号)」OR 起来。</li>
+     * </ol>
+     * <p>{@code status} 是硬过滤（AND 在最外层），{@code keyword} 是宽匹配（内层 OR）——
+     * 两者同时给出时语义为「状态满足 <b>且</b> 任一字段含关键字」，与其它列表端点一致。</p>
+     */
+    private QueryWrapper<Staff> staffFilter(String keyword, String status) {
+        QueryWrapper<Staff> query = new QueryWrapper<>();
+        boolean hasStatus = status != null && !status.isBlank();
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+        if (!hasStatus && !hasKeyword) {
+            return query;
+        }
+        QueryWrapper<SysUser> accountQuery = new QueryWrapper<SysUser>().eq("deleted", 0);
+        if (hasStatus) {
+            accountQuery.eq("status", statusValue(status.trim()));
+        }
+        if (hasKeyword) {
+            appendKeyword(accountQuery, keyword, "username", "real_name", "phone");
+        }
+        List<Long> accountIds = userMapper.selectList(accountQuery).stream()
+                .map(user -> user.id).toList();
+        if (hasKeyword) {
+            String kw = keyword.trim();
+            if (accountIds.isEmpty()) {
+                // 没有账号命中：只按 staff 自有列匹配。此处绝不能写成 in("user_id", 空集合)，
+                // MyBatis-Plus 会拼出 `user_id IN ()` 这种 MySQL 语法错误 → 500。
+                query.and(w -> w.like("employee_no", kw).or().like("department", kw).or().like("position", kw));
+            } else {
+                query.and(w -> w.like("employee_no", kw).or().like("department", kw).or().like("position", kw)
+                        .or().in("user_id", accountIds));
+            }
+        } else {
+            if (accountIds.isEmpty()) {
+                // status 命中 0 个账号 —— 结果必然为空。用恒假条件表达，而不是 in(空集合)。
+                query.apply("1 = 0");
+            } else {
+                query.in("user_id", accountIds);
+            }
+        }
+        return query;
     }
 
     /** 锁行取用户：并发改状态时不拿旧快照去覆盖刚写入的结果。不存在或已软删 → 404。 */

@@ -453,7 +453,8 @@ public class AdminController {
      * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}；
      * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
      * 与本文件 {@code /admin/guides}、{@code /admin/attractions} 等同族端点的口径也不一致。
-     * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0。</p>
+     * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
+     * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。</p>
      */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
@@ -464,7 +465,7 @@ public class AdminController {
             @RequestParam(required = false) String status) {
         QueryWrapper<SysUser> query = new QueryWrapper<SysUser>().eq("deleted", 0);
         if (status != null && !status.isBlank()) {
-            query.eq("status", statusValue(status.trim()));
+            query.eq("status", statusValue(status));
         }
         appendKeyword(query, keyword, "username", "nickname", "real_name", "phone");
         Page<SysUser> result = userMapper.selectPage(pageOf(page, size), query.orderByDesc("created_at"));
@@ -525,8 +526,8 @@ public class AdminController {
      * 早先只接前两个，多传的筛选参数被静默忽略。这里两个参数都<b>跨表</b>：
      * {@code username}/{@code realName}/{@code status} 在 {@code sys_user}，
      * {@code employeeNo}/{@code department}/{@code position} 在 {@code staff}。
-     * MyBatis-Plus 的 {@code QueryWrapper} 单表拼不出跨表 OR，因此先在 {@code sys_user} 侧
-     * 解析出命中的账号 id，再据此约束 {@code staff} 查询；两个条件同时给出时取交集。</p>
+     * 跨表条件交给 {@link #staffFilter(String, String)} 里的 {@code EXISTS} 子查询在库内完成，
+     * 筛选与分页仍是同一条 SQL；{@code status} 与 {@code keyword} 同时给出时取交集。</p>
      */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
@@ -716,58 +717,73 @@ public class AdminController {
         return user == null ? null : user.username;
     }
 
-    /** 契约 AccountStatus（ACTIVE/DISABLED）→ {@code sys_user.status}（1/0）；非法值已被 DTO 约束挡在 422。 */
+    /**
+     * 契约 AccountStatus（{@code ACTIVE}/{@code DISABLED}）→ {@code sys_user.status}（1/0）。
+     *
+     * <p>枚举之外的取值必须<b>拒绝</b>，不能落进默认分支：早先写成
+     * {@code ACTIVE.equals(status) ? 1 : 0}，于是任何非 ACTIVE 的非空值（拼错的 {@code DISABLE}、
+     * 小写 {@code active}、别的枚举）都被静默当成 0 = 停用 —— 调用方以为在按状态筛选，
+     * 实际拿到的却是另一批数据。契约把这个查询参数声明为 {@code AccountStatus} 枚举，
+     * 按请求校验规则回 422，与 {@code AdminRouteService#page} 对 {@code RouteStatus} 的口径一致
+     * （{@code GET /admin/routes?status=NOT_A_STATUS} → 422 {@code VALIDATION_ERROR}）。</p>
+     *
+     * <p>请求体路径（{@code AccountStatusUpdateRequest}）已由 {@code @Pattern} 挡在 422，走不到这里；
+     * 缺省与空串由调用方判空后跳过，语义是「不过滤」。</p>
+     */
     private static int statusValue(String status) {
-        return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
+        String value = status == null ? "" : status.trim();
+        if (AccountStatus.ACTIVE.equals(value)) {
+            return 1;
+        }
+        if (AccountStatus.DISABLED.equals(value)) {
+            return 0;
+        }
+        throw new BusinessException(422, "VALIDATION_ERROR", "账号状态只能是 ACTIVE 或 DISABLED");
     }
 
     /**
      * 拼 {@code GET /admin/staff} 的筛选条件（契约的 {@code keyword} + {@code status}）。
      *
-     * <p>两个参数都跨表：{@code status} 只在 {@code sys_user}，
+     * <p>两个参数都<b>跨表</b>：{@code status} 只在 {@code sys_user}，
      * {@code keyword} 则同时覆盖 {@code sys_user}（username/real_name/phone）与
      * {@code staff}（employee_no/department/position）。{@code QueryWrapper} 是单表的，
-     * 拼不出跨表 OR，所以这里分两步：</p>
-     * <ol>
-     *   <li>先在 {@code sys_user} 侧解析出命中的账号 id 集合（status 与账号字段的 keyword 一起做）；</li>
-     *   <li>再用一个嵌套 {@code and(...)} 把「staff 自有字段 like」与「user_id in (命中的账号)」OR 起来。</li>
-     * </ol>
-     * <p>{@code status} 是硬过滤（AND 在最外层），{@code keyword} 是宽匹配（内层 OR）——
-     * 两者同时给出时语义为「状态满足 <b>且</b> 任一字段含关键字」，与其它列表端点一致。</p>
+     * 所以跨表部分交给 {@code EXISTS} 子查询在库内完成：筛选与分页仍是同一条 SQL，
+     * 不把命中的账号 id 拉回 Java 再拼 {@code IN (…)}（那会让 SQL 参数与代价随账号总数增长）。</p>
+     *
+     * <p><b>为什么 status 必须是独立的 AND 条件</b>：早先的实现先把命中的账号 id 查回 Java，
+     * 再把它与 staff 自有列的 LIKE 放进<b>同一个 OR 组</b>：
+     * {@code (employee_no LIKE ? OR department LIKE ? OR position LIKE ? OR user_id IN (?))}，
+     * 而 status 只体现在 {@code user_id IN (?)} 那一支 ⇒ 只要部门（或工号、岗位）命中关键字，
+     * 这个 OR 分支就绕过了状态：{@code status=ACTIVE&keyword=测试部} 会把<b>已停用</b>的员工也返回。
+     * 现在 status 是独立的 {@code EXISTS}（AND 挂最外层），任何关键字分支都绕不过它。</p>
+     *
+     * <p>包级可见（非 private）：供同包单测 {@code AdminStaffFilterSqlTest} 直接断言生成的 SQL 形状 ——
+     * 上面两点都是形状问题，真实请求的响应体看不出来，只有钉住 SQL 才能防止日后改回「先查 id 再 IN」。</p>
      */
-    private QueryWrapper<Staff> staffFilter(String keyword, String status) {
+    static QueryWrapper<Staff> staffFilter(String keyword, String status) {
         QueryWrapper<Staff> query = new QueryWrapper<>();
         boolean hasStatus = status != null && !status.isBlank();
         boolean hasKeyword = keyword != null && !keyword.isBlank();
         if (!hasStatus && !hasKeyword) {
             return query;
         }
-        QueryWrapper<SysUser> accountQuery = new QueryWrapper<SysUser>().eq("deleted", 0);
         if (hasStatus) {
-            accountQuery.eq("status", statusValue(status.trim()));
+            // 硬过滤：状态压在 staff.user_id 关联的账号上，关键字条件怎么拼都绕不过它。
+            // {0} 是 MyBatis-Plus 的占位符，会绑成 JDBC 参数，不是字符串拼接。
+            query.apply("EXISTS (SELECT 1 FROM sys_user u WHERE u.id = staff.user_id"
+                    + " AND u.deleted = 0 AND u.status = {0})", statusValue(status));
         }
-        if (hasKeyword) {
-            appendKeyword(accountQuery, keyword, "username", "real_name", "phone");
-        }
-        List<Long> accountIds = userMapper.selectList(accountQuery).stream()
-                .map(user -> user.id).toList();
         if (hasKeyword) {
             String kw = keyword.trim();
-            if (accountIds.isEmpty()) {
-                // 没有账号命中：只按 staff 自有列匹配。此处绝不能写成 in("user_id", 空集合)，
-                // MyBatis-Plus 会拼出 `user_id IN ()` 这种 MySQL 语法错误 → 500。
-                query.and(w -> w.like("employee_no", kw).or().like("department", kw).or().like("position", kw));
-            } else {
-                query.and(w -> w.like("employee_no", kw).or().like("department", kw).or().like("position", kw)
-                        .or().in("user_id", accountIds));
-            }
-        } else {
-            if (accountIds.isEmpty()) {
-                // status 命中 0 个账号 —— 结果必然为空。用恒假条件表达，而不是 in(空集合)。
-                query.apply("1 = 0");
-            } else {
-                query.in("user_id", accountIds);
-            }
+            // 宽匹配：staff 自有列 OR 关联账号列，整体放进一个 and(...) 与上面的硬过滤取交集。
+            query.and(w -> w
+                    .like("employee_no", kw)
+                    .or().like("department", kw)
+                    .or().like("position", kw)
+                    .or().apply("EXISTS (SELECT 1 FROM sys_user u WHERE u.id = staff.user_id"
+                            + " AND u.deleted = 0"
+                            + " AND (u.username LIKE {0} OR u.real_name LIKE {0} OR u.phone LIKE {0}))",
+                            "%" + kw + "%"));
         }
         return query;
     }

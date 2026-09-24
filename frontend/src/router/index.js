@@ -12,7 +12,7 @@ import ArticlesView from '@/views/public/ArticlesView.vue'
 import GuidesView from '@/views/public/GuidesView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
 import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
-import OrderCreateView from '@/views/account/OrderCreateView.vue'
+import OrderCreateView from '@/views/public/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
 import PaymentView from '@/views/account/PaymentView.vue'
@@ -51,6 +51,7 @@ const routes = [
       { path: 'articles/publishers/:id', redirect: { name: 'articles' } },
       { path: 'articles/:id', name: 'article-detail', component: ArticleDetailView },
       { path: 'attractions/:id', name: 'attraction-detail', component: AttractionDetailView },
+      { path: 'booking', name: 'order-create', component: OrderCreateView, meta: { requiresAuth: true } },
       { path: 'auth/login', name: 'login', component: LoginView },
       { path: 'auth/register', name: 'register', component: RegisterView }
     ]
@@ -68,7 +69,7 @@ const routes = [
       { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
       { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
       { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
-      { path: 'order/create', name: 'order-create', component: OrderCreateView },
+      { path: 'order/create', redirect: (to) => ({ name: 'order-create', query: to.query }) },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },
       { path: 'favorites', name: 'account-favorites', component: FavoritesView },
       { path: 'messages', name: 'account-messages', component: MessagesView },

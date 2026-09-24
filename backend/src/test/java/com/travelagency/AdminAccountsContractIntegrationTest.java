@@ -864,30 +864,24 @@ class AdminAccountsContractIntegrationTest {
     }
 
     @Test
-    @DisplayName("GET /admin/users|staff：keyword 超长 → 422（恰好 100 字符仍 200，中文按字符数同算）")
-    void adminUserAndStaffListEnforceKeywordMaxLength() throws Exception {
-        // 契约把这两个端点的 keyword 声明为 maxLength: 100，而实现此前完全不校验长度：
-        // 超长关键字会被整串拼进 LIKE %…% 交给 MySQL，上限只存在于文档里。
-        // 这里钉住边界本身 —— 恰好 100 字符必须放行（不能把上限做成 99），101 字符必须 422。
-        String exactly100 = "k".repeat(100);
-        String over100 = "k".repeat(101);
-
-        for (String path : List.of("/api/admin/users", "/api/admin/staff")) {
-            mvc.perform(get(path + "?page=1&size=5&keyword=" + exactly100)
-                            .header("Authorization", adminToken))
-                    .andExpect(status().isOk());
-            mvc.perform(get(path + "?page=1&size=5&keyword=" + over100)
-                            .header("Authorization", adminToken))
-                    .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
-                    .andExpect(jsonPath("$.errors[0].field").value(org.hamcrest.Matchers.endsWith("keyword")))
-                    .andExpect(jsonPath("$.errors[0].message").value("keyword 长度不能超过 100 个字符"));
+    @DisplayName("后台列表 keyword 按 Unicode 码点限制为 100，合法 emoji 不被误拒")
+    void adminListsEnforceKeywordCodePointMaxLength() throws Exception {
+        for (String path : List.of("/api/admin/users", "/api/admin/staff", "/api/admin/orders",
+                "/api/admin/attractions", "/api/admin/hotels")) {
+            for (String accepted : List.of("k".repeat(100), "关".repeat(100), "😀".repeat(100))) {
+                mvc.perform(get(path).param("page", "1").param("size", "5").param("keyword", accepted)
+                                .header("Authorization", adminToken))
+                        .andExpect(status().isOk());
+            }
+            for (String rejected : List.of("k".repeat(101), "😀".repeat(101))) {
+                mvc.perform(get(path).param("page", "1").param("size", "5").param("keyword", rejected)
+                                .header("Authorization", adminToken))
+                        .andExpect(status().isUnprocessableContent())
+                        .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                        .andExpect(jsonPath("$.errors[0].field").value(org.hamcrest.Matchers.endsWith("keyword")))
+                        .andExpect(jsonPath("$.errors[0].message").value("keyword 长度不能超过 100 个字符"));
+            }
         }
-
-        // 汉字同样按字符数计：100 个汉字 = 100 字符，必须与 100 个 ASCII 字符同等放行
-        mvc.perform(get("/api/admin/users?page=1&size=5&keyword=" + "关".repeat(100))
-                        .header("Authorization", adminToken))
-                .andExpect(status().isOk());
 
         // 上限只管超长：缺省与空串仍是「不过滤」（契约里该参数不是 required）
         mvc.perform(get("/api/admin/users?page=1&size=5").header("Authorization", adminToken))

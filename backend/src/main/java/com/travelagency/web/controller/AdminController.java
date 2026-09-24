@@ -57,7 +57,7 @@ import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -98,7 +98,7 @@ public class AdminController {
      * <p>契约写了上限而实现不校验，等于上限只存在于文档里：超长关键字会被原样拼进
      * {@code LIKE %…%} 交给 MySQL，一次请求就能构造出远超预期的匹配代价。这里按
      * {@code OrderController} 对 {@code Idempotency-Key} 的既有做法处理 —— 类上的
-     * {@code @Validated} 让方法参数上的约束生效，超长由 {@code GlobalExceptionHandler}
+     * {@code @Validated} 让按 Unicode 码点计数的参数约束生效，超长由 {@code GlobalExceptionHandler}
      * 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}，而不是静默放过或 500。</p>
      */
     private static final int KEYWORD_MAX_LENGTH = 100;
@@ -245,7 +245,8 @@ public class AdminController {
     public ApiResponse<PageResponse<Attraction>> attractions(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false)
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword) {
         QueryWrapper<Attraction> query = new QueryWrapper<>();
         appendKeyword(query, keyword, "name", "intro", "city");
         return ApiResponse.ok(PageResponse.from(attractionMapper.selectPage(pageOf(page, size),
@@ -278,7 +279,8 @@ public class AdminController {
     public ApiResponse<PageResponse<Hotel>> hotels(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false)
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword) {
         QueryWrapper<Hotel> query = new QueryWrapper<>();
         appendKeyword(query, keyword, "name", "address", "intro");
         return ApiResponse.ok(PageResponse.from(hotelMapper.selectPage(pageOf(page, size),
@@ -366,7 +368,8 @@ public class AdminController {
     public ApiResponse<PageResponse<OrderSummaryView>> orders(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<TravelOrder> query = new QueryWrapper<>();
         if (status != null && !status.isBlank()) {
@@ -470,7 +473,7 @@ public class AdminController {
      * 与本文件 {@code /admin/guides}、{@code /admin/attractions} 等同族端点的口径也不一致。
      * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
      * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。
-     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @Size} 把关。</p>
+     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @CodePointLength} 把关。</p>
      */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
@@ -478,7 +481,7 @@ public class AdminController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<SysUser> query = new QueryWrapper<SysUser>().eq("deleted", 0);
         if (status != null && !status.isBlank()) {
@@ -545,7 +548,7 @@ public class AdminController {
      * {@code employeeNo}/{@code department}/{@code position} 在 {@code staff}。
      * 跨表条件交给 {@link #staffFilter(String, String)} 里的 {@code EXISTS} 子查询在库内完成，
      * 筛选与分页仍是同一条 SQL；{@code status} 与 {@code keyword} 同时给出时取交集。
-     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @Size} 把关。</p>
+     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @CodePointLength} 把关。</p>
      */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
@@ -553,7 +556,7 @@ public class AdminController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         Page<Staff> result = staffMapper.selectPage(pageOf(page, size),
                 staffFilter(keyword, status).orderByDesc("created_at"));

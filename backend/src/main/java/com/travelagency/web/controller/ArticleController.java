@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.ArticleView;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelGuideArticle;
@@ -40,15 +41,6 @@ import java.util.stream.Collectors;
 @Validated
 public class ArticleController {
 
-    /**
-     * 契约对 {@code GET /articles} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
-     * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
-     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数约束），
-     * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
-     */
-    private static final int KEYWORD_MAX_LENGTH = 100;
-    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
-
     private final TravelGuideArticleMapper articleMapper;
     private final SysUserMapper sysUserMapper;
 
@@ -66,7 +58,7 @@ public class ArticleController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String destination) {
         QueryWrapper<TravelGuideArticle> query = new QueryWrapper<TravelGuideArticle>()
                 .eq("status", "PUBLISHED");

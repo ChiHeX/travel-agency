@@ -3,6 +3,7 @@ package com.travelagency.web.controller;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
+import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.ItineraryDayRequest;
 import com.travelagency.domain.dto.ItineraryDayView;
 import com.travelagency.domain.dto.ItineraryItemRequest;
@@ -55,18 +56,6 @@ import java.util.List;
 @Validated
 public class AdminRouteController {
 
-    /**
-     * 契约对 {@code GET /admin/routes} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
-     * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
-     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数约束），
-     * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
-     *
-     * <p>同组的 {@code status} 不在此校验：契约的枚举约束已由 {@code AdminRouteService} 拒绝，
-     * 并以此前既有的口径返回 422，无需在控制器叠加第二套形状。</p>
-     */
-    private static final int KEYWORD_MAX_LENGTH = 100;
-    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
-
     private final AdminRouteService adminRouteService;
 
     public AdminRouteController(AdminRouteService adminRouteService) {
@@ -83,7 +72,7 @@ public class AdminRouteController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String status) {
         return ApiResponse.ok(adminRouteService.page(page, size, keyword, status));
     }

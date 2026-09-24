@@ -14,7 +14,7 @@ import com.travelagency.domain.dto.RouteUpsertRequest;
 import com.travelagency.domain.dto.RouteView;
 import com.travelagency.domain.service.AdminRouteService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
@@ -58,7 +58,7 @@ public class AdminRouteController {
     /**
      * 契约对 {@code GET /admin/routes} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
      * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
-     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数上 {@code @Size}），
+     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数约束），
      * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
      *
      * <p>同组的 {@code status} 不在此校验：契约的枚举约束已由 {@code AdminRouteService} 拒绝，
@@ -83,7 +83,7 @@ public class AdminRouteController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         return ApiResponse.ok(adminRouteService.page(page, size, keyword, status));
     }

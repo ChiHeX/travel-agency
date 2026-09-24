@@ -35,12 +35,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 恰好 100 字符必须照旧返回 200，这只有在参数校验通过、查询真的落到数据库、结果真的
  * 按分页信封序列化之后才成立；纯 Mockito 单测直接断言 service 返回值，绕过了
  * 参数校验与序列化链。其二是"超长必须能被定位"——{@code errors[0].field} 要能指回
- * {@code keyword} 参数，这依赖类上的 {@code @Validated} 让方法参数上的 {@code @Size} 生效
+ * {@code keyword} 参数，这依赖类上的 {@code @Validated} 让方法参数约束生效
  * （去掉它仍会 422，但 {@code field} 会退化成空串，客户端无从知道是哪个参数错了）。</p>
  *
- * <p><b>按字符计而不是按字节计</b>：契约的 {@code maxLength} 语义是字符数，因此 100 个汉字
- * 合法、300 字节并不越界。仓库里另有给请求体字段用的 {@code @Utf8ByteLength}，
- * 用错法会把正常的中文查询打成 422，故本类专门覆盖 100 / 101 个汉字两侧。</p>
+ * <p><b>按 Unicode 码点计数</b>：100 个汉字或 emoji 都合法，不能按 UTF-8 字节数或
+ * Java UTF-16 码元数误判。覆盖两类字符在 100 / 101 码点两侧的边界。</p>
  *
  * <p><b>顺序约定</b>：每个方法里先跑预期 200 的调用，再跑预期 422 的调用。
  * 断言失败时报错信息里带上端点路径，避免"4 个端点里的哪一个挂了"需要靠猜。</p>
@@ -81,18 +80,20 @@ class KeywordLengthContractIntegrationTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("keyword 恰好 100 字符（含 100 个汉字）与不传 keyword 都必须返回 200，不能被校验误伤")
+    @DisplayName("keyword 恰好 100 码点（含汉字和 emoji）与不传 keyword 都返回 200")
     void keywordAtTheLimitIsAccepted() throws Exception {
         for (String path : PUBLIC_ENDPOINTS) {
             expectAccepted(paged(get(path), null), path + "（不传 keyword）");
             expectAccepted(paged(get(path), "k".repeat(100)), path + "（100 个 ASCII）");
             // 契约的 maxLength 是字符数，不是字节数：100 个汉字是 300 字节，仍然合法。
             expectAccepted(paged(get(path), "关".repeat(100)), path + "（100 个汉字）");
+            expectAccepted(paged(get(path), "😀".repeat(100)), path + "（100 个 emoji）");
         }
 
         expectAccepted(adminRoutes(null), ADMIN_ROUTES + "（不传 keyword）");
         expectAccepted(adminRoutes("k".repeat(100)), ADMIN_ROUTES + "（100 个 ASCII）");
         expectAccepted(adminRoutes("关".repeat(100)), ADMIN_ROUTES + "（100 个汉字）");
+        expectAccepted(adminRoutes("😀".repeat(100)), ADMIN_ROUTES + "（100 个 emoji）");
     }
 
     // ------------------------------------------------------------------
@@ -105,10 +106,12 @@ class KeywordLengthContractIntegrationTest {
         for (String path : PUBLIC_ENDPOINTS) {
             expectRejected(paged(get(path), "k".repeat(101)), path + "（101 个 ASCII）");
             expectRejected(paged(get(path), "关".repeat(101)), path + "（101 个汉字）");
+            expectRejected(paged(get(path), "😀".repeat(101)), path + "（101 个 emoji）");
         }
 
         expectRejected(adminRoutes("k".repeat(101)), ADMIN_ROUTES + "（101 个 ASCII）");
         expectRejected(adminRoutes("关".repeat(101)), ADMIN_ROUTES + "（101 个汉字）");
+        expectRejected(adminRoutes("😀".repeat(101)), ADMIN_ROUTES + "（101 个 emoji）");
     }
 
     // ------------------------------------------------------------------

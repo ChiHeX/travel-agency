@@ -261,22 +261,21 @@ onMounted(load)
             :key="item.id"
             type="button"
             class="route-plan-card"
+            :class="{ 'without-cover': !item.coverUrl }"
             @click="openRoute(item.id)"
           >
-            <div class="plan-card-left">
-              <span class="mode-icon">
-                <AppIcon name="pin" size="18" color="#0071e3" />
-              </span>
-              <div class="plan-info">
-                <h5>{{ item.name }}</h5>
-                <span class="plan-specs">{{ item.departureCity }} 出发 · {{ item.durationDays }} 日行程 · {{ item.destination }}</span>
+            <img v-if="item.coverUrl" class="plan-cover" :src="item.coverUrl" alt="" loading="lazy" />
+            <div class="plan-info">
+              <h5>{{ item.destination }}</h5>
+              <p class="plan-route-name" :title="item.name">{{ item.name }}</p>
+              <p class="plan-specs">{{ item.departureCity }}出发 · {{ item.durationDays }}日行程</p>
+              <div class="plan-card-footer">
+                <span v-if="item.nextDepartureDate" class="plan-departure-date">最近团期 {{ item.nextDepartureDate }}</span>
+                <span class="plan-card-right">
+                  <strong v-if="item.minAdultPrice != null" class="plan-price">¥{{ item.minAdultPrice }}</strong>
+                  <span v-else class="plan-price pending-price">价格待发布</span>
+                </span>
               </div>
-            </div>
-
-            <div class="plan-card-right">
-              <strong v-if="item.minAdultPrice != null" class="plan-price">¥{{ item.minAdultPrice }}</strong>
-              <span v-else class="plan-price pending-price">价格待发布</span>
-              <AppIcon name="chevron-right" size="14" color="#8e8e93" />
             </div>
           </button>
         </div>
@@ -634,12 +633,12 @@ onMounted(load)
 }
 
 .route-plan-card {
-  display: flex;
+  display: grid;
   width: 100%;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  grid-template-columns: 108px minmax(0, 1fr);
+  min-height: 136px;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.75);
@@ -652,43 +651,44 @@ onMounted(load)
   transition: all 0.15s ease;
 }
 
+.route-plan-card.without-cover { grid-template-columns: minmax(0, 1fr); }
+
 .route-plan-card:hover {
   background: rgba(255, 255, 255, 0.95);
   border-color: rgba(0, 0, 0, 0.12);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 
-.plan-card-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.mode-icon {
-  display: flex;
-  align-items: center;
-}
+.plan-cover { width: 100%; height: 100%; min-height: 136px; object-fit: cover; }
 
 .plan-info {
   display: flex;
   flex-direction: column;
+  gap: 4px;
   min-width: 0;
+  padding: 11px 12px;
 }
 
 .plan-info h5 {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 650;
   color: #1d1d1f;
-  margin: 0 0 2px;
-  white-space: nowrap;
+  margin: 0;
   overflow: hidden;
+  line-height: 1.3;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+.plan-route-name { display: -webkit-box; overflow: hidden; margin: 0; color: #3c3c43; font-size: 12px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
 .plan-specs {
+  overflow: hidden;
+  margin: 0;
   font-size: 11px;
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-tag-text {
@@ -700,8 +700,12 @@ onMounted(load)
 .plan-card-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
+
+.plan-card-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; margin-top: auto; }
+.plan-departure-date { overflow: hidden; color: var(--text-secondary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 .plan-price {
   font-size: 15px;

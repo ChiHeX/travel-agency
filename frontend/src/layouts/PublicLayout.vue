@@ -151,7 +151,7 @@ function logout() {
       <div class="rail-top-bar">
         <a v-if="isSidebarExpanded" href="javascript:void(0)" class="project-brand-wrap" title="行迹旅行" @click="goHome">
           <div class="brand-badge-box">
-            <AppIcon name="brand" size="16" color="#ffffff" />
+            <AppIcon name="brand" size="16" />
           </div>
           <span class="brand-title">行迹</span>
         </a>
@@ -252,11 +252,6 @@ function logout() {
           <span v-if="isSidebarExpanded">登录 / 注册</span>
           <span v-else>登录</span>
         </RouterLink>
-
-        <!-- Copyright Notice at Bottom -->
-        <div v-if="isSidebarExpanded" class="rail-copyright-note">
-          <span>Copyright © 2026 行迹旅行. 保留所有权利.</span>
-        </div>
       </div>
     </aside>
 
@@ -335,16 +330,15 @@ function logout() {
   width: 180px;
   height: 100%;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.76);
-  backdrop-filter: blur(28px) saturate(190%);
-  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border-right: 1px solid rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   padding: 14px 10px;
   gap: 16px;
   overflow: hidden;
-  box-shadow: 2px 0 16px rgba(0, 0, 0, 0.04);
   transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), padding 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -377,11 +371,8 @@ function logout() {
 .brand-badge-box {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #0071e3 0%, #0056b3 100%);
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.35);
   flex-shrink: 0;
 }
 
@@ -427,7 +418,7 @@ function logout() {
   border-radius: 10px;
   background: transparent;
   border: none;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -461,17 +452,15 @@ function logout() {
 }
 
 .rail-tab-item.active {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
 }
 
 .rail-tab-item.active .tab-icon-box {
-  background: var(--theme-blue);
-  color: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.35);
+  color: inherit;
 }
 
 .rail-tab-item.active .tab-title {
-  color: var(--theme-blue);
   font-weight: 600;
 }
 
@@ -512,7 +501,6 @@ function logout() {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
 }
 
@@ -604,13 +592,6 @@ function logout() {
   font-size: 10px;
 }
 
-.rail-copyright-note {
-  font-size: 10px;
-  color: #a1a1a6;
-  line-height: 1.3;
-  padding: 4px 4px 0;
-}
-
 /* ==========================================================================
    3. Middle Content Drawer Track & Container (Anchored to Sidebar Right Edge)
    ========================================================================== */
@@ -648,10 +629,8 @@ function logout() {
   border-right: 1px solid rgba(0, 0, 0, 0.08);
   overflow-y: auto;
   overflow-x: hidden;
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.05);
   transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1),
-              opacity 0.28s ease,
-              box-shadow 0.32s ease;
+              opacity 0.28s ease;
   transform: translateX(0);
   opacity: 1;
   will-change: transform, opacity;
@@ -660,7 +639,6 @@ function logout() {
 .drawer-track-wrapper.drawer-collapsed .drawer-container {
   transform: translateX(-100%);
   opacity: 0;
-  box-shadow: none;
 }
 
 .drawer-container.full-page-mode {

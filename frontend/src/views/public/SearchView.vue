@@ -153,19 +153,15 @@ onMounted(() => {
           <button type="button" class="secondary-button" @click="selectedCollection ? loadDiscovery() : loadRoutes()">重新加载</button>
         </div>
         <div v-else-if="visibleRoutes.length" class="route-cards-feed">
-          <button v-for="item in visibleRoutes" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
-            <div class="place-thumb">
-              <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.name" loading="lazy" />
-              <div v-else class="place-thumb-fallback"><span>{{ item.destination?.slice(0, 2) || '—' }}</span></div>
-              <span class="duration-pill">{{ item.durationDays }} 日游</span>
-            </div>
+          <button v-for="item in visibleRoutes" :key="item.id" type="button" class="place-card-item" :class="{ 'without-cover': !item.coverUrl }" @click="openRoute(item.id)">
+            <img v-if="item.coverUrl" class="place-cover" :src="item.coverUrl" alt="" loading="lazy" />
             <div class="place-info">
-              <h4 :title="item.name">{{ item.name }}</h4>
-              <div class="place-route-meta"><span>{{ item.departureCity }} 出发</span><span>·</span><span>目的地 {{ item.destination }}</span></div>
-              <div class="place-bottom-row">
-                <span v-if="item.ratingCount" class="rating-badge"><AppIcon name="star" size="11" color="#ff9500" /><span>{{ item.ratingAvg }}</span></span>
-                <span v-else class="rating-badge muted-rating">暂无评分</span>
-                <div class="price-figure"><template v-if="item.minAdultPrice != null"><strong>¥{{ item.minAdultPrice }}</strong><small>起/人</small></template><small v-else>价格待发布</small></div>
+              <h4>{{ item.destination }}</h4>
+              <p class="place-route-name" :title="item.name">{{ item.name }}</p>
+              <p class="place-route-meta">{{ item.departureCity }}出发 · {{ item.durationDays }}日行程</p>
+              <div class="place-card-footer">
+                <span v-if="item.nextDepartureDate" class="departure-date">最近团期 {{ item.nextDepartureDate }}</span>
+                <span class="price-figure"><template v-if="item.minAdultPrice != null"><strong>¥{{ item.minAdultPrice }}</strong><small>起/人</small></template><small v-else>价格待发布</small></span>
               </div>
             </div>
           </button>
@@ -201,21 +197,19 @@ onMounted(() => {
 .collection-pill:hover, .collection-pill:focus-visible { border-color: var(--theme-blue); }
 .collection-pill.active { border-color: var(--theme-blue); background: var(--theme-blue); color: #fff; }
 .route-cards-feed { display: flex; flex-direction: column; gap: 10px; }
-.place-card-item { display: grid; width: 100%; grid-template-columns: 88px 1fr; gap: 12px; padding: 10px; border: 1px solid rgba(0,0,0,.05); border-radius: 12px; background: rgba(255,255,255,.85); box-shadow: 0 1px 3px rgba(0,0,0,.03); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: all .15s ease; }
+.place-card-item { display: grid; width: 100%; grid-template-columns: 108px minmax(0, 1fr); min-height: 136px; overflow: hidden; padding: 0; border: 1px solid rgba(0,0,0,.05); border-radius: 12px; background: rgba(255,255,255,.85); box-shadow: 0 1px 3px rgba(0,0,0,.03); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: all .15s ease; }
+.place-card-item.without-cover { grid-template-columns: minmax(0, 1fr); }
 .place-card-item:hover { border-color: rgba(0,0,0,.1); background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.06); transform: translateY(-1px); }
-.place-thumb { position: relative; width: 88px; height: 72px; overflow: hidden; border-radius: 8px; background: #e5e5ea; }
-.place-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.place-thumb-fallback { display: grid; width: 100%; height: 100%; place-items: center; background: var(--theme-blue); color: #fff; font-size: 14px; font-weight: 700; }
-.duration-pill { position: absolute; top: 4px; left: 4px; padding: 1px 5px; border-radius: 3px; background: rgba(0,0,0,.65); color: #fff; font-size: 9px; font-weight: 600; }
-.place-info { display: flex; flex-direction: column; justify-content: space-between; min-width: 0; }
-.place-info h4 { overflow: hidden; margin: 0; color: #1d1d1f; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.place-route-meta { display: flex; gap: 4px; color: var(--text-secondary); font-size: 11px; }
-.place-bottom-row { display: flex; align-items: center; justify-content: space-between; }
-.rating-badge { display: inline-flex; align-items: center; gap: 3px; color: var(--status-orange); font-size: 11px; font-weight: 600; }
-.muted-rating { color: var(--text-tertiary); font-weight: 500; }
-.price-figure { display: flex; align-items: baseline; color: var(--price-color); }
+.place-cover { width: 100%; height: 100%; min-height: 136px; object-fit: cover; }
+.place-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 11px 12px; }
+.place-info h4 { overflow: hidden; margin: 0; color: #1d1d1f; font-size: 16px; font-weight: 650; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.place-route-name { display: -webkit-box; overflow: hidden; margin: 0; color: #3c3c43; font-size: 12px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.place-route-meta { overflow: hidden; margin: 0; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.place-card-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; margin-top: auto; }
+.departure-date { overflow: hidden; color: var(--text-secondary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.price-figure { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; color: var(--price-color); white-space: nowrap; }
 .price-figure strong { font-size: 14px; font-weight: 700; }
-.price-figure small { margin-left: 2px; color: var(--text-secondary); font-size: 10px; }
+.price-figure small { color: var(--text-secondary); font-size: 10px; }
 .empty-results { padding: 30px 10px; color: var(--text-secondary); font-size: 13px; text-align: center; }
 .empty-results p { margin: 0 0 12px; }.error-results strong { color: var(--text-primary); font-size: 13px; }
 .pagination-wrap { display: flex; justify-content: center; padding: 8px 0 2px; }

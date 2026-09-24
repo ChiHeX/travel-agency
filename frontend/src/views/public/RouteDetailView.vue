@@ -23,8 +23,6 @@ const selectedDeparture = computed(
   () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
 )
 const reviews = computed(() => data.value?.reviews || [])
-const mapPointCount = computed(() => data.value?.itinerary?.reduce((count, day) =>
-  count + (day.items?.filter((item) => item.longitude != null && item.latitude != null).length || 0), 0) || 0)
 
 async function load() {
   loading.value = true
@@ -296,16 +294,6 @@ onBeforeUnmount(() => setMapItinerary([]))
             </div>
           </div>
           <div v-else class="empty-box">暂无已发布的每日行程。</div>
-        </div>
-
-        <div class="sheet-section map-section">
-          <div class="section-title-row">
-            <h4>行程地图</h4>
-            <span class="sub-hint">按行程顺序展示</span>
-          </div>
-          <p v-if="mapPointCount > 1">行程地点按顺序标注在主地图上。虚线仅表示游览顺序，不代表实际行车路线。收起面板可查看完整地图。</p>
-          <p v-else-if="mapPointCount === 1">主地图已标注唯一的行程地点，因此不显示连线。收起面板可查看完整地图。</p>
-          <p v-else>暂无经纬度坐标。在后台行程项中录入景点坐标后，主地图会显示行程位置。</p>
         </div>
 
         <div class="sheet-section route-notes-section">
@@ -859,13 +847,6 @@ onBeforeUnmount(() => setMapItinerary([]))
   display: inline-flex;
   align-items: center;
   gap: 3px;
-}
-
-.map-section p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 .detail-notes-grid {

@@ -77,6 +77,14 @@ WHERE @dali_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM travel_route WHERE name = '大理古城单地点演示团' AND deleted = 0);
 SET @single_route_id = (SELECT id FROM travel_route WHERE name = '大理古城单地点演示团' AND deleted = 0 ORDER BY id LIMIT 1);
 
+-- Demo covers are location photos; preserve a custom cover if one was already set.
+UPDATE travel_route
+SET cover_url = 'https://images.unsplash.com/photo-1677922069735-84366a41e996?auto=format&fit=crop&w=800&q=80'
+WHERE name = '彩云之南经典 6 日跟团游' AND cover_url IS NULL AND deleted = 0;
+UPDATE travel_route
+SET cover_url = 'https://images.unsplash.com/photo-1745989498560-a1f1cd9fa17a?auto=format&fit=crop&w=800&q=80'
+WHERE name = '大理古城单地点演示团' AND cover_url IS NULL AND deleted = 0;
+
 INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals)
 SELECT @single_route_id, 1, '大理古城一日游', '在大理古城游览，行程地图仅标记此处。', '步行', '自理'
 WHERE @single_route_id IS NOT NULL

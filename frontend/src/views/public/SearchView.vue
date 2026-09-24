@@ -9,6 +9,7 @@ const currentRoute = useRoute()
 const closeDrawer = inject('closeDrawer', () => {})
 
 const keyword = ref(currentRoute.query.keyword || '')
+const submittedKeyword = ref(String(currentRoute.query.keyword || '').trim())
 const routes = ref([])
 const total = ref(0)
 const page = ref(Number(currentRoute.query.page) || 1)
@@ -18,21 +19,28 @@ const errorMessage = ref('')
 const home = ref(null)
 const homeLoading = ref(false)
 const homeError = ref('')
+const selectedCollection = ref(null)
+const collections = [
+  { key: 'recommendedRoutes', title: '推荐线路' },
+  { key: 'upcomingRoutes', title: '近期可报名' }
+]
 
-const isDiscovery = computed(() => !keyword.value.trim())
-const discoverySections = computed(() => [
-  { key: 'popularRoutes', title: '热门线路', items: home.value?.popularRoutes || [] },
-  { key: 'recommendedRoutes', title: '推荐线路', items: home.value?.recommendedRoutes || [] },
-  { key: 'upcomingRoutes', title: '近期可报名', items: home.value?.upcomingRoutes || [] }
-].filter((section) => section.items.length))
+const isDiscovery = computed(() => !submittedKeyword.value)
+const visibleRoutes = computed(() => isDiscovery.value && selectedCollection.value
+  ? home.value?.[selectedCollection.value] || [] : routes.value)
+const visibleLoading = computed(() => isDiscovery.value && selectedCollection.value ? homeLoading.value : loading.value)
+const visibleError = computed(() => isDiscovery.value && selectedCollection.value ? homeError.value : errorMessage.value)
+const resultsTitle = computed(() => {
+  if (!isDiscovery.value) return `搜索结果 (${total.value})`
+  return collections.find((item) => item.key === selectedCollection.value)?.title || `全部线路 (${total.value})`
+})
 
 async function loadRoutes() {
   loading.value = true
   errorMessage.value = ''
   try {
     const data = await routeApi.list({
-      keyword: keyword.value.trim() || undefined,
-      hasDeparture: true,
+      keyword: submittedKeyword.value || undefined,
       page: page.value,
       size: pageSize
     })
@@ -62,16 +70,25 @@ async function loadDiscovery() {
 
 function search(value = keyword.value) {
   keyword.value = value
+  submittedKeyword.value = String(value).trim()
+  selectedCollection.value = null
   page.value = 1
-  router.replace({ name: 'search', query: keyword.value.trim() ? { keyword: keyword.value.trim() } : {} })
+  router.replace({ name: 'search', query: submittedKeyword.value ? { keyword: submittedKeyword.value } : {} })
   if (isDiscovery.value) loadDiscovery()
-  else loadRoutes()
+  loadRoutes()
 }
 
 function changePage(nextPage) {
   page.value = nextPage
-  router.replace({ name: 'search', query: { keyword: keyword.value.trim(), page: String(page.value) } })
+  router.replace({ name: 'search', query: {
+    ...(isDiscovery.value ? {} : { keyword: submittedKeyword.value }),
+    page: String(page.value)
+  } })
   loadRoutes()
+}
+
+function toggleCollection(key) {
+  selectedCollection.value = selectedCollection.value === key ? null : key
 }
 
 function openRoute(id) {
@@ -84,7 +101,7 @@ function openDestination(destination) {
 
 onMounted(() => {
   if (isDiscovery.value) loadDiscovery()
-  else loadRoutes()
+  loadRoutes()
 })
 </script>
 
@@ -108,68 +125,35 @@ onMounted(() => {
     </div>
 
     <main class="drawer-scroll-body">
-      <template v-if="isDiscovery">
-        <div v-if="homeLoading" class="skeleton-list"><el-skeleton :rows="7" animated /></div>
-
-        <div v-else-if="homeError" class="empty-results error-results">
-          <strong>推荐内容暂时不可用</strong>
-          <p>{{ homeError }}</p>
-          <button type="button" class="secondary-button" @click="loadDiscovery">重新加载</button>
+      <section v-if="isDiscovery && home?.popularDestinations?.length" class="discovery-section">
+        <div class="results-title-row"><h3 class="section-title">热门目的地</h3></div>
+        <div class="destination-pills-row">
+          <button v-for="item in home.popularDestinations" :key="item.destination" type="button" class="destination-pill" @click="openDestination(item.destination)">
+            <AppIcon name="pin" size="13" color="#0071e3" />
+            <span>{{ item.destination }}</span>
+          </button>
         </div>
+      </section>
 
-        <template v-else-if="home">
-          <section v-if="home.popularDestinations?.length" class="discovery-section">
-            <div class="results-title-row">
-              <h3 class="section-title">热门目的地</h3>
-            </div>
-            <div class="destination-pills-row">
-              <button v-for="item in home.popularDestinations" :key="item.destination" type="button" class="destination-pill" @click="openDestination(item.destination)">
-                <AppIcon name="pin" size="13" color="#0071e3" />
-                <span>{{ item.destination }}</span>
-              </button>
-            </div>
-          </section>
-
-          <section v-for="section in discoverySections" :key="section.key" class="discovery-section">
-            <div class="results-title-row">
-              <h3 class="section-title">{{ section.title }}</h3>
-            </div>
-            <div class="route-cards-feed">
-              <button v-for="item in section.items" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
-                <div class="place-thumb">
-                  <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.name" loading="lazy" />
-                  <div v-else class="place-thumb-fallback"><span>{{ item.destination?.slice(0, 2) || '—' }}</span></div>
-                  <span class="duration-pill">{{ item.durationDays }} 日游</span>
-                </div>
-                <div class="place-info">
-                  <h4 :title="item.name">{{ item.name }}</h4>
-                  <div class="place-route-meta"><span>{{ item.departureCity }} 出发</span><span>·</span><span>目的地 {{ item.destination }}</span></div>
-                  <div class="place-bottom-row">
-                    <span v-if="item.ratingCount" class="rating-badge"><AppIcon name="star" size="11" color="#ff9500" /><span>{{ item.ratingAvg }}</span></span>
-                    <span v-else class="rating-badge muted-rating">暂无评分</span>
-                    <div class="price-figure"><template v-if="item.minAdultPrice != null"><strong>¥{{ item.minAdultPrice }}</strong><small>起/人</small></template><small v-else>价格待发布</small></div>
-                  </div>
-                </div>
-              </button>
-            </div>
-          </section>
-
-          <div v-if="!home.popularDestinations?.length && !discoverySections.length" class="empty-results">暂无推荐内容。</div>
-        </template>
-      </template>
-
-      <section v-else class="results-section">
+      <section class="results-section">
+        <div v-if="isDiscovery" class="collection-pills-row" role="group" aria-label="线路分类">
+          <button v-for="collection in collections" :key="collection.key" type="button" class="collection-pill"
+            :class="{ active: selectedCollection === collection.key }"
+            :aria-pressed="selectedCollection === collection.key" @click="toggleCollection(collection.key)">
+            {{ collection.title }}
+          </button>
+        </div>
         <div class="results-title-row">
-          <h3 class="section-title">可报名路线 ({{ total }})</h3>
+          <h3 class="section-title">{{ resultsTitle }}</h3>
         </div>
 
-        <div v-if="loading" class="skeleton-list"><el-skeleton v-for="i in 3" :key="i" :rows="3" animated style="margin-bottom: 12px" /></div>
-        <div v-else-if="errorMessage" class="empty-results error-results">
-          <strong>搜索暂时不可用</strong><p>{{ errorMessage }}</p>
-          <button type="button" class="secondary-button" @click="loadRoutes">重新加载</button>
+        <div v-if="visibleLoading" class="skeleton-list"><el-skeleton v-for="i in 3" :key="i" :rows="3" animated style="margin-bottom: 12px" /></div>
+        <div v-else-if="visibleError" class="empty-results error-results">
+          <strong>线路暂时不可用</strong><p>{{ visibleError }}</p>
+          <button type="button" class="secondary-button" @click="selectedCollection ? loadDiscovery() : loadRoutes()">重新加载</button>
         </div>
-        <div v-else-if="routes.length" class="route-cards-feed">
-          <button v-for="item in routes" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
+        <div v-else-if="visibleRoutes.length" class="route-cards-feed">
+          <button v-for="item in visibleRoutes" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
             <div class="place-thumb">
               <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.name" loading="lazy" />
               <div v-else class="place-thumb-fallback"><span>{{ item.destination?.slice(0, 2) || '—' }}</span></div>
@@ -186,8 +170,8 @@ onMounted(() => {
             </div>
           </button>
         </div>
-        <div v-else class="empty-results"><p>未找到完全匹配的线路，请尝试其他关键词。</p><button type="button" class="secondary-button" @click="search('')">返回推荐内容</button></div>
-        <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+        <div v-else class="empty-results"><p>{{ selectedCollection ? '暂无该分类的线路。' : isDiscovery ? '暂无已发布线路。' : '未找到完全匹配的线路，请尝试其他关键词。' }}</p><button v-if="!isDiscovery" type="button" class="secondary-button" @click="search('')">查看全部线路</button></div>
+        <div v-if="!selectedCollection && !visibleLoading && !visibleError && total > pageSize" class="pagination-wrap">
           <el-pagination :current-page="page" :page-size="pageSize" :total="total" background layout="prev, pager, next" @current-change="changePage" />
         </div>
       </section>
@@ -212,6 +196,10 @@ onMounted(() => {
 .destination-pills-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .destination-pill { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid rgba(0,0,0,.07); border-radius: var(--radius-pill); background: rgba(255,255,255,.78); color: var(--text-primary); font-size: 12px; cursor: pointer; }
 .destination-pill:hover { border-color: var(--theme-blue); background: #fff; }
+.collection-pills-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.collection-pill { padding: 7px 12px; border: 1px solid rgba(0,0,0,.1); border-radius: var(--radius-pill); background: rgba(255,255,255,.78); color: var(--text-primary); font: inherit; font-size: 12px; cursor: pointer; }
+.collection-pill:hover, .collection-pill:focus-visible { border-color: var(--theme-blue); }
+.collection-pill.active { border-color: var(--theme-blue); background: var(--theme-blue); color: #fff; }
 .route-cards-feed { display: flex; flex-direction: column; gap: 10px; }
 .place-card-item { display: grid; width: 100%; grid-template-columns: 88px 1fr; gap: 12px; padding: 10px; border: 1px solid rgba(0,0,0,.05); border-radius: 12px; background: rgba(255,255,255,.85); box-shadow: 0 1px 3px rgba(0,0,0,.03); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: all .15s ease; }
 .place-card-item:hover { border-color: rgba(0,0,0,.1); background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.06); transform: translateY(-1px); }

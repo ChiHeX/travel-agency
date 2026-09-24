@@ -10,6 +10,8 @@ import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -52,8 +54,11 @@ public class RouteController {
             @CodePointLength(max = 128, message = "destination 长度不能超过 128 个字符") String destination,
             @RequestParam(required = false) BigDecimal minPrice,
             @RequestParam(required = false) BigDecimal maxPrice,
-            @RequestParam(required = false) Integer durationDays,
-            @RequestParam(required = false) Integer departureMonth,
+            @RequestParam(required = false)
+            @Min(value = 1, message = "durationDays 不能小于 1") Integer durationDays,
+            @RequestParam(required = false)
+            @Min(value = 1, message = "departureMonth 只能是 1 到 12")
+            @Max(value = 12, message = "departureMonth 只能是 1 到 12") Integer departureMonth,
             @RequestParam(defaultValue = "false") boolean hasDeparture,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(routeService.pagePublic(page, size, keyword, departureCity,

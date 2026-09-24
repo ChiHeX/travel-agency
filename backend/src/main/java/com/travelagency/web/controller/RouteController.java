@@ -9,6 +9,8 @@ import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
+import jakarta.validation.constraints.Size;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,7 +21,19 @@ import java.math.BigDecimal;
 
 @RestController
 @RequestMapping("/api/routes")
+@Validated
 public class RouteController {
+
+    /**
+     * 契约对 {@code GET /routes} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
+     *
+     * <p>契约写了上限而实现不校验，上限就只存在于文档里：超长关键字会被原样拼进 {@code LIKE %…%}
+     * 交给 MySQL，而这是无需登录的公开搜索接口。这里按 {@code OrderController} 对
+     * {@code Idempotency-Key} 的既有做法落地 —— 类上的 {@code @Validated} 让方法参数上的约束生效，超长由
+     * {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。</p>
+     */
+    private static final int KEYWORD_MAX_LENGTH = 100;
+    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
 
     private final RouteService routeService;
     private final OrderService orderService;
@@ -40,7 +54,8 @@ public class RouteController {
     public ApiResponse<PageResponse<RouteSummaryView>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "12") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String departureCity,
             @RequestParam(required = false) String destination,
             @RequestParam(required = false) BigDecimal minPrice,

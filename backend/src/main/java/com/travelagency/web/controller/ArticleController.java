@@ -10,6 +10,8 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelGuideArticle;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelGuideArticleMapper;
+import jakarta.validation.constraints.Size;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,7 +37,17 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/api/articles")
+@Validated
 public class ArticleController {
+
+    /**
+     * 契约对 {@code GET /articles} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
+     * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
+     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数上 {@code @Size}），
+     * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
+     */
+    private static final int KEYWORD_MAX_LENGTH = 100;
+    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
 
     private final TravelGuideArticleMapper articleMapper;
     private final SysUserMapper sysUserMapper;
@@ -53,7 +65,8 @@ public class ArticleController {
     public ApiResponse<PageResponse<ArticleView>> publicList(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String destination) {
         QueryWrapper<TravelGuideArticle> query = new QueryWrapper<TravelGuideArticle>()
                 .eq("status", "PUBLISHED");

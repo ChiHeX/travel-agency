@@ -13,7 +13,6 @@ const props = defineProps({
 const mapElement = ref(null)
 let mapInstance
 let overlays
-let hadPoints = false
 
 function updateMinZoom() {
   if (!mapInstance) return
@@ -71,12 +70,7 @@ function renderMap() {
 
   const data = points()
   overlays.clearLayers()
-  if (!data.length) {
-    if (hadPoints) resetView()
-    hadPoints = false
-    return
-  }
-  hadPoints = true
+  if (!data.length) return
   data.forEach((point) => {
     const icon = L.divIcon({
       className: 'route-marker',
@@ -116,7 +110,7 @@ onMounted(() => {
   renderMap()
   window.addEventListener('resize', onMapResize)
 })
-watch(() => [props.itinerary, props.drawerOpen, props.sidebarExpanded, props.sheetSize], renderMap, { deep: true })
+watch(() => props.itinerary, renderMap, { deep: true })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onMapResize)
   mapInstance?.remove()
@@ -128,7 +122,11 @@ onBeforeUnmount(() => {
 <template>
   <div class="map-preview-card" :class="{ 'drawer-open': drawerOpen, ['sheet-' + sheetSize]: drawerOpen }">
     <div ref="mapElement" class="map-canvas"></div>
-    <button class="map-reset" type="button" aria-label="重置地图视角" @click="resetView">重置视角</button>
+    <button class="map-reset" type="button" aria-label="重置地图视角" title="重置地图视角" @click="resetView">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 14 21 4l-5 17-3.5-7.5L4 14Z" />
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -161,15 +159,32 @@ onBeforeUnmount(() => {
 .map-reset {
   position: absolute;
   z-index: 500;
-  top: 88px;
+  top: 74px;
   right: 10px;
-  padding: 6px 8px;
-  border: 1px solid #bbb;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
   border-radius: 4px;
   background: #fff;
-  color: #333;
-  font-size: 12px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.65);
+  color: #000;
   cursor: pointer;
+}
+
+.map-reset:hover,
+.map-reset:focus-visible { background: #f4f4f4; }
+
+.map-canvas.leaflet-touch + .map-reset {
+  top: 84px;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  box-shadow: none;
 }
 
 @media (max-width: 900px) {

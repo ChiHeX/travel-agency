@@ -57,12 +57,14 @@ import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -87,7 +89,20 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/admin")
 @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+@Validated
 public class AdminController {
+
+    /**
+     * 契约对列表端点查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
+     *
+     * <p>契约写了上限而实现不校验，等于上限只存在于文档里：超长关键字会被原样拼进
+     * {@code LIKE %…%} 交给 MySQL，一次请求就能构造出远超预期的匹配代价。这里按
+     * {@code OrderController} 对 {@code Idempotency-Key} 的既有做法处理 —— 类上的
+     * {@code @Validated} 让方法参数上的约束生效，超长由 {@code GlobalExceptionHandler}
+     * 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}，而不是静默放过或 500。</p>
+     */
+    private static final int KEYWORD_MAX_LENGTH = 100;
+    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
 
     private final RouteService routeService;
     private final DepartureService departureService;
@@ -454,14 +469,16 @@ public class AdminController {
      * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
      * 与本文件 {@code /admin/guides}、{@code /admin/attractions} 等同族端点的口径也不一致。
      * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
-     * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。</p>
+     * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。
+     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @Size} 把关。</p>
      */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<UserView>> users(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<SysUser> query = new QueryWrapper<SysUser>().eq("deleted", 0);
         if (status != null && !status.isBlank()) {
@@ -527,14 +544,16 @@ public class AdminController {
      * {@code username}/{@code realName}/{@code status} 在 {@code sys_user}，
      * {@code employeeNo}/{@code department}/{@code position} 在 {@code staff}。
      * 跨表条件交给 {@link #staffFilter(String, String)} 里的 {@code EXISTS} 子查询在库内完成，
-     * 筛选与分页仍是同一条 SQL；{@code status} 与 {@code keyword} 同时给出时取交集。</p>
+     * 筛选与分页仍是同一条 SQL；{@code status} 与 {@code keyword} 同时给出时取交集。
+     * {@code keyword} 的契约上限 {@code maxLength: 100} 由方法参数上的 {@code @Size} 把关。</p>
      */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<StaffView>> staff(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         Page<Staff> result = staffMapper.selectPage(pageOf(page, size),
                 staffFilter(keyword, status).orderByDesc("created_at"));

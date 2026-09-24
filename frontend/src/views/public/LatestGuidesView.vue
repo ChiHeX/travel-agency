@@ -1,7 +1,7 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { contentApi } from '@/api/modules'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import RequestState from '@/components/RequestState.vue'
 
@@ -19,22 +19,10 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const selectedCity = String(route.query.city || '')
-    if (selectedCity) {
-      const first = await contentApi.articles({ page: 1, size: 100 })
-      const items = [...(first?.items || [])]
-      const totalPages = Math.ceil((first?.total || items.length) / 100)
-      for (let current = 2; current <= totalPages; current += 1) {
-        const result = await contentApi.articles({ page: current, size: 100 })
-        items.push(...(result?.items || []))
-      }
-      const filtered = items.filter((item) => item.city === selectedCity)
-      const start = (page.value - 1) * size
-      articles.value = filtered.slice(start, start + size)
-      total.value = filtered.length
-      return
-    }
-    const result = await contentApi.articles({ page: page.value, size })
+    const result = await placeGuideApi.list({
+      page: page.value, size,
+      ...(route.query.city ? { city: String(route.query.city) } : {})
+    })
     articles.value = result?.items || []
     total.value = result?.total || 0
   } catch (cause) {
@@ -53,7 +41,7 @@ function changePage(value) {
   load()
 }
 
-onMounted(load)
+watch(() => route.query.city, () => { page.value = 1; load() }, { immediate: true })
 </script>
 
 <template>
@@ -68,7 +56,7 @@ onMounted(load)
       <div v-else-if="loading" class="loading-block"><el-skeleton :rows="12" animated /></div>
       <template v-else-if="articles.length">
         <div class="latest-list">
-          <RouterLink v-for="article in articles" :key="article.id" :to="{ name: 'article-detail', params: { id: article.id } }" class="latest-card">
+          <RouterLink v-for="article in articles" :key="article.id" :to="{ name: 'guide-detail', params: { id: article.id } }" class="latest-card">
             <div class="media-fallback"><AppIcon name="guides" size="34" /></div>
             <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
             <i></i>

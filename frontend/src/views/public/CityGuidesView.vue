@@ -1,7 +1,7 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { contentApi } from '@/api/modules'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import RequestState from '@/components/RequestState.vue'
 
@@ -9,6 +9,7 @@ const route = useRoute()
 const router = useRouter()
 const closeDrawer = inject('closeDrawer', () => {})
 const articles = ref([])
+const cityData = ref([])
 const loading = ref(true)
 const error = ref('')
 const failedImages = ref(new Set())
@@ -24,22 +25,20 @@ const guideCards = computed(() => cityArticles.value.slice(1, 7))
 const latestCards = computed(() => cityArticles.value.slice(0, 6))
 const otherCities = computed(() => {
   const groups = new Map()
-  for (const article of articles.value) {
-    if (!article.city || article.city === city.value) continue
-    const current = groups.get(article.city) || { city: article.city, count: 0, coverArticle: null }
-    current.count += 1
-    if (!current.coverArticle && article.coverUrl) current.coverArticle = article
-    groups.set(article.city, current)
+  for (const item of cityData.value) {
+    if (!item.city || item.city === city.value) continue
+    groups.set(item.city, { city: item.city, count: item.count,
+      coverArticle: item.coverUrl ? { id: item.city, coverUrl: item.coverUrl } : null })
   }
   return [...groups.values()]
 })
 const regionGroups = computed(() => {
   const groups = new Map()
-  for (const article of articles.value) {
-    const region = article.destination || article.city
+  for (const item of cityData.value) {
+    const region = item.destination || item.city
     if (!region) continue
     const group = groups.get(region) || { name: region, cities: new Set() }
-    if (article.city) group.cities.add(article.city)
+    if (item.city) group.cities.add(item.city)
     groups.set(region, group)
   }
   return [...groups.values()].map((group) => ({ name: group.name, cities: [...group.cities] }))
@@ -49,14 +48,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const first = await contentApi.articles({ page: 1, size: 100 })
-    const items = [...(first?.items || [])]
-    const totalPages = Math.ceil((first?.total || items.length) / 100)
-    for (let page = 2; page <= totalPages; page += 1) {
-      const result = await contentApi.articles({ page, size: 100 })
-      items.push(...(result?.items || []))
-    }
-    articles.value = items
+    const [result, cities] = await Promise.all([
+      placeGuideApi.list({ page: 1, size: 100, city: city.value }),
+      placeGuideApi.cities()
+    ])
+    articles.value = result?.items || []
+    cityData.value = cities || []
   } catch (cause) {
     error.value = cause.message || '城市指南加载失败'
   } finally {
@@ -69,7 +66,7 @@ function markImageFailed(id) {
 }
 
 function openArticle(id) {
-  router.push({ name: 'article-detail', params: { id } })
+  router.push({ name: 'guide-detail', params: { id } })
 }
 
 function openCity(name) {
@@ -92,7 +89,7 @@ function setSubmenuPosition(target) {
 
 function selectGlobal() {
   closeScopeMenu()
-  router.push({ name: 'articles' })
+  router.push({ name: 'guides' })
 }
 
 function selectRegion(group, event) {
@@ -123,7 +120,7 @@ function toggleScopeMenu() {
   wideSubmenu.value = false
 }
 
-onMounted(load)
+watch(city, load, { immediate: true })
 </script>
 
 <template>

@@ -455,6 +455,37 @@ JOIN sys_user author ON author.username = 'guide_editor'
 LEFT JOIN attraction a ON a.name = source_data.attraction_name
 WHERE NOT EXISTS (SELECT 1 FROM travel_guide_article article WHERE article.title = source_data.title);
 
+-- 课程演示用地点指南；仅验证城市、发布者、详情和地图标记，不代表真实编辑推荐。
+INSERT INTO place_guide (title, summary, city, destination, cover_url, status, author_id, published_at)
+SELECT source_data.title, source_data.summary, source_data.city, source_data.destination,
+       source_data.cover_url, 'PUBLISHED', author.id, DATE_SUB(NOW(), INTERVAL source_data.age_days DAY)
+FROM (
+    SELECT '杭州双景点地图演示指南' AS title, '课程测试指南：西湖与灵隐寺的地图标记。' AS summary,
+           '杭州' AS city, '杭州' AS destination,
+           'https://images.unsplash.com/photo-1548919973-5cef591cdbc9?auto=format&fit=crop&w=1200&q=80' AS cover_url,
+           'guide_editor' AS author_name, 1 AS age_days UNION ALL
+    SELECT '北京中轴线地图演示指南', '课程测试指南：故宫与天坛的地图标记。', '北京', '北京',
+           'https://images.unsplash.com/photo-1508804185872-d7badad00f7d?auto=format&fit=crop&w=1200&q=80',
+           'demo_staff', 2
+) AS source_data
+JOIN sys_user author ON author.username = source_data.author_name
+WHERE NOT EXISTS (SELECT 1 FROM place_guide guide WHERE guide.title = source_data.title);
+
+INSERT INTO place_guide_item (guide_id, attraction_id, sort_order, note)
+SELECT guide.id, attraction.id, source_data.sort_order, source_data.note
+FROM (
+    SELECT '杭州双景点地图演示指南' AS guide_title, '西湖' AS attraction_name, 1 AS sort_order, '课程测试地点' AS note UNION ALL
+    SELECT '杭州双景点地图演示指南', '灵隐寺', 2, '课程测试地点' UNION ALL
+    SELECT '北京中轴线地图演示指南', '故宫博物院', 1, '课程测试地点' UNION ALL
+    SELECT '北京中轴线地图演示指南', '天坛公园', 2, '课程测试地点'
+) AS source_data
+JOIN place_guide guide ON guide.title = source_data.guide_title
+JOIN attraction ON attraction.name = source_data.attraction_name
+WHERE NOT EXISTS (
+    SELECT 1 FROM place_guide_item item
+    WHERE item.guide_id = guide.id AND item.attraction_id = attraction.id
+);
+
 INSERT INTO data_source (data_name, source, source_type, used_date, license, remark)
 SELECT '扩展线路、订单与攻略测试资料', '团队原创整理的课程测试数据', 'TEAM_TEST_DATA', CURRENT_DATE,
        '仅限课程项目开发、测试与答辩演示', '包含虚构账号、订单、联系方式和评价，不代表真实旅行社经营数据'

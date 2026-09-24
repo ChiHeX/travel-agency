@@ -240,6 +240,67 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticlePageEnvelope' }
 
+  /place-guides:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuides
+      summary: 查询已发布的多地点指南
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: city, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: destination, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: authorId, in: query, schema: { $ref: '#/components/schemas/Id' } }
+      responses:
+        '200':
+          description: 指南分页结果，按发布时间倒序
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePageEnvelope' }
+
+  /place-guides/cities:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuideCities
+      summary: 查询有已发布指南的城市
+      security: []
+      responses:
+        '200':
+          description: 城市与指南数量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideCitiesEnvelope' }
+
+  /place-guides/publishers:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuidePublishers
+      summary: 查询有已发布指南的发布者
+      security: []
+      responses:
+        '200':
+          description: 发布者与指南数量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePublishersEnvelope' }
+
+  /place-guides/{guideId}:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    get:
+      tags: [Content]
+      operationId: getPlaceGuide
+      summary: 查询已发布指南及其按顺序排列的地点
+      security: []
+      responses:
+        '200':
+          description: 指南详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /articles/{articleId}:
     parameters:
       - { $ref: '#/components/parameters/ArticleId' }
@@ -1687,6 +1748,97 @@ paths:
               schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/place-guides:
+    get:
+      tags: [Admin Content]
+      operationId: listAdminPlaceGuides
+      summary: 分页查询全部地点指南
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: 指南分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePageEnvelope' }
+    post:
+      tags: [Admin Content]
+      operationId: createPlaceGuide
+      summary: 创建至少包含两个景点的指南草稿
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideUpsertRequest' }
+      responses:
+        '201':
+          description: 已创建草稿
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/place-guides/{guideId}:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    get:
+      tags: [Admin Content]
+      operationId: getAdminPlaceGuide
+      summary: 查询指南草稿或已发布指南
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 指南详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Content]
+      operationId: updatePlaceGuide
+      summary: 替换指南内容和地点
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideUpsertRequest' }
+      responses:
+        '200':
+          description: 更新后的指南
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/place-guides/{guideId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    patch:
+      tags: [Admin Content]
+      operationId: updatePlaceGuideStatus
+      summary: 发布或下线指南
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideStatusRequest' }
+      responses:
+        '200':
+          description: 更新后的指南
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
   /admin/articles:
     get:
       tags: [Admin Content]
@@ -2632,6 +2784,131 @@ components:
         intro: { type: [string, 'null'], maxLength: 10000 }
         dataSource: { type: string, minLength: 1, maxLength: 500 }
         status: { $ref: '#/components/schemas/AccountStatus' }
+    PlaceGuidePlace:
+      type: object
+      additionalProperties: false
+      required: [attractionId, name, city, address, longitude, latitude, intro, note, sortOrder]
+      properties:
+        attractionId: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        city: { type: string }
+        address: { type: [string, 'null'] }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'] }
+        note: { type: [string, 'null'] }
+        sortOrder: { type: integer, minimum: 1 }
+    PlaceGuide:
+      type: object
+      additionalProperties: false
+      required: [id, title, summary, city, destination, coverUrl, status, authorId, authorName, publishedAt, places]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        title: { type: string }
+        summary: { type: [string, 'null'] }
+        city: { type: string }
+        destination: { type: [string, 'null'] }
+        coverUrl: { type: [string, 'null'], format: uri }
+        status: { type: string, enum: [DRAFT, PUBLISHED, OFFLINE] }
+        authorId: { $ref: '#/components/schemas/Id' }
+        authorName: { type: string }
+        publishedAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        places:
+          type: array
+          description: 列表页为空数组，详情页为按 sortOrder 排列的地点
+          items: { $ref: '#/components/schemas/PlaceGuidePlace' }
+    PlaceGuideUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [title, city, places]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 200 }
+        summary: { type: [string, 'null'], maxLength: 500 }
+        city: { type: string, minLength: 1, maxLength: 64 }
+        destination: { type: [string, 'null'], maxLength: 128 }
+        coverUrl: { type: [string, 'null'], format: uri, maxLength: 500 }
+        places:
+          type: array
+          minItems: 2
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [attractionId]
+            properties:
+              attractionId: { $ref: '#/components/schemas/Id' }
+              note: { type: [string, 'null'], maxLength: 500 }
+    PlaceGuideStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [PUBLISHED, OFFLINE] }
+    PlaceGuideCity:
+      type: object
+      additionalProperties: false
+      required: [city, destination, count, coverUrl]
+      properties:
+        city: { type: string }
+        destination: { type: [string, 'null'] }
+        count: { type: integer, minimum: 1 }
+        coverUrl: { type: [string, 'null'], format: uri }
+    PlaceGuidePublisher:
+      type: object
+      additionalProperties: false
+      required: [id, name, count]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        count: { type: integer, minimum: 1 }
+    PlaceGuidePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuide' }
+    PlaceGuideEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlaceGuide' }
+    PlaceGuidePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlaceGuidePage' }
+    PlaceGuideCitiesEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuideCity' }
+    PlaceGuidePublishersEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuidePublisher' }
+
     Article:
       type: object
       additionalProperties: false

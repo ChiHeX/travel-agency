@@ -62,6 +62,7 @@ REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态�
 | 后台 | `/api/admin/**` | STAFF / ADMIN，用户与日志接口再限制 ADMIN |
 | 导游 | `/api/guide/**` | GUIDE / ADMIN，业务方法校验本人 guide_id |
 | 内容 | `GET /api/articles`、`GET /api/attractions`、`/api/consultations` | 公开浏览；咨询需登录 |
+| 地点指南 | `GET /api/place-guides/**`、`/api/admin/place-guides/**` | 公开浏览已发布指南；STAFF / ADMIN 编排与发布 |
 
 ## 数据合规约束
 
@@ -69,4 +70,5 @@ REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态�
 - 密码只保存 BCrypt 哈希；日志不记录密码、Token、完整证件号和支付敏感参数。
 - `sql/test-data.sql` 的账号、线路和景点均标记为测试/演示数据，不代表真实经营数据。
 - 用户端主地图使用 Leaflet 展示 OpenStreetMap 底图；线路详情加载后，在主地图上显示景点标记与顺序连线。地图保留版权及来源提示；坐标由行程数据提供，不调用导航服务。
+- 地点指南单独使用 `place_guide` 和 `place_guide_item` 保存多景点清单；指南详情将景点坐标作为地图标记展示，不绘制线路连线。
 - 支付仅定位于支付宝沙箱业务链路演示，不处理真实商业资金。

@@ -17,6 +17,10 @@ const loginLocation = computed(() => ({
 const unreadCount = ref(0)
 const mapItinerary = ref([])
 provide('setMapItinerary', (itinerary) => { mapItinerary.value = itinerary })
+const mapPlaces = ref([])
+const mapFocus = ref(null)
+provide('setMapPlaces', (places) => { mapPlaces.value = places })
+provide('setMapFocus', (place) => { mapFocus.value = place })
 const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
 let dragStart = null
 let sheetDragged = false
@@ -64,7 +68,7 @@ provide('openDrawer', openDrawer)
 provide('isDrawerOpen', isDrawerOpen)
 
 const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF') || auth.hasRole('GUIDE'))
-const guideViews = ['guides']
+const guideViews = ['guides', 'latest-guides', 'city-guides', 'guide-publishers', 'publisher-guides', 'guide-detail']
 const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', ...guideViews].includes(route.name))
 
 async function refreshUnread() {
@@ -138,6 +142,8 @@ function logout() {
     <MapPreview
       v-if="isMapActiveView"
       :itinerary="mapItinerary"
+      :places="mapPlaces"
+      :focused-place="mapFocus"
       :drawer-open="isDrawerOpen"
       :sidebar-expanded="isSidebarExpanded"
       :sheet-size="sheetSize"

@@ -1,14 +1,16 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const router = useRouter()
 const closeDrawer = inject('closeDrawer', () => {})
 const guides = ref([])
-const loading = ref(false)
+const loading = ref(true)
 const error = ref('')
+const cityData = ref([])
 const activeRegion = ref('')
 const activeCity = ref('')
 const failedImages = ref(new Set())
@@ -17,18 +19,14 @@ const openRegion = ref('')
 const wideSubmenu = ref(false)
 const submenuPosition = ref({ top: '0px', left: '0px', width: '320px' })
 
-const cities = computed(() => [...new Set(guides.value.map((item) => item.city).filter(Boolean))])
-const cityCards = computed(() => cities.value.map((city) => {
-  const cityGuides = guides.value.filter((item) => item.city === city)
-  return { city, count: cityGuides.length, coverGuide: cityGuides.find((item) => item.coverUrl) || null }
-}))
+const cityCards = computed(() => cityData.value.map((item) => ({ ...item, coverGuide: item.coverUrl ? { id: item.city, coverUrl: item.coverUrl } : null })))
 const regionGroups = computed(() => {
   const groups = new Map()
-  for (const guide of guides.value) {
-    const region = guide.destination || guide.city
+  for (const item of cityData.value) {
+    const region = item.destination || item.city
     if (!region) continue
     const group = groups.get(region) || { name: region, cities: new Set() }
-    if (guide.city) group.cities.add(guide.city)
+    if (item.city) group.cities.add(item.city)
     groups.set(region, group)
   }
   return [...groups.values()].map((group) => ({ name: group.name, cities: [...group.cities] }))
@@ -41,6 +39,25 @@ const visibleGuides = computed(() => {
 const scopeLabel = computed(() => activeCity.value || activeRegion.value || '全球')
 const featured = computed(() => visibleGuides.value[0])
 const latest = computed(() => visibleGuides.value.slice(0, 4))
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const [page, cities] = await Promise.all([
+      placeGuideApi.list({ page: 1, size: 100 }),
+      placeGuideApi.cities()
+    ])
+    guides.value = page?.items || []
+    cityData.value = cities || []
+  } catch (cause) {
+    error.value = cause.message || '指南加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
 
 function openGuide(id) {
   router.push({ name: 'guide-detail', params: { id } })
@@ -139,7 +156,7 @@ function toggleScopeMenu() {
     </Teleport>
 
     <main class="guide-scroll">
-      <RequestState v-if="error" :error="error" />
+      <RequestState v-if="error" :error="error" @retry="load" />
       <div v-else-if="loading" class="loading-block"><el-skeleton :rows="9" animated /></div>
       <template v-else-if="visibleGuides.length">
         <button v-if="featured" type="button" class="hero-guide" @click="openGuide(featured.id)">

@@ -685,6 +685,7 @@ paths:
       parameters:
         - name: days
           in: query
+          description: orderTrend 的窗口天数（按自然日补零，序列长度恒等于 days）
           schema: { type: integer, enum: [7, 30], default: 7 }
       responses:
         '200':
@@ -693,6 +694,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DashboardEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/routes:
     get:

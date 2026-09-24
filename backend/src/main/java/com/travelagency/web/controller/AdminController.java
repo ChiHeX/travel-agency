@@ -14,6 +14,7 @@ import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.AccountStatusUpdateRequest;
+import com.travelagency.domain.dto.DashboardView;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.GuideView;
@@ -26,6 +27,7 @@ import com.travelagency.domain.dto.RefundDecisionRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
 import com.travelagency.domain.dto.ReviewView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.dto.StaffAccountRequest;
 import com.travelagency.domain.dto.StaffUpdateRequest;
 import com.travelagency.domain.dto.StaffView;
@@ -52,11 +54,13 @@ import com.travelagency.domain.mapper.SysRoleMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.SysUserRoleMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
+import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.service.DepartureService;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -79,6 +83,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -108,6 +113,7 @@ public class AdminController {
     private final DepartureService departureService;
     private final OrderService orderService;
     private final TravelOrderMapper orderMapper;
+    private final TravelRouteMapper routeMapper;
     private final DepartureMapper departureMapper;
     private final RefundMapper refundMapper;
     private final AttractionMapper attractionMapper;
@@ -127,6 +133,7 @@ public class AdminController {
             DepartureService departureService,
             OrderService orderService,
             TravelOrderMapper orderMapper,
+            TravelRouteMapper routeMapper,
             DepartureMapper departureMapper,
             RefundMapper refundMapper,
             AttractionMapper attractionMapper,
@@ -143,6 +150,7 @@ public class AdminController {
         this.departureService = departureService;
         this.orderService = orderService;
         this.orderMapper = orderMapper;
+        this.routeMapper = routeMapper;
         this.departureMapper = departureMapper;
         this.refundMapper = refundMapper;
         this.attractionMapper = attractionMapper;
@@ -158,33 +166,59 @@ public class AdminController {
         this.guideService = guideService;
     }
 
+    /**
+     * 后台工作台，对齐契约 {@code GET /admin/dashboard}（{@code DashboardData}）。
+     *
+     * <p>计数字段声明为 {@code int}：全局 JacksonConfig 把 {@code Long} 序列化成字符串（为了 ID 不被
+     * JS 精度截断），而契约给这些字段写的是 {@code integer} —— 用 {@code long} 会输出 {@code "15"}
+     * 这类字符串。{@code days} 只控制 {@code orderTrend} 的窗口长度，缺失的日期补零，保证前端拿到的
+     * 是一条连续序列而不是稀疏点。</p>
+     */
     @GetMapping("/dashboard")
-    public ApiResponse<Map<String, Object>> dashboard() {
-        long users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0));
-        long routes = routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
-        long departures = departureMapper.selectCount(new QueryWrapper<Departure>().eq("status", "OPEN"));
-        long todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .ge("created_at", LocalDate.now().atStartOfDay()));
-        long pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .eq("status", OrderStatus.PAID_WAIT_CONFIRM));
-        long pendingRefund = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .eq("status", OrderStatus.REFUND_APPLYING));
-        Object revenue = orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
+    public ApiResponse<DashboardView> dashboard(
+            @RequestParam(defaultValue = "7")
+            @Pattern(regexp = "7|30", message = "days 只能是 7 或 30") String days) {
+        int users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0)).intValue();
+        int routes = (int) routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
+        int departures = departureMapper.selectCount(new QueryWrapper<Departure>().eq("status", "OPEN")).intValue();
+        int todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .ge("created_at", LocalDate.now().atStartOfDay())).intValue();
+        int pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .eq("status", OrderStatus.PAID_WAIT_CONFIRM)).intValue();
+        int pendingRefund = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .eq("status", OrderStatus.REFUND_APPLYING)).intValue();
+        BigDecimal revenue = (BigDecimal) orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
                 .select("COALESCE(SUM(total_amount), 0)").eq("payment_status", "PAID"))
                 .stream().findFirst().orElse(BigDecimal.ZERO);
-        Object participants = orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
+        int participants = ((Number) orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
                 .select("COALESCE(SUM(adult_count + child_count), 0)")
                 .notIn("status", OrderStatus.CANCELLED, OrderStatus.REFUNDED))
-                .stream().findFirst().orElse(0);
-        return ApiResponse.ok(Map.of(
-                "userCount", users,
-                "publishedRouteCount", routes,
-                "openDepartureCount", departures,
-                "todayOrderCount", todayOrders,
-                "pendingConfirmCount", pendingConfirm,
-                "pendingRefundCount", pendingRefund,
-                "participantCount", participants,
-                "grossOrderAmount", revenue));
+                .stream().findFirst().orElse(0)).intValue();
+        return ApiResponse.ok(new DashboardView(users, routes, departures, todayOrders,
+                pendingConfirm, pendingRefund, participants, revenue,
+                orderTrend(Integer.parseInt(days)), popularRoutes(), routeMapper.popularDestinations()));
+    }
+
+    /** 近 {@code days} 天的订单趋势。库里只返回有订单的日期，这里按日历补零。 */
+    private List<DashboardView.Metric> orderTrend(int days) {
+        LocalDate from = LocalDate.now().minusDays(days - 1L);
+        Map<LocalDate, DashboardView.Metric> byDate = new LinkedHashMap<>();
+        orderMapper.dailyTrend(from.atStartOfDay()).forEach(metric -> byDate.put(metric.date(), metric));
+        List<DashboardView.Metric> series = new ArrayList<>(days);
+        for (int i = 0; i < days; i++) {
+            LocalDate date = from.plusDays(i);
+            series.add(byDate.getOrDefault(date, new DashboardView.Metric(date, 0, 0, BigDecimal.ZERO)));
+        }
+        return series;
+    }
+
+    /** 热门线路：与 {@code HomeService} 的排行同口径 —— 已上架且有成交，按成交量取前 8 条。 */
+    private List<RouteSummaryView> popularRoutes() {
+        return routeService.pagePublic(1, 8, null, null, null, null, null, null, null, false,
+                        "validBookingCount,desc", null)
+                .items().stream()
+                .filter(route -> route.validBookingCount() != null && route.validBookingCount() > 0)
+                .toList();
     }
 
     // 线路与行程管理端点已迁移到 AdminRouteController：此前这里的实现与契约不一致

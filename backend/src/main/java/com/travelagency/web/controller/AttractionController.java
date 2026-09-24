@@ -6,6 +6,8 @@ import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.domain.entity.Attraction;
 import com.travelagency.domain.mapper.AttractionMapper;
+import jakarta.validation.constraints.Size;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -13,7 +15,17 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/attractions")
+@Validated
 public class AttractionController {
+
+    /**
+     * 契约对 {@code GET /attractions} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
+     * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
+     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数上 {@code @Size}），
+     * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
+     */
+    private static final int KEYWORD_MAX_LENGTH = 100;
+    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
 
     private final AttractionMapper attractionMapper;
 
@@ -29,7 +41,8 @@ public class AttractionController {
     public ApiResponse<PageResponse<Attraction>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String city) {
         QueryWrapper<Attraction> query = new QueryWrapper<Attraction>().eq("status", 1);
         if (keyword != null && !keyword.isBlank()) {

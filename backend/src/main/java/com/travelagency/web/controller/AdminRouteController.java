@@ -14,8 +14,10 @@ import com.travelagency.domain.dto.RouteUpsertRequest;
 import com.travelagency.domain.dto.RouteView;
 import com.travelagency.domain.service.AdminRouteService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -50,7 +52,20 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/admin")
 @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+@Validated
 public class AdminRouteController {
+
+    /**
+     * 契约对 {@code GET /admin/routes} 查询参数 {@code keyword} 的上限（{@code maxLength: 100}）。
+     * 契约写了上限而实现不校验，上限就只存在于文档里；这里按 {@code OrderController} 对
+     * {@code Idempotency-Key} 的既有做法落地（类上 {@code @Validated} + 参数上 {@code @Size}），
+     * 超长由 {@code GlobalExceptionHandler} 转成 422 {@code VALIDATION_ERROR} + {@code errors[]}。
+     *
+     * <p>同组的 {@code status} 不在此校验：契约的枚举约束已由 {@code AdminRouteService} 拒绝，
+     * 并以此前既有的口径返回 422，无需在控制器叠加第二套形状。</p>
+     */
+    private static final int KEYWORD_MAX_LENGTH = 100;
+    private static final String KEYWORD_LENGTH_CONSTRAINT = "keyword 长度不能超过 100 个字符";
 
     private final AdminRouteService adminRouteService;
 
@@ -67,7 +82,8 @@ public class AdminRouteController {
     public ApiResponse<PageResponse<RouteSummaryView>> routes(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String status) {
         return ApiResponse.ok(adminRouteService.page(page, size, keyword, status));
     }

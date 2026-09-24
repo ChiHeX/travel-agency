@@ -106,12 +106,12 @@ function toggleScopeMenu() {
   <div class="guide-home">
     <header class="guide-header">
       <div>
-        <h1>指南</h1>
+        <h2>指南</h2>
         <button type="button" class="scope-label" :aria-expanded="showScopeMenu" aria-haspopup="menu" @click="toggleScopeMenu">
-          <span>{{ scopeLabel }}</span><AppIcon name="chevron-down" size="15" />
+          <span>{{ scopeLabel }}</span><AppIcon name="chevron-down" size="14" />
         </button>
       </div>
-      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="17" /></button>
+      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="13" /></button>
     </header>
 
     <div v-if="showScopeMenu" class="scope-menu-layer" @click.self="closeScopeMenu">
@@ -184,14 +184,14 @@ function toggleScopeMenu() {
 
 <style scoped>
 .guide-home { position: relative; display: flex; flex-direction: column; height: 100%; background: #f7faf9; color: #111; }
-.guide-header { position: relative; z-index: 22; display: flex; align-items: flex-start; justify-content: space-between; min-height: 88px; padding: 22px 22px 10px; }
-.guide-header h1 { margin: 0; font-size: 30px; line-height: 1; letter-spacing: -.04em; }
-.scope-label { display: inline-flex; align-items: center; gap: 2px; margin-top: 5px; margin-left: -3px; padding: 2px 4px; border: 0; border-radius: 8px; color: var(--theme-blue); background: transparent; font-size: 17px; font-weight: 700; line-height: 1.1; cursor: pointer; }.scope-label svg { margin-top: 2px; transition: transform .18s ease; }.scope-label[aria-expanded="true"] svg { transform: rotate(180deg); }.scope-label:hover { background: rgba(0,113,227,.07); }
-.circle-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
-.scope-menu-layer { position: absolute; z-index: 21; inset: 80px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
-.scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 21px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
-.scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 72px; padding: 0 26px; border: 0; color: #1d1d1f; background: transparent; font-size: 18px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }
-.scope-submenu { position: fixed; z-index: 100; max-height: 360px; overflow-y: auto; padding: 12px 0; border: 1px solid rgba(0,0,0,.05); border-radius: 21px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }.scope-submenu button { display: grid; gap: 0; width: 100%; min-height: 76px; padding: 12px 26px; border: 0; background: transparent; text-align: left; cursor: pointer; }.scope-submenu button:hover { background: #f2f2f7; }.scope-submenu span { color: #1d1d1f; font-size: 18px; }.scope-submenu small { color: #737378; font-size: 16px; }
+.guide-header { position: relative; z-index: 22; display: flex; align-items: flex-start; justify-content: space-between; min-height: 60px; padding: 16px 20px 10px; }
+.guide-header h1, .guide-header h2 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+.scope-label { display: inline-flex; align-items: center; gap: 3px; margin-top: 3px; margin-left: -3px; padding: 2px 4px; border: 0; border-radius: 6px; color: var(--theme-blue); background: transparent; font-size: 15px; font-weight: 650; line-height: 1.2; cursor: pointer; }.scope-label svg { margin-top: 1px; transition: transform .18s ease; }.scope-label[aria-expanded="true"] svg { transform: rotate(180deg); }.scope-label:hover { background: rgba(0,113,227,.07); }
+.circle-button { width: 28px; height: 28px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
+.scope-menu-layer { position: absolute; z-index: 21; inset: 64px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
+.scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
+.scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 52px; padding: 0 20px; border: 0; color: #1d1d1f; background: transparent; font-size: 15px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }
+.scope-submenu { position: fixed; z-index: 100; max-height: 360px; overflow-y: auto; padding: 8px 0; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }.scope-submenu button { display: grid; gap: 0; width: 100%; min-height: 52px; padding: 8px 20px; border: 0; background: transparent; text-align: left; cursor: pointer; }.scope-submenu button:hover { background: #f2f2f7; }.scope-submenu span { color: #1d1d1f; font-size: 15px; }.scope-submenu small { color: #737378; font-size: 13px; }
 .guide-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 22px 32px; }
 .loading-block { padding: 10px 0; }
 .hero-guide, .portrait-card { position: relative; overflow: hidden; border: 0; color: white; background: #dceaf1; text-align: left; cursor: pointer; }
@@ -201,20 +201,21 @@ function toggleScopeMenu() {
 .hero-shade, .card-shade { position: absolute; inset: 0; background: linear-gradient(0deg, rgba(0,0,0,.72), transparent 62%); }
 .hero-copy, .card-copy { position: absolute; right: 16px; bottom: 16px; left: 16px; display: grid; gap: 3px; }
 .hero-copy small, .card-copy small { font-size: 11px; font-weight: 650; }
-.hero-copy strong { font-size: 21px; line-height: 1.1; letter-spacing: -.02em; }
-.content-section { margin-top: 28px; }
-.section-title { display: inline-flex; align-items: center; gap: 2px; margin-bottom: 12px; border-radius: 7px; }.section-title:hover { color: var(--theme-blue); }
-.content-section h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -.025em; }
-.section-title h2 { margin: 0; }
+.hero-copy strong { font-size: 18px; line-height: 1.15; letter-spacing: -.02em; }
+.hero-copy small, .card-copy small { font-size: 11px; font-weight: 650; }
+.content-section { margin-top: 24px; }
+.section-title { display: inline-flex; align-items: center; gap: 3px; margin-bottom: 10px; border-radius: 7px; color: inherit; text-decoration: none; }.section-title:hover { color: var(--theme-blue); }
+.content-section h2 { margin: 0 0 10px; color: #1d1d1f; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.section-title h2 { margin: 0; color: #1d1d1f; font-size: 15px; font-weight: 700; }
 .latest-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
 .latest-grid::-webkit-scrollbar { display: none; }
 .portrait-card { height: 238px; border-radius: 17px; scroll-snap-align: start; }
-.card-copy strong { font-size: 17px; line-height: 1.16; }
-.city-section { margin-right: -22px; margin-left: -22px; padding: 22px; background: #f1f1ef; }
+.card-copy strong { font-size: 14px; line-height: 1.2; }
+.city-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.city-grid button { position: relative; min-height: 112px; padding: 16px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }.city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.6),transparent 70%); }
+.city-grid button { position: relative; min-height: 112px; padding: 14px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }.city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.6),transparent 70%); }
 .city-grid button:nth-child(2n) { background: linear-gradient(145deg,#807766,#464238); }
-.city-grid span, .city-grid small { position: relative; }.city-grid span { font-size: 18px; font-weight: 750; }.city-grid small { opacity: .8; }
+.city-grid span, .city-grid small { position: relative; }.city-grid span { font-size: 15px; font-weight: 700; }.city-grid small { font-size: 11px; opacity: .85; }
 .publisher-entry { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 12px; margin-top: 22px; padding: 14px; border-radius: 16px; background: white; }
 .publisher-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: var(--theme-blue); background: var(--theme-blue-tint); }
 .publisher-entry strong, .publisher-entry small { display: block; }.publisher-entry strong { font-size: 14px; }.publisher-entry small { margin-top: 3px; color: #8e8e93; font-size: 11px; }

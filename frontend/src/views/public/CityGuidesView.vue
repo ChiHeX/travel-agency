@@ -130,12 +130,12 @@ onMounted(load)
   <div ref="pageRoot" class="city-guide-page">
     <header class="city-header">
       <div>
-        <h1>指南</h1>
+        <h2>指南</h2>
         <button type="button" class="city-selector" :aria-expanded="showScopeMenu" aria-haspopup="menu" aria-label="切换指南城市" @click="toggleScopeMenu">
-          <span>{{ city }}</span><AppIcon name="chevron-down" size="15" />
+          <span>{{ city }}</span><AppIcon name="chevron-down" size="14" />
         </button>
       </div>
-      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="17" /></button>
+      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="13" /></button>
     </header>
 
     <div v-if="showScopeMenu" class="scope-menu-layer" @click.self="closeScopeMenu">
@@ -215,17 +215,17 @@ onMounted(load)
 
 <style scoped>
 .city-guide-page { position: relative; height: 100%; overflow-y: auto; color: #111; background: #f7faf9; }
-.city-header { position: sticky; z-index: 5; top: 0; display: flex; align-items: flex-start; justify-content: space-between; min-height: 88px; padding: 22px 22px 10px; background: rgba(247,250,249,.9); backdrop-filter: blur(18px) saturate(150%); }
-.city-header h1 { margin: 0; font-size: 30px; line-height: 1; letter-spacing: -.04em; }
-.city-selector { display: inline-flex; align-items: center; gap: 2px; margin: 5px 0 0 -3px; padding: 2px 4px; border: 0; border-radius: 8px; color: var(--theme-blue); background: transparent; font-size: 17px; font-weight: 700; cursor: pointer; }
-.city-selector svg { margin-top: 2px; transition: transform .18s ease; }.city-selector[aria-expanded="true"] svg { transform: rotate(180deg); }.city-selector:hover { background: rgba(0,113,227,.07); }
-.circle-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
-.scope-menu-layer { position: absolute; z-index: 4; inset: 80px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
-.scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 21px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
-.scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 72px; padding: 0 26px; border: 0; color: #1d1d1f; background: transparent; font-size: 18px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }.checkmark { margin-left: auto; font-size: 25px; font-weight: 400; }
-:global(.city-scope-submenu) { position: fixed; z-index: 100; max-height: 360px; overflow-y: auto; padding: 10px; border: 1px solid rgba(0,0,0,.05); border-radius: 21px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
-:global(.city-scope-submenu button) { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 94px; padding: 12px 18px; border: 0; border-radius: 16px; background: transparent; text-align: left; cursor: pointer; }
-:global(.city-scope-submenu button:hover), :global(.city-scope-submenu button.selected) { background: #f2f2f7; }:global(.city-scope-submenu button > span:first-child) { display: grid; }:global(.city-scope-submenu strong) { color: #1d1d1f; font-size: 18px; font-weight: 500; }:global(.city-scope-submenu small) { color: #737378; font-size: 16px; }:global(.city-scope-submenu .checkmark) { color: #1d1d1f; font-size: 25px; }
+.city-header { position: sticky; z-index: 5; top: 0; display: flex; align-items: flex-start; justify-content: space-between; min-height: 60px; padding: 16px 20px 10px; background: rgba(247,250,249,.9); backdrop-filter: blur(18px) saturate(150%); }
+.city-header h1, .city-header h2 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+.city-selector { display: inline-flex; align-items: center; gap: 3px; margin: 3px 0 0 -3px; padding: 2px 4px; border: 0; border-radius: 6px; color: var(--theme-blue); background: transparent; font-size: 15px; font-weight: 650; line-height: 1.2; cursor: pointer; }
+.city-selector svg { margin-top: 1px; transition: transform .18s ease; }.city-selector[aria-expanded="true"] svg { transform: rotate(180deg); }.city-selector:hover { background: rgba(0,113,227,.07); }
+.circle-button { width: 28px; height: 28px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
+.scope-menu-layer { position: absolute; z-index: 4; inset: 64px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
+.scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
+.scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 52px; padding: 0 20px; border: 0; color: #1d1d1f; background: transparent; font-size: 15px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }.checkmark { margin-left: auto; font-size: 20px; font-weight: 400; }
+:global(.city-scope-submenu) { position: fixed; z-index: 100; max-height: 360px; overflow-y: auto; padding: 8px; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
+:global(.city-scope-submenu button) { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 58px; padding: 10px 16px; border: 0; border-radius: 12px; background: transparent; text-align: left; cursor: pointer; }
+:global(.city-scope-submenu button:hover), :global(.city-scope-submenu button.selected) { background: #f2f2f7; }:global(.city-scope-submenu button > span:first-child) { display: grid; }:global(.city-scope-submenu strong) { color: #1d1d1f; font-size: 15px; font-weight: 500; }:global(.city-scope-submenu small) { color: #737378; font-size: 13px; }:global(.city-scope-submenu .checkmark) { color: #1d1d1f; font-size: 20px; }
 main { padding: 8px 22px 34px; }.loading-block { padding-top: 8px; }
 .hero-card, .guide-card { position: relative; overflow: hidden; border: 0; color: white; background: #cbe7ec; text-align: left; cursor: pointer; }
 .hero-card { width: 100%; height: 205px; border-radius: 18px; }
@@ -233,15 +233,15 @@ main { padding: 8px 22px 34px; }.loading-block { padding-top: 8px; }
 .media-fallback { display: grid; place-items: center; color: #2976a8; background: linear-gradient(145deg,#bde7f1,#dce9d0); }
 .hero-card > i, .guide-card > i { position: absolute; inset: 0; background: linear-gradient(0deg,rgba(0,0,0,.72),transparent 64%); }
 .hero-card > span, .guide-card > span { position: absolute; right: 16px; bottom: 15px; left: 16px; display: grid; gap: 3px; }
-.hero-card small, .guide-card small { font-size: 11px; font-weight: 650; }.hero-card strong { font-size: 21px; line-height: 1.12; }.guide-card strong { font-size: 16px; line-height: 1.14; }
-.guide-section { margin-top: 28px; }.guide-section h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -.025em; }
-.section-title { display: inline-flex; align-items: center; gap: 2px; margin-bottom: 12px; border-radius: 7px; }.section-title h2 { margin: 0; }.section-title:hover { color: var(--theme-blue); }
+.hero-card small, .guide-card small { font-size: 11px; font-weight: 650; }.hero-card strong { font-size: 18px; line-height: 1.15; }.guide-card strong { font-size: 14px; line-height: 1.2; }
+.guide-section { margin-top: 24px; }.guide-section h2 { margin: 0 0 10px; color: #1d1d1f; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.section-title { display: inline-flex; align-items: center; gap: 3px; margin-bottom: 10px; border-radius: 7px; color: inherit; text-decoration: none; }.section-title h2 { margin: 0; color: #1d1d1f; font-size: 15px; font-weight: 700; }.section-title:hover { color: var(--theme-blue); }
 .card-row { display: grid; grid-auto-flow: column; grid-auto-columns: calc(50% - 5px); gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }.card-row::-webkit-scrollbar { display: none; }
 .guide-card { height: 220px; border-radius: 17px; scroll-snap-align: start; }
-.cities-section { margin-right: -22px; margin-left: -22px; padding: 22px; background: #f1f1ef; }
+.cities-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.city-grid button { position: relative; min-height: 112px; padding: 16px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }
+.city-grid button { position: relative; min-height: 112px; padding: 14px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }
 .city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.62),transparent 70%); }
-.city-grid span, .city-grid small { position: relative; }.city-grid span { font-size: 18px; font-weight: 750; }.city-grid small { opacity: .82; }
+.city-grid span, .city-grid small { position: relative; }.city-grid span { font-size: 15px; font-weight: 700; }.city-grid small { font-size: 11px; opacity: .85; }
 @media (max-width: 900px) { .city-header { padding-top: 16px; }.hero-card { height: 225px; }.guide-card { height: 238px; }main { padding-bottom: calc(34px + env(safe-area-inset-bottom)); } }
 </style>

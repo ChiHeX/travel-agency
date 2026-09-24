@@ -16,7 +16,7 @@ const failedImages = ref(new Set())
 
 const hasCoordinates = computed(() => place.value?.longitude != null && place.value?.latitude != null)
 const mapUrl = computed(() => hasCoordinates.value
-  ? `https://uri.amap.com/marker?position=${place.value.longitude},${place.value.latitude}&name=${encodeURIComponent(place.value.name)}`
+  ? `https://www.openstreetmap.org/?mlat=${place.value.latitude}&mlon=${place.value.longitude}#map=15/${place.value.latitude}/${place.value.longitude}`
   : '')
 
 async function load() {

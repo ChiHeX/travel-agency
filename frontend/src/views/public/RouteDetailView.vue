@@ -1,16 +1,16 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
-import MapPreview from '@/components/MapPreview.vue'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 const closeDrawer = inject('closeDrawer', () => {})
+const setMapItinerary = inject('setMapItinerary', () => {})
 const data = ref(null)
 const loading = ref(true)
 const errorMessage = ref('')
@@ -23,18 +23,22 @@ const selectedDeparture = computed(
   () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
 )
 const reviews = computed(() => data.value?.reviews || [])
+const hasMapPoints = computed(() => data.value?.itinerary?.some((day) =>
+  day.items?.some((item) => item.longitude != null && item.latitude != null)) || false)
 
 async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
     data.value = await routeApi.detail(route.params.id)
+    setMapItinerary(data.value?.itinerary || [])
     favorite.value = Boolean(data.value?.favorite)
     if (departures.value.length > 0) {
       selectedDepartureId.value = departures.value.find(isDepartureBookable)?.id || null
     }
   } catch (error) {
     data.value = null
+    setMapItinerary([])
     errorMessage.value = error.message || '线路详情加载失败，请稍后重试'
   } finally {
     loading.value = false
@@ -105,6 +109,7 @@ async function shareRoute() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => setMapItinerary([]))
 </script>
 
 <template>
@@ -298,7 +303,8 @@ onMounted(load)
             <h4>行程地图</h4>
             <span class="sub-hint">按行程顺序展示</span>
           </div>
-          <MapPreview :itinerary="data.itinerary || []" />
+          <p v-if="hasMapPoints">景点标记与行程连线已显示在主地图上。收起面板可查看完整地图。</p>
+          <p v-else>暂无经纬度坐标。在后台行程项中录入景点坐标后，主地图会显示行程位置。</p>
         </div>
 
         <div class="sheet-section route-notes-section">
@@ -854,10 +860,11 @@ onMounted(load)
   gap: 3px;
 }
 
-.map-section :deep(.map-preview-card) {
-  height: 260px;
-  border-radius: var(--radius-md);
-  box-shadow: none;
+.map-section p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .detail-notes-grid {

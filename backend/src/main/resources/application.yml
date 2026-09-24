@@ -42,9 +42,6 @@ app:
     secret: ${JWT_SECRET:}
     expire-hours: ${JWT_EXPIRE_HOURS:24}
   integrations:
-    amap:
-      enabled: ${AMAP_ENABLED:false}
-      web-key: ${AMAP_WEB_KEY:}
     alipay:
       sandbox: ${ALIPAY_SANDBOX:true}
       enabled: ${ALIPAY_ENABLED:false}

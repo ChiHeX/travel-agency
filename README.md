@@ -5,8 +5,8 @@
 ## 技术栈
 
 - 后端：Java 21、Spring Boot 4.0.8、Maven、MyBatis-Plus 3.5.17、MySQL 9.7
-- 前端：Vue 3、JavaScript、Vite、Vue Router、Pinia、Element Plus、npm
-- 第三方适配：高德地图 JS API、支付宝沙箱回调适配点
+- 前端：Vue 3、JavaScript、Vite、Vue Router、Pinia、Element Plus、npm、Leaflet
+- 第三方适配：OpenStreetMap 底图、支付宝沙箱回调适配点
 
 ## 目录
 
@@ -80,7 +80,7 @@ npm run dev
 
 访问：`http://localhost:5173`。Vite 会将 `/api` 代理到 `http://localhost:8080`。
 
-高德地图可选配置：在 `frontend/.env` 中填写 `VITE_AMAP_KEY` 和 `VITE_AMAP_SECURITY_CODE`。未配置时页面保留地图来源说明和占位状态，不会伪造地图数据。
+主地图无需 API Key。地图使用 Leaflet 加载 OpenStreetMap 公共瓦片；线路详情加载后，在主地图上显示行程数据中的景点坐标和顺序连线。没有坐标时仅显示底图，详情面板提示录入坐标。请为新录入的坐标使用 WGS-84，并核对已有坐标的来源；若已有数据是高德 GCJ-02 坐标，直接显示在 OpenStreetMap 底图上可能产生偏移。公共瓦片仅供符合 [OpenStreetMap 使用政策](https://operations.osmfoundation.org/policies/tiles/) 的交互浏览使用，地图中必须保留 OpenStreetMap 贡献者署名。
 
 演示管理员账号（执行 `test-data.sql` 后）：`admin / password`。该账号和所有 SQL 测试数据仅用于软件测试、课程演示，不代表真实旅行社经营数据。
 
@@ -112,7 +112,6 @@ npm run dev:mock
 ```text
 DB_URL / DB_USERNAME / DB_PASSWORD
 JWT_SECRET
-AMAP_ENABLED / AMAP_WEB_KEY
 ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
 ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
 ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID

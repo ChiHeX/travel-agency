@@ -9,7 +9,7 @@ import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -55,7 +55,7 @@ public class RouteController {
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "12") long size,
             @RequestParam(required = false)
-            @Size(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
+            @CodePointLength(max = KEYWORD_MAX_LENGTH, message = KEYWORD_LENGTH_CONSTRAINT) String keyword,
             @RequestParam(required = false) String departureCity,
             @RequestParam(required = false) String destination,
             @RequestParam(required = false) BigDecimal minPrice,

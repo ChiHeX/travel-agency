@@ -35,7 +35,8 @@ public class AttractionController {
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
             @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
-            @RequestParam(required = false) String city) {
+            @RequestParam(required = false)
+            @CodePointLength(max = 64, message = "city 长度不能超过 64 个字符") String city) {
         QueryWrapper<Attraction> query = new QueryWrapper<Attraction>().eq("status", 1);
         if (keyword != null && !keyword.isBlank()) {
             query.and(w -> w.like("name", keyword.trim()).or().like("intro", keyword.trim()));

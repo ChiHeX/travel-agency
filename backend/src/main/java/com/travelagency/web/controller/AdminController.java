@@ -655,7 +655,8 @@ public class AdminController {
     public ApiResponse<PageResponse<OperationLogView>> logs(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String module,
+            @RequestParam(required = false)
+            @CodePointLength(max = 64, message = "module 长度不能超过 64 个字符") String module,
             @RequestParam(required = false) Long operatorId) {
         QueryWrapper<OperationLog> query = new QueryWrapper<>();
         if (module != null && !module.isBlank()) {

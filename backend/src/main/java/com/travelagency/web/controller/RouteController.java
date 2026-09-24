@@ -46,8 +46,10 @@ public class RouteController {
             @RequestParam(defaultValue = "12") long size,
             @RequestParam(required = false)
             @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
-            @RequestParam(required = false) String departureCity,
-            @RequestParam(required = false) String destination,
+            @RequestParam(required = false)
+            @CodePointLength(max = 64, message = "departureCity 长度不能超过 64 个字符") String departureCity,
+            @RequestParam(required = false)
+            @CodePointLength(max = 128, message = "destination 长度不能超过 128 个字符") String destination,
             @RequestParam(required = false) BigDecimal minPrice,
             @RequestParam(required = false) BigDecimal maxPrice,
             @RequestParam(required = false) Integer durationDays,

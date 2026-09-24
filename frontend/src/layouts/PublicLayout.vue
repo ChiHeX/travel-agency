@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { accountApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import WorldMapCanvas from '@/components/WorldMapCanvas.vue'
+import MapPreview from '@/components/MapPreview.vue'
 import AccountNav from '@/components/AccountNav.vue'
 
 const auth = useAuthStore()
@@ -15,6 +15,8 @@ const loginLocation = computed(() => ({
   query: route.path.startsWith('/auth/') ? route.query : { redirect: route.fullPath }
 }))
 const unreadCount = ref(0)
+const mapItinerary = ref([])
+provide('setMapItinerary', (itinerary) => { mapItinerary.value = itinerary })
 const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
 let dragStart = null
 let sheetDragged = false
@@ -132,12 +134,13 @@ function logout() {
       <button @click="handleTabClick('guides')">指南</button>
       <RouterLink :to="auth.isLoggedIn ? '/account/profile' : loginLocation">{{ auth.isLoggedIn ? '我的' : '登录' }}</RouterLink>
     </nav>
-    <!-- ==========================================================================
-         1. Full-Screen 360° Infinite Continuous World Map Canvas (Underneath)
-         ========================================================================== -->
-    <WorldMapCanvas
+    <!-- Main interactive map behind the content drawer -->
+    <MapPreview
       v-if="isMapActiveView"
-      :pins="[]"
+      :itinerary="mapItinerary"
+      :drawer-open="isDrawerOpen"
+      :sidebar-expanded="isSidebarExpanded"
+      :sheet-size="sheetSize"
     />
 
     <!-- ==========================================================================
@@ -289,7 +292,7 @@ function logout() {
 
 <style scoped>
 /* ==========================================================================
-   Full-Bleed Map + Floating Frosted Glass UI Architecture
+   Full-screen map + floating content drawer
    ========================================================================== */
 
 .app-layout-shell {
@@ -702,8 +705,5 @@ function logout() {
   .sheet-size-actions { display: flex; gap: 20px; }
   .sheet-size-actions button { padding: 4px 12px; border: 0; background: none; color: var(--theme-blue); font-size: 11px; }
   .route-view-body { overflow: auto; }
-  .app-layout-shell:not(.drawer-closed) :deep(.map-floating-bottom-right),
-  .app-layout-shell:not(.drawer-closed) :deep(.map-floating-bottom-center),
-  .app-layout-shell:not(.drawer-closed) :deep(.map-floating-top-right) { display: none; }
 }
 </style>

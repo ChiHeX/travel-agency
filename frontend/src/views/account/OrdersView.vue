@@ -221,13 +221,27 @@ onMounted(load)
   align-items: center;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 8px;
   margin-bottom: 20px;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: #a9bfd8 transparent;
 }
 
 .status-tab-bar::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+
+.status-tab-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.status-tab-bar::-webkit-scrollbar-thumb {
+  background: #a9bfd8;
+  border-radius: var(--radius-full);
+}
+
+.status-tab-bar::-webkit-scrollbar-thumb:hover {
+  background: #7da7d1;
 }
 
 .status-tab-btn {

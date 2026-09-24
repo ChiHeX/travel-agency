@@ -9,14 +9,13 @@ const router = useRouter()
 const closeDrawer = inject('closeDrawer', () => {})
 
 const form = reactive({
-  keyword: currentRoute.query.keyword || '',
   departureCity: currentRoute.query.departureCity || '',
   destination: currentRoute.query.destination || '',
   durationDays: currentRoute.query.durationDays || '',
   departureMonth: currentRoute.query.departureMonth || '',
   minPrice: currentRoute.query.minPrice || '',
   maxPrice: currentRoute.query.maxPrice || '',
-  hasDeparture: currentRoute.query.hasDeparture !== 'false',
+  hasDeparture: currentRoute.query.hasDeparture === 'true',
   sortBy: currentRoute.query.sortBy || ''
 })
 
@@ -27,8 +26,13 @@ const pageSize = 10
 const loading = ref(false)
 const errorMessage = ref('')
 const showAdvancedFilters = ref(false)
+const appliedSearchKey = ref('')
+let latestRequest = 0
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const hasEndpoints = computed(() => Boolean(form.departureCity.trim() && form.destination.trim()))
+const showResults = computed(() =>
+  hasEndpoints.value && appliedSearchKey.value === JSON.stringify(buildParams())
+)
 
 function buildParams() {
   const sortMap = {
@@ -38,7 +42,6 @@ function buildParams() {
     rating: 'ratingAvg,desc'
   }
   return {
-    keyword: form.keyword.trim() || undefined,
     departureCity: form.departureCity.trim() || undefined,
     destination: form.destination.trim() || undefined,
     durationDays: form.durationDays || undefined,
@@ -55,14 +58,13 @@ function buildParams() {
 function syncQuery() {
   const query = Object.fromEntries(
     Object.entries({
-      keyword: form.keyword,
       departureCity: form.departureCity,
       destination: form.destination,
       durationDays: form.durationDays,
       departureMonth: form.departureMonth,
       minPrice: form.minPrice,
       maxPrice: form.maxPrice,
-      hasDeparture: form.hasDeparture ? 'true' : 'false',
+      hasDeparture: form.hasDeparture ? 'true' : '',
       sortBy: form.sortBy,
       page: page.value > 1 ? String(page.value) : ''
     }).filter(([, value]) => value !== '' && value != null)
@@ -72,20 +74,35 @@ function syncQuery() {
 
 async function load(options = {}) {
   if (options.resetPage) page.value = 1
-  loading.value = true
+  const requestId = ++latestRequest
+  const params = buildParams()
   errorMessage.value = ''
   syncQuery()
+  if (!hasEndpoints.value) {
+    routes.value = []
+    total.value = 0
+    appliedSearchKey.value = ''
+    loading.value = false
+    return
+  }
+  appliedSearchKey.value = JSON.stringify(params)
+  loading.value = true
   try {
-    const data = await routeApi.list(buildParams())
+    const data = await routeApi.list(params)
+    if (requestId !== latestRequest) return
     routes.value = data?.items || []
     total.value = data?.total || 0
-    if (data?.page && data.page !== page.value) page.value = data.page
+    if (data?.page && data.page !== page.value) {
+      page.value = data.page
+      appliedSearchKey.value = JSON.stringify(buildParams())
+    }
   } catch (error) {
+    if (requestId !== latestRequest) return
     routes.value = []
     total.value = 0
     errorMessage.value = error.message || '线路加载失败，请稍后重试'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 
@@ -100,26 +117,32 @@ function openRoute(id) {
 
 function resetFilters() {
   Object.assign(form, {
-    keyword: '',
     departureCity: '',
     destination: '',
     durationDays: '',
     departureMonth: '',
     minPrice: '',
     maxPrice: '',
-    hasDeparture: true,
+    hasDeparture: false,
     sortBy: ''
   })
   load({ resetPage: true })
 }
 
-function toggleAvailability() {
-  form.hasDeparture = !form.hasDeparture
+function swapEndpoints() {
+  const departureCity = form.departureCity
+  form.departureCity = form.destination
+  form.destination = departureCity
   load({ resetPage: true })
 }
 
 function applyFilters() {
   if (form.minPrice !== '' && form.maxPrice !== '' && Number(form.minPrice) > Number(form.maxPrice)) {
+    latestRequest += 1
+    routes.value = []
+    total.value = 0
+    loading.value = false
+    appliedSearchKey.value = JSON.stringify(buildParams())
     errorMessage.value = '最低价格不能高于最高价格'
     return
   }
@@ -131,62 +154,45 @@ onMounted(load)
 
 <template>
   <div class="route-drawer-panel">
-    <!-- Header: 路线 ↺ ✕ (Screenshot 3) -->
     <div class="drawer-header-bar">
       <h2>路线</h2>
       <div class="header-action-icons">
-        <button type="button" class="drawer-icon-btn" title="重置筛选" @click="resetFilters">
+        <button type="button" class="drawer-icon-btn" title="清空路线与筛选" aria-label="清空路线与筛选" @click="resetFilters">
           <AppIcon name="refresh" size="13" />
         </button>
-        <button type="button" class="drawer-icon-btn" title="关闭面板" @click="closeDrawer">
+        <button type="button" class="drawer-icon-btn" title="关闭面板" aria-label="关闭面板" @click="closeDrawer">
           <AppIcon name="close" size="13" />
         </button>
       </div>
     </div>
 
     <div class="drawer-scroll-body">
-      <form class="drawer-search-box" @submit.prevent="load({ resetPage: true })">
-        <AppIcon name="search" size="14" color="#8e8e93" />
-        <input v-model="form.keyword" type="search" placeholder="搜索线路名称或景点" aria-label="搜索线路名称或景点" />
-        <button v-if="form.keyword" type="button" class="clear-search-btn" title="清空关键词" @click="form.keyword = ''; load({ resetPage: true })">
-          <AppIcon name="close" size="10" color="#ffffff" />
-        </button>
-      </form>
-
-      <!-- Waypoint Inputs with Vertical Connector (Screenshot 3) -->
+      <p class="route-intro">选择出发地与目的地，查看可报名的跟团游。</p>
       <div class="waypoints-card-box">
-        <!-- Start Point (起点) -->
         <div class="waypoint-row">
           <span class="waypoint-bullet blue">
             <AppIcon name="circle" size="13" color="#0071e3" />
           </span>
           <div class="waypoint-input-box">
-            <span class="input-sub">起点 / 出发城市</span>
-            <input v-model="form.departureCity" placeholder="输入出发城市" @change="load" />
+            <label class="input-sub" for="route-departure">出发城市</label>
+            <input id="route-departure" v-model="form.departureCity" placeholder="从哪里出发" @change="load({ resetPage: true })" @keyup.enter="$event.target.blur()" />
           </div>
-          <span class="waypoint-drag">
-            <AppIcon name="drag" size="14" color="#8e8e93" />
-          </span>
         </div>
 
         <div class="vertical-connector-line"></div>
 
-        <!-- End Point (终点) -->
         <div class="waypoint-row">
           <span class="waypoint-bullet blue">
             <AppIcon name="pin" size="13" color="#0071e3" />
           </span>
           <div class="waypoint-input-box">
-            <span class="input-sub">终点 / 目的地</span>
-            <input v-model="form.destination" placeholder="输入目的地" @change="load" />
+            <label class="input-sub" for="route-destination">目的地</label>
+            <input id="route-destination" v-model="form.destination" placeholder="想去哪里" @change="load({ resetPage: true })" @keyup.enter="$event.target.blur()" />
           </div>
-          <span class="waypoint-drag">
-            <AppIcon name="drag" size="14" color="#8e8e93" />
-          </span>
         </div>
+        <button type="button" class="swap-endpoints-btn" title="交换出发城市与目的地" aria-label="交换出发城市与目的地" @click="swapEndpoints">⇅</button>
       </div>
 
-      <!-- Options Dropdowns (Screenshot 3) -->
       <div class="options-pills-row primary-filters-row">
         <div class="pill-dropdown">
           <select v-model="form.durationDays" aria-label="出游天数" @change="applyFilters">
@@ -200,10 +206,6 @@ onMounted(load)
             <option v-for="month in 12" :key="month" :value="month">{{ month }} 月出发</option>
           </select>
         </div>
-        <button type="button" class="pill-btn" :class="{ active: form.hasDeparture }" @click="toggleAvailability">
-          <AppIcon name="filter" size="11" />
-          <span>{{ form.hasDeparture ? '仅可报名' : '全部线路' }}</span>
-        </button>
       </div>
 
       <details class="advanced-filter-panel" :open="showAdvancedFilters" @toggle="showAdvancedFilters = $event.target.open">
@@ -220,12 +222,20 @@ onMounted(load)
           </label>
           <button type="button" class="filter-apply-btn" @click="applyFilters">应用</button>
         </div>
+        <label class="availability-filter">
+          <input v-model="form.hasDeparture" type="checkbox" @change="applyFilters" />
+          <span>仅显示有可报名团期的线路</span>
+        </label>
       </details>
 
-      <!-- Route Plans / Results List (地图 Route Cards) -->
-      <div class="route-plans-section">
+      <div v-if="!showResults" class="route-search-hint">
+        <AppIcon name="pin" size="18" color="#8e8e93" />
+        <p>{{ hasEndpoints ? '确认地点或应用筛选后，显示更新的跟团游方案。' : '填写出发城市和目的地后，显示匹配的跟团游方案。' }}</p>
+      </div>
+
+      <div v-else class="route-plans-section">
         <div class="plans-heading-row">
-          <h4 class="plans-title">匹配跟团游方案 <span v-if="!loading" class="result-count">{{ total }}</span></h4>
+          <h4 class="plans-title">可选线路 <span v-if="!loading" class="result-count">{{ total }} 条</span></h4>
           <select v-model="form.sortBy" class="sort-select" aria-label="线路排序" @change="applyFilters">
             <option value="">综合排序</option>
             <option value="priceAsc">价格从低到高</option>
@@ -246,15 +256,16 @@ onMounted(load)
         </div>
 
         <div v-else-if="routes.length" class="route-plans-list">
-          <div
+          <button
             v-for="item in routes"
             :key="item.id"
+            type="button"
             class="route-plan-card"
             @click="openRoute(item.id)"
           >
             <div class="plan-card-left">
               <span class="mode-icon">
-                <AppIcon name="bus" size="18" color="#0071e3" />
+                <AppIcon name="pin" size="18" color="#0071e3" />
               </span>
               <div class="plan-info">
                 <h5>{{ item.name }}</h5>
@@ -267,7 +278,7 @@ onMounted(load)
               <span v-else class="plan-price pending-price">价格待发布</span>
               <AppIcon name="chevron-right" size="14" color="#8e8e93" />
             </div>
-          </div>
+          </button>
         </div>
 
         <div v-else class="empty-box">
@@ -297,7 +308,6 @@ onMounted(load)
   background: transparent;
 }
 
-/* Header (Screenshot 3: 路线 📤 ✕) */
 .drawer-header-bar {
   display: flex;
   justify-content: space-between;
@@ -344,85 +354,36 @@ onMounted(load)
   padding: 16px 20px 32px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
-.drawer-search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 12px;
-  border-radius: var(--radius-sm);
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.drawer-search-box input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.drawer-search-box input::placeholder {
-  color: #8e8e93;
-}
-
-.clear-search-btn {
-  display: grid;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  background: #c7c7cc;
-  cursor: pointer;
-}
-
-/* Transport Mode Switcher (Screenshot 3) */
-.transport-mode-switch {
-  display: flex;
-  background: rgba(0, 0, 0, 0.06);
-  padding: 3px;
-  border-radius: var(--radius-sm);
-  gap: 2px;
-}
-
-.mode-btn {
-  flex: 1;
-  border: none;
-  background: transparent;
-  padding: 7px 0;
-  border-radius: 6px;
+.route-intro {
+  margin: 0 2px;
+  color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 500;
-  color: #1d1d1f;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  transition: all 0.15s ease;
+  line-height: 1.5;
 }
 
-.mode-btn.active {
-  background: var(--theme-blue);
-  color: #ffffff;
-  font-weight: 600;
+.route-search-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-/* Waypoints Card (Screenshot 3) */
+.route-search-hint p { margin: 0; }
+
 .waypoints-card-box {
+  position: relative;
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
+  padding: 14px 50px 14px 16px;
   display: flex;
   flex-direction: column;
 }
@@ -430,7 +391,8 @@ onMounted(load)
 .waypoint-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  min-height: 42px;
 }
 
 .waypoint-bullet {
@@ -445,9 +407,8 @@ onMounted(load)
 }
 
 .input-sub {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-tertiary);
-  text-transform: uppercase;
 }
 
 .waypoint-input-box input {
@@ -455,26 +416,50 @@ onMounted(load)
   outline: none;
   background: transparent;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   color: #1d1d1f;
   padding: 2px 0;
 }
 
-.waypoint-drag {
-  display: flex;
-  align-items: center;
+.waypoint-input-box input::placeholder {
+  color: #8e8e93;
+  font-weight: 400;
+}
+
+.waypoint-input-box input:focus-visible {
+  outline: 2px solid var(--theme-blue);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.swap-endpoints-btn {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  width: 30px;
+  height: 30px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--theme-blue);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.swap-endpoints-btn:hover {
+  background: var(--theme-blue-tint);
 }
 
 .vertical-connector-line {
   width: 2px;
-  height: 18px;
+  height: 16px;
   background: rgba(0, 0, 0, 0.08);
   margin-left: 6px;
   margin-top: 3px;
   margin-bottom: 3px;
 }
 
-/* Option Dropdowns (Screenshot 3) */
 .options-pills-row {
   display: flex;
   gap: 8px;
@@ -495,26 +480,6 @@ onMounted(load)
   font-size: 12px;
   color: #1d1d1f;
   outline: none;
-}
-
-.pill-btn {
-  height: 32px;
-  border-radius: var(--radius-pill);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-  padding: 0 12px;
-  font-size: 12px;
-  color: #1d1d1f;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.pill-btn.active {
-  border-color: rgba(0, 113, 227, 0.35);
-  color: var(--theme-blue);
-  background: var(--theme-blue-tint);
 }
 
 .advanced-filter-panel {
@@ -572,6 +537,21 @@ onMounted(load)
   outline: 0;
   background: rgba(255, 255, 255, 0.75);
   font-size: 12px;
+}
+
+.availability-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.availability-filter input {
+  margin: 0;
+  accent-color: var(--theme-blue);
 }
 
 .price-range-separator {
@@ -655,14 +635,19 @@ onMounted(load)
 
 .route-plan-card {
   display: flex;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 12px 14px;
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   transition: all 0.15s ease;
 }

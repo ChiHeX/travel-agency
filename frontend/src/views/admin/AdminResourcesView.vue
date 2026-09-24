@@ -10,6 +10,8 @@ const props = defineProps({
 
 const rows = ref([])
 const loading = ref(false)
+/** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
+const pending = ref(null)
 
 const loaders = {
   attractions: adminApi.attractions,
@@ -18,6 +20,21 @@ const loaders = {
   departures: adminApi.departures,
   refunds: adminApi.refunds
 }
+
+/**
+ * 退款状态文案。`PROCESSING` 特别重要：它不是「审核中」，而是**出款已发出、结果还没确认**
+ * （钱可能已经退出去），后端会把它持久化，并且在确认之前禁止拒绝。
+ */
+const REFUND_STATUS_LABEL = {
+  APPLYING: '待审核',
+  PROCESSING: '退款结果待确认',
+  REFUNDED: '已退款',
+  REJECTED: '已拒绝'
+}
+
+const refundLabel = (status) => REFUND_STATUS_LABEL[status] || status
+const refundTagClass = (status) =>
+  status === 'REFUNDED' ? 'success' : status === 'REJECTED' ? 'danger' : 'warning'
 
 async function load() {
   loading.value = true
@@ -35,12 +52,33 @@ async function updateDeparture(row) {
   ElMessage.success('团期状态已更新')
 }
 
+/**
+ * 提交一次退款审核动作。
+ *
+ * <p>两种情况都要重新拉列表，因此刷新放在 finally 里：
+ * ① 成功 —— 状态已从 APPLYING 变成 REFUNDED / REJECTED；
+ * ② 失败且是「结果未确认」（后端 503 `REFUND_RESULT_UNCONFIRMED`）—— 此时出款请求已经发出去，
+ * 后端把退款单落成了持久的 PROCESSING，页面若还停在旧的 `APPLYING` 上，
+ * 管理员就会对着一个早已不接受拒绝的单子继续点「拒绝」（后端会回 409，白点一次）。</p>
+ *
+ * <p>{@code PROCESSING} 的重试走的就是 APPROVE：后端对已处于 PROCESSING 的单子放行同意、
+ * 拦掉拒绝，用同一个出款请求号再确认一次结果。</p>
+ */
 async function decision(row, action) {
+  if (pending.value != null) return
+  pending.value = row.id
   const comment = action === 'APPROVE' ? '审核通过，已进入原路退款流程' : '申请原因需要进一步核实'
-  if (action === 'APPROVE') await adminApi.approveRefund(row.id, comment)
-  else await adminApi.rejectRefund(row.id, comment)
-  ElMessage.success('退款审核已处理完毕')
-  load()
+  try {
+    if (action === 'APPROVE') await adminApi.approveRefund(row.id, comment)
+    else await adminApi.rejectRefund(row.id, comment)
+    ElMessage.success(action === 'APPROVE' ? '退款审核已处理完毕' : '退款申请已驳回')
+  } catch {
+    // 失败提示由 axios 拦截器统一弹出（frontend/src/api/request.js 的 ElMessage.error）；
+    // 这里不重抛，避免在点击处理器里留下未处理的 Promise rejection。
+  } finally {
+    pending.value = null
+    await load().catch(() => {})
+  }
 }
 
 watch(() => props.resource, load)
@@ -127,15 +165,25 @@ onMounted(load)
               <td class="amount">¥{{ row.amount }}</td>
               <td>{{ row.reason }}</td>
               <td>
-                <span class="tag" :class="row.status === 'REFUNDED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">
-                  {{ row.status }}
+                <span class="tag" :class="refundTagClass(row.status)">
+                  {{ refundLabel(row.status) }}
                 </span>
               </td>
               <td style="text-align: right;">
                 <template v-if="row.status === 'APPLYING'">
-                  <button type="button" class="text-button text-success" @click="decision(row, 'APPROVE')">同意退款</button>
+                  <button type="button" class="text-button text-success" :disabled="pending === row.id" @click="decision(row, 'APPROVE')">同意退款</button>
                   <span class="divider">|</span>
-                  <button type="button" class="text-button text-danger" @click="decision(row, 'REJECT')">拒绝</button>
+                  <button type="button" class="text-button text-danger" :disabled="pending === row.id" @click="decision(row, 'REJECT')">拒绝</button>
+                </template>
+                <!--
+                  出款已发出、结果未确认。钱可能已经退出去，所以这里只给「重试确认」
+                  （同一个出款请求号再查一次结果），绝不显示拒绝 —— 后端对 PROCESSING 的
+                  REJECT 会判 409，前端不该给出一个必然失败的按钮。
+                -->
+                <template v-else-if="row.status === 'PROCESSING'">
+                  <button type="button" class="text-button text-success" :disabled="pending === row.id" @click="decision(row, 'APPROVE')">
+                    {{ pending === row.id ? '确认中…' : '重试确认' }}
+                  </button>
                 </template>
                 <span v-else class="muted-text">已处理完毕</span>
               </td>

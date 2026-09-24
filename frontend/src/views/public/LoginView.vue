@@ -8,16 +8,20 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
+const errorMessage = ref('')
 const form = reactive({ username: '', password: '' })
 
 async function submit() {
+  if (loading.value) return
+  errorMessage.value = ''
   loading.value = true
   try {
     await auth.login(form)
     ElMessage.success('登录成功，欢迎回来')
-    router.replace(route.query.redirect || '/')
+    const target = route.query.redirect
+    await router.replace(typeof target === 'string' && target.startsWith('/') && !target.startsWith('//') ? target : '/')
   } catch (error) {
-    ElMessage.error(error.message)
+    errorMessage.value = error.message || '登录失败'
   } finally {
     loading.value = false
   }
@@ -39,6 +43,7 @@ async function submit() {
       </div>
 
       <form class="auth-form" @submit.prevent="submit">
+        <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
         <div class="form-field">
           <label>用户名 / 账号</label>
           <input

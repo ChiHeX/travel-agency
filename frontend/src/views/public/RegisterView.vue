@@ -7,9 +7,12 @@ import { useAuthStore } from '@/stores/auth'
 const auth = useAuthStore()
 const router = useRouter()
 const loading = ref(false)
+const errorMessage = ref('')
 const form = reactive({ username: '', password: '', nickname: '', phone: '', email: '' })
 
 async function submit() {
+  if (loading.value) return
+  errorMessage.value = ''
   loading.value = true
   try {
     await auth.register({
@@ -22,7 +25,7 @@ async function submit() {
     ElMessage.success('注册成功，欢迎加入行迹旅行')
     router.replace('/')
   } catch (error) {
-    ElMessage.error(error.message)
+    errorMessage.value = error.message || '注册失败'
   } finally {
     loading.value = false
   }
@@ -44,6 +47,7 @@ async function submit() {
       </div>
 
       <form class="auth-form" @submit.prevent="submit">
+        <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
         <div class="form-field">
           <label>用户名 / 账号名</label>
           <input

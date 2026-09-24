@@ -1,6 +1,6 @@
 <script setup>
 // HomeView acts as the landing view for '/', where the middle drawer is closed
-// and the full-screen interactive 360° world map is showcased.
+// and the full-screen interactive map is showcased.
 </script>
 
 <template>

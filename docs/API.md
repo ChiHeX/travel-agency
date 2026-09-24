@@ -95,6 +95,29 @@ POST /api/admin/orders/{orderNo}/confirm
 
 每个接口必须列出允许筛选和排序的字段，不得把客户端字段名直接拼接到 SQL。
 
+### 4.2 密码字段的长度口径（字符数 + UTF-8 字节数，两个上限）
+
+密码统一为 **8～72 个字符**，并额外受 **UTF-8 编码不超过 72 字节** 的约束。两个上限单位不同，
+只在纯 ASCII 密码下等价：
+
+| 输入 | 字符数 | UTF-8 字节数 | 结果 |
+|---|---|---|---|
+| `DemoPass123!` | 12 | 12 | 通过 |
+| `汉` × 24 | 24 | 72 | 通过（恰好到上限） |
+| `汉` × 25 | 25 | 75 | **422** `VALIDATION_ERROR` |
+| `😀` × 19 | 38 | 76 | **422** `VALIDATION_ERROR` |
+| `a` × 73 | 73 | 73 | **422**（同时超字符数与字节数） |
+
+- 字节上限来自 BCrypt：口令超过 72 字节时 `BCryptPasswordEncoder#encode` 会抛
+  `IllegalArgumentException`，若只在 DTO 上写 `@Size(max = 72)`（数的是字符），
+  中文/emoji 密码会绕过校验直达加密层，最终以 **500** 返回。
+- 超限一律以 **422** 拒绝，**不做静默截断**：截断会让「用户设置的密码」与
+  「实际参与校验的字节」不一致。
+- 适用范围：`POST /auth/register`、`POST /auth/login`、`PUT /account/password`、
+  `POST /admin/guides`、`POST /admin/staff` 的密码字段。
+- 校验失败时**不得产生任何副作用**：创建类接口不落 `sys_user`/`staff` 行，改密接口不更新
+  `password_hash`。
+
 ## 5. 统一响应
 
 除 `204 No Content`、文件下载和明确约定的第三方回调外，所有接口使用同一响应结构。
@@ -147,6 +170,7 @@ RESOURCE_NOT_FOUND
 ORDER_STATE_CONFLICT
 DEPARTURE_CAPACITY_INSUFFICIENT
 PAYMENT_SIGNATURE_INVALID
+PAYMENT_NOT_CONFIGURED
 ```
 
 前端必须根据 HTTP 状态码和 `code` 处理分支，不得依赖可变的 `message` 文案。`message` 和 `errors` 不得包含异常堆栈、SQL、密钥或敏感个人信息。

@@ -9,17 +9,24 @@ import RouteDetailView from '@/views/public/RouteDetailView.vue'
 import LoginView from '@/views/public/LoginView.vue'
 import RegisterView from '@/views/public/RegisterView.vue'
 import ArticlesView from '@/views/public/ArticlesView.vue'
+import GuidesView from '@/views/public/GuidesView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
-import OrderCreateView from '@/views/account/OrderCreateView.vue'
+import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
+import OrderCreateView from '@/views/public/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
+import PaymentView from '@/views/account/PaymentView.vue'
+import PaymentResultView from '@/views/account/PaymentResultView.vue'
 import AccountView from '@/views/account/AccountView.vue'
+import ReviewsView from '@/views/account/ReviewsView.vue'
+import SecurityView from '@/views/account/SecurityView.vue'
 import TravelersView from '@/views/account/TravelersView.vue'
 import FavoritesView from '@/views/account/FavoritesView.vue'
 import MessagesView from '@/views/account/MessagesView.vue'
 import ConsultationView from '@/views/account/ConsultationView.vue'
 import AdminDashboardView from '@/views/admin/AdminDashboardView.vue'
 import AdminRoutesView from '@/views/admin/AdminRoutesView.vue'
+import AdminRouteDetailView from '@/views/admin/AdminRouteDetailView.vue'
 import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
@@ -36,8 +43,15 @@ const routes = [
       { path: 'search', name: 'search', component: SearchView },
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
+      { path: 'guides', name: 'guides', component: GuidesView },
       { path: 'articles', name: 'articles', component: ArticlesView },
+      { path: 'articles/latest', redirect: { name: 'articles' } },
+      { path: 'articles/cities/:city', redirect: (to) => ({ name: 'articles', query: { destination: to.params.city } }) },
+      { path: 'articles/publishers', redirect: { name: 'articles' } },
+      { path: 'articles/publishers/:id', redirect: { name: 'articles' } },
       { path: 'articles/:id', name: 'article-detail', component: ArticleDetailView },
+      { path: 'attractions/:id', name: 'attraction-detail', component: AttractionDetailView },
+      { path: 'booking', name: 'order-create', component: OrderCreateView, meta: { requiresAuth: true } },
       { path: 'auth/login', name: 'login', component: LoginView },
       { path: 'auth/register', name: 'register', component: RegisterView }
     ]
@@ -49,9 +63,13 @@ const routes = [
     children: [
       { path: '', redirect: { name: 'account-profile' } },
       { path: 'profile', name: 'account-profile', component: AccountView },
+      { path: 'reviews', name: 'account-reviews', component: ReviewsView },
+      { path: 'security', name: 'account-security', component: SecurityView },
       { path: 'orders', name: 'account-orders', component: OrdersView },
+      { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
+      { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
       { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
-      { path: 'order/create', name: 'order-create', component: OrderCreateView },
+      { path: 'order/create', redirect: (to) => ({ name: 'order-create', query: to.query }) },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },
       { path: 'favorites', name: 'account-favorites', component: FavoritesView },
       { path: 'messages', name: 'account-messages', component: MessagesView },
@@ -66,6 +84,7 @@ const routes = [
       { path: '', redirect: { name: 'admin-dashboard' } },
       { path: 'dashboard', name: 'admin-dashboard', component: AdminDashboardView },
       { path: 'routes', name: 'admin-routes', component: AdminRoutesView },
+      { path: 'routes/:id', name: 'admin-route-detail', component: AdminRouteDetailView },
       { path: 'departures', name: 'admin-departures', component: AdminResourcesView, props: { title: '团期管理', resource: 'departures' } },
       { path: 'attractions', name: 'admin-attractions', component: AdminResourcesView, props: { title: '景点管理', resource: 'attractions' } },
       { path: 'hotels', name: 'admin-hotels', component: AdminResourcesView, props: { title: '酒店资料', resource: 'hotels' } },
@@ -111,6 +130,12 @@ router.beforeEach(async (to) => {
     return auth.isLoggedIn ? { name: 'home' } : { name: 'login' }
   }
   return true
+})
+
+window.addEventListener('travel-auth-expired', () => {
+  useAuthStore().logout()
+  const current = router.currentRoute.value
+  if (current.meta.requiresAuth) router.replace({ name: 'login', query: { redirect: current.fullPath } })
 })
 
 export default router

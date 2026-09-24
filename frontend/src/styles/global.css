@@ -309,3 +309,223 @@ a {
   background: #ffffff;
   font-size: 13px;
 }
+
+/* Personal center pages share one content grid and visual rhythm. */
+.account-settings-page {
+  --account-radius-surface: 4px;
+  --account-radius-field: 8px;
+  --account-radius-action: 9999px;
+  min-height: 100%;
+  background: #fafafa;
+  color: #18181b;
+}
+
+.account-settings-page > .account-content {
+  width: min(900px, calc(100% - 48px));
+  margin-left: 24px;
+  padding: 24px 0 72px;
+}
+
+.account-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.account-page-heading h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.account-page-heading p {
+  margin: 4px 0 0;
+  color: #626269;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.account-settings-page .admin-panel,
+.account-settings-page .empty-box,
+.account-settings-page .account-content .order-card-box,
+.account-settings-page .account-content .message-card-item,
+.account-settings-page .account-content .history-card {
+  border-radius: var(--account-radius-surface);
+  box-shadow: none;
+}
+
+.account-settings-page .settings-section {
+  margin-top: 26px;
+}
+
+.account-settings-page .settings-heading {
+  margin-bottom: 10px;
+}
+
+.account-settings-page .settings-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.account-settings-page .settings-heading p {
+  margin: 3px 0 0;
+  color: #6e6e73;
+  font-size: 12px;
+}
+
+.account-settings-page .settings-fields {
+  border: 1px solid #dedee3;
+  border-radius: var(--account-radius-surface);
+  background: #fff;
+}
+
+.account-settings-page .setting-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  padding: 16px;
+}
+
+.account-settings-page .setting-row + .setting-row {
+  border-top: 1px solid #e6e6e9;
+}
+
+.account-settings-page .setting-label label {
+  display: block;
+  padding-top: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.account-settings-page .setting-control p {
+  margin: 6px 0 0;
+  color: #626269;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-settings-page .setting-row input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid #a8a8ae;
+  border-radius: var(--account-radius-field);
+  background: #fff;
+  color: #18181b;
+  font: inherit;
+  font-size: 13px;
+}
+
+.account-settings-page .setting-row input:focus {
+  outline: 2px solid var(--theme-blue);
+  outline-offset: 1px;
+  border-color: var(--theme-blue);
+}
+
+.account-settings-page .setting-row input:disabled {
+  border-color: #dedee3;
+  background: #ededf0;
+  color: #626269;
+  cursor: not-allowed;
+}
+
+.account-settings-page .settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 12px 16px;
+  border-top: 1px solid #e6e6e9;
+  background: #f7f7f8;
+}
+
+.account-settings-page .settings-actions .form-error {
+  margin: 0 auto 0 0;
+}
+
+.account-settings-page .primary-button,
+.account-settings-page .secondary-button {
+  border-radius: var(--account-radius-action);
+}
+
+.account-settings-page .form-field input,
+.account-settings-page .form-field textarea,
+.account-settings-page .form-field select {
+  border-radius: var(--account-radius-field);
+}
+
+.account-settings-page .account-pagination {
+  justify-content: flex-start;
+}
+
+@media (max-width: 768px) {
+  .account-settings-page > .account-content {
+    width: calc(100% - 32px);
+    margin-left: 16px;
+    padding: 22px 0 56px;
+  }
+
+  .account-page-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .account-settings-page .setting-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .account-settings-page .setting-label label {
+    padding-top: 0;
+  }
+}
+
+/* Shared user-facing states and narrow-screen behavior. */
+.form-error { color: var(--status-red); margin: 10px 0; overflow-wrap: anywhere; }
+.account-pagination { justify-content: center; margin: 22px 0; }
+.app-layout-shell button:disabled { cursor: not-allowed; opacity: .55; }
+.app-layout-shell :focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 3px; }
+.app-layout-shell .route-view-body > * { min-width: 0; }
+.app-layout-shell .section-head { gap: 16px; }
+.app-layout-shell .form-field textarea { padding: 10px 12px; resize: vertical; }
+.app-layout-shell .order-meta-chips,
+.app-layout-shell .order-no-meta,
+.app-layout-shell .order-id-meta,
+.app-layout-shell .dep-meta-row,
+.app-layout-shell .day-meta-tags { flex-wrap: wrap; }
+.app-layout-shell .sheet-hero-media { flex-shrink: 0; }
+.app-layout-shell .sheet-sticky-footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.app-layout-shell .drawer-scroll-body,
+.app-layout-shell .sheet-scroll-body { min-height: 0; }
+.review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }
+.el-dialog { max-width: calc(100vw - 32px); }
+.el-message-box { max-width: calc(100vw - 32px); }
+@media (max-width: 640px) {
+  .app-layout-shell .container { width: calc(100% - 28px); }
+  .app-layout-shell .section-head,
+  .app-layout-shell .order-hero-top,
+  .app-layout-shell .card-head { flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+  .app-layout-shell .account-content-main,
+  .app-layout-shell .consultation-form-col,
+  .app-layout-shell .consultation-history-col { min-width: 0; }
+  .app-layout-shell .form-card,
+  .app-layout-shell .detail-card,
+  .app-layout-shell .order-hero-card { padding: 18px; }
+  .app-layout-shell .sticky-checkout-bar { position: static; padding: 16px; margin-bottom: env(safe-area-inset-bottom); }
+  .app-layout-shell .bottom-actions-row,
+  .app-layout-shell .order-actions { flex-wrap: wrap; }
+  .app-layout-shell .responsive-cards,
+  .app-layout-shell .responsive-cards tbody { display: block; width: 100%; }
+  .app-layout-shell .responsive-cards thead { display: none; }
+  .app-layout-shell .responsive-cards tr { display: block; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border-divider); border-radius: 12px; }
+  .app-layout-shell .responsive-cards td { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 8px 0; text-align: right; overflow-wrap: anywhere; }
+  .app-layout-shell .responsive-cards td::before { content: attr(data-label); flex: 0 0 76px; color: var(--text-secondary); text-align: left; }
+  .app-layout-shell .form-field input,
+  .app-layout-shell .form-field select,
+  .app-layout-shell .form-field textarea { min-width: 0; width: 100%; }
+}

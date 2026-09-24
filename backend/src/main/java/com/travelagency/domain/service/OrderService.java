@@ -2,34 +2,58 @@ package com.travelagency.domain.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.travelagency.common.alipay.AlipayGatewayClient;
+import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RefundStatus;
+import com.travelagency.common.enums.RouteStatus;
+import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.exception.RefundPendingConfirmationException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
+import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderSummaryView;
+import com.travelagency.domain.dto.OrderTravelerView;
+import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.PaymentStartResponse;
+import com.travelagency.domain.dto.PaymentView;
 import com.travelagency.domain.dto.RefundRequest;
+import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
-import com.travelagency.domain.dto.TravelerView;
+import com.travelagency.domain.dto.ReviewView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.IdempotencyRecord;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Review;
+import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.entity.Traveler;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.IdempotencyRecordMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.ReviewMapper;
+import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import com.travelagency.domain.mapper.TravelerMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,58 +61,137 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final TravelOrderMapper orderMapper;
     private final DepartureMapper departureMapper;
     private final TravelRouteMapper routeMapper;
+    private final GuideMapper guideMapper;
     private final OrderTravelerMapper orderTravelerMapper;
     private final PaymentMapper paymentMapper;
     private final RefundMapper refundMapper;
     private final ReviewMapper reviewMapper;
     private final MessageMapper messageMapper;
+    private final SysUserMapper sysUserMapper;
+    private final IdempotencyRecordMapper idempotencyRecordMapper;
+    private final TravelerMapper travelerMapper;
+    private final AlipayGatewayClient alipayGatewayClient;
+
+    /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
+    private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
+    /** 申请退款动作的幂等作用域。 */
+    private static final String SCOPE_APPLY_REFUND = "APPLY_REFUND";
+    /** 发起支付动作的幂等作用域。 */
+    private static final String SCOPE_START_PAYMENT = "START_PAYMENT";
+
+    /**
+     * 收银台链接的有效期长度（分钟）。
+     *
+     * <p>窗口从「首次发起支付的那一刻」起算，而不是每次读响应时的当前时刻：否则同一幂等键
+     * 每重试一次，契约返回的 {@code expiresAt} 就往后顺延一次，等于重试能无限延长支付窗口。</p>
+     */
+    private static final long PAYMENT_WINDOW_MINUTES = 30L;
 
     public OrderService(
             TravelOrderMapper orderMapper,
             DepartureMapper departureMapper,
             TravelRouteMapper routeMapper,
+            GuideMapper guideMapper,
             OrderTravelerMapper orderTravelerMapper,
             PaymentMapper paymentMapper,
             RefundMapper refundMapper,
             ReviewMapper reviewMapper,
-            MessageMapper messageMapper) {
+            MessageMapper messageMapper,
+            SysUserMapper sysUserMapper,
+            IdempotencyRecordMapper idempotencyRecordMapper,
+            TravelerMapper travelerMapper,
+            AlipayGatewayClient alipayGatewayClient) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
+        this.guideMapper = guideMapper;
         this.orderTravelerMapper = orderTravelerMapper;
         this.paymentMapper = paymentMapper;
         this.refundMapper = refundMapper;
         this.reviewMapper = reviewMapper;
         this.messageMapper = messageMapper;
+        this.sysUserMapper = sysUserMapper;
+        this.idempotencyRecordMapper = idempotencyRecordMapper;
+        this.travelerMapper = travelerMapper;
+        this.alipayGatewayClient = alipayGatewayClient;
     }
 
     @Transactional
-    public TravelOrder create(Long userId, CreateOrderRequest request) {
+    public OrderView create(Long userId, CreateOrderRequest request) {
+        return create(userId, request, null);
+    }
+
+    /**
+     * 下单，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>同一用户携带同一幂等键重复提交时只会真正下单一次：首次请求先抢占幂等记录，业务成功后回填订单号；
+     * 后续重放请求读到同一记录后直接返回首次生成的订单，不会重复占用团期名额、也不会产生第二张支付单。</p>
+     */
+    @Transactional
+    public OrderView create(Long userId, CreateOrderRequest request, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_CREATE_ORDER, idempotencyKey);
+            if (replay != null) {
+                TravelOrder existing = orderMapper.selectOne(new QueryWrapper<TravelOrder>()
+                        .eq("order_no", replay.resourceNo));
+                if (existing == null) {
+                    throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                            "相同幂等键的请求正在处理中，请稍后重试");
+                }
+                return loadOrderView(existing);
+            }
+        }
+
         int participantCount = request.adultCount() + request.childCount();
         if (participantCount <= 0) {
-            throw new BusinessException("至少选择一位成人或儿童");
+            throw new BusinessException(422, "VALIDATION_ERROR", "至少选择一位成人或儿童");
         }
         if (request.travelers().size() != participantCount) {
-            throw new BusinessException("出行人数量必须与成人和儿童人数一致");
+            throw new BusinessException(422, "VALIDATION_ERROR", "出行人数量必须与成人和儿童人数一致");
         }
+        // 出行人类型要么全部显式指定，要么全部不指定走下标兜底推断。
+        // 部分指定会让快照类型变得不确定，此时直接拒绝，而不是静默按位置猜错。
+        List<String> explicitTypes = request.travelers().stream()
+                .map(CreateOrderRequest.TravelerSnapshotRequest::travelerType)
+                .toList();
+        boolean anyExplicit = explicitTypes.stream().anyMatch(type -> type != null && !type.isBlank());
+        boolean allExplicit = explicitTypes.stream().allMatch(type -> type != null && !type.isBlank());
+        if (anyExplicit && !allExplicit) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "出行人类型需要全部指定或全部不指定");
+        }
+        if (allExplicit) {
+            long adults = explicitTypes.stream().filter(TravelerType.ADULT::equals).count();
+            if (adults != request.adultCount()) {
+                throw new BusinessException(422, "VALIDATION_ERROR", "标记为成人的出行人数量与成人人数不一致");
+            }
+        }
+        validateSourceTravelers(userId, request.travelers());
         Departure departure = departureMapper.selectById(request.departureId());
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
-            throw new BusinessException("团期已关闭或不存在");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "团期已关闭或不存在");
         }
         int reserved = valueOrZero(departure.reservedPeople);
         int confirmed = valueOrZero(departure.confirmedPeople);
         int max = valueOrZero(departure.maxPeople);
         if (reserved + confirmed + participantCount > max) {
-            throw new BusinessException("团期剩余名额不足");
+            throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT", "团期剩余名额不足");
         }
 
         UpdateWrapper<Departure> reserve = new UpdateWrapper<>();
@@ -97,7 +200,7 @@ public class OrderService {
                 .apply("COALESCE(reserved_people, 0) + COALESCE(confirmed_people, 0) + {0} <= max_people", participantCount)
                 .setSql("reserved_people = COALESCE(reserved_people, 0) + " + participantCount);
         if (departureMapper.update(null, reserve) != 1) {
-            throw new BusinessException("名额刚刚被其他用户占用，请重新选择团期");
+            throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT", "名额刚刚被其他用户占用，请重新选择团期");
         }
 
         TravelOrder order = new TravelOrder();
@@ -120,9 +223,17 @@ public class OrderService {
         order.remark = request.remark();
         orderMapper.insert(order);
 
+        int adultCount = request.adultCount();
+        int index = 0;
         for (CreateOrderRequest.TravelerSnapshotRequest requestTraveler : request.travelers()) {
             OrderTraveler snapshot = new OrderTraveler();
             snapshot.orderId = order.id;
+            // 所有权已在创建订单前校验；这里只记录可选来源，个人信息仍保存为下单时快照。
+            snapshot.travelerId = requestTraveler.sourceTravelerId();
+            // 优先采用调用方显式指定的类型；未指定时按「前 adultCount 位为成人，其余为儿童」兜底推断。
+            snapshot.travelerType = allExplicit
+                    ? requestTraveler.travelerType()
+                    : (index < adultCount ? TravelerType.ADULT : TravelerType.CHILD);
             snapshot.name = requestTraveler.name();
             snapshot.gender = requestTraveler.gender();
             snapshot.birthDate = requestTraveler.birthDate();
@@ -132,6 +243,7 @@ public class OrderService {
             snapshot.emergencyName = requestTraveler.emergencyName();
             snapshot.emergencyPhone = requestTraveler.emergencyPhone();
             orderTravelerMapper.insert(snapshot);
+            index++;
         }
 
         Payment payment = new Payment();
@@ -141,15 +253,100 @@ public class OrderService {
         payment.amount = order.totalAmount;
         payment.status = PaymentStatus.UNPAID;
         paymentMapper.insert(payment);
-        return order;
+        // 重新读取以带回 created_at / updated_at 等数据库默认值，契约 Order 要求这两个字段必填。
+        TravelOrder saved = orderMapper.selectById(order.id);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_CREATE_ORDER, idempotencyKey, "ORDER", order.orderNo);
+        }
+        TravelOrder result = saved == null ? order : saved;
+        return OrderView.from(result, routeMapper.selectById(order.routeId), departure);
     }
 
-    public List<TravelOrder> listMine(Long userId, String status) {
+    /**
+     * 校验请求引用的常用出行人全部存在且属于当前用户，避免跨用户关联污染订单快照。
+     * 统一返回 404，避免通过错误差异枚举其他用户的资源。
+     */
+    private void validateSourceTravelers(
+            Long userId, List<CreateOrderRequest.TravelerSnapshotRequest> travelers) {
+        Set<Long> sourceTravelerIds = travelers.stream()
+                .map(CreateOrderRequest.TravelerSnapshotRequest::sourceTravelerId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (sourceTravelerIds.isEmpty()) {
+            return;
+        }
+        Long ownedCount = travelerMapper.selectCount(new QueryWrapper<Traveler>()
+                .in("id", sourceTravelerIds)
+                .eq("user_id", userId));
+        if (ownedCount == null || ownedCount != sourceTravelerIds.size()) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "常用出行人不存在");
+        }
+    }
+
+    /**
+     * 抢占幂等键。
+     *
+     * <p>返回 {@code null} 表示抢占成功、调用方应继续执行业务；返回已有记录表示这是重放请求。
+     * 并发场景下唯一键 (user_id, scope, idem_key) 会阻塞后到的插入，等首个事务提交后再抛出
+     * 重复键冲突，因此这里能可靠区分「重放」与「仍在处理中」。</p>
+     */
+    private IdempotencyRecord claimIdempotencyKey(Long userId, String scope, String idemKey) {
+        IdempotencyRecord record = new IdempotencyRecord();
+        record.userId = userId;
+        record.scope = scope;
+        record.idemKey = idemKey;
+        try {
+            idempotencyRecordMapper.insert(record);
+            return null;
+        } catch (DuplicateKeyException conflict) {
+            IdempotencyRecord existing = idempotencyRecordMapper.selectOne(new QueryWrapper<IdempotencyRecord>()
+                    .eq("user_id", userId).eq("scope", scope).eq("idem_key", idemKey));
+            if (existing == null || existing.resourceNo == null) {
+                throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                        "相同幂等键的请求正在处理中，请稍后重试");
+            }
+            return existing;
+        }
+    }
+
+    /** 业务成功后把产生的单号回填到幂等记录，供重放请求返回同一结果。 */
+    private void recordIdempotencyResource(Long userId, String scope, String idemKey, String type, String resourceNo) {
+        idempotencyRecordMapper.update(null, new UpdateWrapper<IdempotencyRecord>()
+                .eq("user_id", userId).eq("scope", scope).eq("idem_key", idemKey)
+                .set("resource_type", type).set("resource_no", resourceNo));
+    }
+
+    /** 按订单实体装配契约 OrderView（补齐线路与团期）。 */
+    private OrderView loadOrderView(TravelOrder order) {
+        return OrderView.from(order, routeMapper.selectById(order.routeId),
+                departureMapper.selectById(order.departureId));
+    }
+
+    /**
+     * 当前用户订单分页查询，对齐契约 GET /orders（page/size + status）。
+     */
+    public PageResponse<OrderSummaryView> listMine(Long userId, String status, int page, int size) {
         QueryWrapper<TravelOrder> query = new QueryWrapper<TravelOrder>().eq("user_id", userId);
         if (status != null && !status.isBlank()) {
             query.eq("status", status);
         }
-        return orderMapper.selectList(query.orderByDesc("created_at"));
+        query.orderByDesc("created_at");
+        Page<TravelOrder> result = orderMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
+        return toSummaryPage(result);
+    }
+
+    /**
+     * 把订单实体分页转成契约 OrderSummary 分页，一次性批量补齐 routeName / departureStartDate，避免 N+1 查询。
+     */
+    public PageResponse<OrderSummaryView> toSummaryPage(Page<TravelOrder> result) {
+        List<TravelOrder> records = result.getRecords();
+        Map<Long, TravelRoute> routes = batchRoutes(records);
+        Map<Long, Departure> departures = batchDepartures(records);
+        List<OrderSummaryView> items = records.stream()
+                .map(order -> OrderSummaryView.from(order, routes.get(order.routeId), departures.get(order.departureId)))
+                .toList();
+        return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages());
     }
 
     public OrderDetailResponse detail(String orderNo, UserPrincipal requester) {
@@ -157,36 +354,185 @@ public class OrderService {
         boolean staff = requester.roles().stream().anyMatch(role ->
                 "STAFF".equals(role) || "ADMIN".equals(role) || "ROLE_STAFF".equals(role) || "ROLE_ADMIN".equals(role));
         if (!staff && !order.userId.equals(requester.userId())) {
-            throw new BusinessException(403, "无权查看该订单");
+            throw new BusinessException(403, "ACCESS_DENIED", "无权查看该订单");
         }
         return toDetail(order);
     }
 
+    /**
+     * 发起支付宝沙箱支付，返回收银台跳转信息。
+     *
+     * <p><b>配置不齐就拒绝，绝不给出可付款链接。</b>收银台链接一旦返回给用户，就等于系统声明
+     * 「这笔单现在可以付款」；而付款结果只能由支付宝回调 {@code notify_url} 回传、再由本系统用
+     * 支付宝公钥验签。因此只要 {@code ALIPAY_GATEWAY_URL} / {@code ALIPAY_APP_ID} /
+     * {@code ALIPAY_APP_PRIVATE_KEY} / {@code ALIPAY_PUBLIC_KEY} / {@code ALIPAY_NOTIFY_URL}
+     * 里任何一项没配，就在这里明确拒绝，而不是生成一个「用户付得进去、结果回不来」的链接
+     * —— 那会让用户付完钱后订单永远停在待支付。</p>
+     *
+     * <p>检查位置在订单状态校验<b>之后</b>、任何写库与生成链接<b>之前</b>：订单状态不对时优先报
+     * 状态冲突（那才是用户侧的因），避免把「订单已支付/已取消」误报成「支付未配置」；
+     * 同时保证被拒绝的请求<b>不产生任何副作用</b>（不推进 payment、不落库）。</p>
+     */
     @Transactional
     public PaymentStartResponse startPayment(String orderNo, Long userId) {
-        TravelOrder order = findByNo(orderNo);
-        ensureOwner(order, userId);
-        if (!OrderStatus.WAIT_PAY.equals(order.status)) {
-            throw new BusinessException("当前订单状态不允许支付");
-        }
-        Payment payment = paymentFor(order.id);
-        payment.status = PaymentStatus.PAYING;
-        paymentMapper.updateById(payment);
-        return new PaymentStartResponse(order.orderNo, payment.channel, payment.status, order.totalAmount,
-                "/api/payments/alipay/callback", "当前为支付宝沙箱演示环境，请由后端回调确认支付结果");
+        return startPayment(orderNo, userId, null);
     }
 
+    /**
+     * 发起支付宝沙箱支付，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>此前该请求头只在控制器上做了长度校验就被丢弃，同一键重试会重复走一遍业务：
+     * 支付单状态被再写一次、契约返回的 {@code expiresAt} 也随每次重试向后滑动。
+     * 现在与 {@link #create} / {@link #applyRefund} 对齐——首次请求先抢占幂等记录，
+     * 业务成功后回填支付单号，后续重放请求直接返回首次生成的支付单信息。</p>
+     *
+     * <p>幂等键绑定到具体订单：若同一用户把同一个键用到另一张订单上，属调用方误用，
+     * 直接拒绝而不是返回另一笔订单的支付信息。</p>
+     *
+     * <p>与「配置不齐就拒绝」的闸门合流后的顺序是：<b>重放判定 → 属主与订单状态校验 →
+     * 配置齐全性校验 → 写 payment 与回填幂等记录 → 用适配器签出真实收银台链接</b>。
+     * 重放判定放在最前，是因为重放属于「原请求的结果」而不是一次新的发起：订单可能已经被
+     * 那次支付推进到非待支付状态，此时再走状态校验会把重放误报成 409，让调用方以为请求失败。</p>
+     *
+     * <p><b>配置闸门必须被首次与重放两条路径共用</b>（{@link #ensureCashierConfigured(String)}）：
+     * 重放同样会重新签发一次链接（见 {@link #replayStartPayment}），若只在首次路径把关，就会出现
+     * 「首次拿到链接 → 部署漏配支付宝公钥或回调地址 → 用原幂等键重试仍拿到可付款的链接」，
+     * 而这条链接的付款结果既回不来、也验不了签 —— 正是 PR #18 补上的保护要挡住的情形。</p>
+     *
+     * <p>闸门刻意<b>不</b>放在方法入口：状态冲突是用户侧的因、配置缺失是运维侧的问题，
+     * 顺序反了会把排障方向带偏（见 {@code startPaymentReportsStateConflictBeforeConfiguration}）。</p>
+     */
     @Transactional
-    public void cancel(String orderNo, Long userId) {
+    public PaymentStartResponse startPayment(String orderNo, Long userId, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_START_PAYMENT, idempotencyKey);
+            if (replay != null) {
+                return replayStartPayment(orderNo, replay);
+            }
+        }
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
-            throw new BusinessException("仅待支付订单可以直接取消，已支付订单请申请退款");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许支付");
+        }
+        ensureCashierConfigured(orderNo);
+        Payment payment = paymentFor(order.id);
+        payment.status = PaymentStatus.PENDING;
+        paymentMapper.updateById(payment);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_START_PAYMENT, idempotencyKey, "PAYMENT", payment.paymentNo);
+        }
+        return startPaymentResponse(order, payment, paymentWindowStart(userId, idempotencyKey, idempotent));
+    }
+
+    /**
+     * 重放首次发起支付的结果。
+     *
+     * <p>记录已抢占但支付单号尚未回填，说明首个请求仍在处理中，此时不能凭一个还没有结果的
+     * 幂等键给出支付信息，返回 409 让调用方稍后重试。</p>
+     *
+     * <p>重放是<b>重新签发</b>一次链接，而不是把首次的 URL 原样回放（公共参数含参与签名的
+     * {@code timestamp}，两次签发必然不同）。签发能力依赖<b>当前</b>配置，而配置可能在两次请求
+     * 之间被改空，因此返回之前还要走一遍 {@link #ensureCashierConfigured(String)}。</p>
+     */
+    private PaymentStartResponse replayStartPayment(String orderNo, IdempotencyRecord replay) {
+        Payment payment = replay.resourceNo == null ? null
+                : paymentMapper.selectOne(new QueryWrapper<Payment>().eq("payment_no", replay.resourceNo));
+        if (payment == null) {
+            throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                    "相同幂等键的请求正在处理中，请稍后重试");
+        }
+        TravelOrder order = orderMapper.selectById(payment.orderId);
+        if (order == null || !order.orderNo.equals(orderNo)) {
+            throw new BusinessException(409, "IDEMPOTENCY_KEY_REUSED",
+                    "该幂等键已用于其他订单的支付请求，请更换 Idempotency-Key");
+        }
+        // 重放也要重新签发一次链接（公共参数含参与签名的 timestamp，链接必然与首次不同），
+        // 所以这里必须再走一遍配置闸门：否则「首次成功后部署漏配公钥/回调地址」的重试
+        // 仍会拿到一条可付款、但回调既回不来也验不了签的链接，把 PR #18 的保护绕过去。
+        // 闸门放在「确认这是一次真实重放」之后：幂等键仍在处理中、或键被用到别的订单上，
+        // 都是请求本身的问题，不该被运维侧的配置问题盖掉（否则调用方会找错方向）。
+        ensureCashierConfigured(orderNo);
+        return startPaymentResponse(order, payment, replay.createdAt);
+    }
+
+    /**
+     * 收银台配置闸门：首次发起与幂等重放<b>共用同一处校验</b>（见
+     * {@link #startPayment(String, Long, String)} 对顺序的说明）。
+     *
+     * <p>判据是 {@link AlipayGatewayClient#isCashierConfigurationComplete()}，即「这条支付链路能真正闭环」：
+     * 网关地址 + APPID + 应用私钥保证签得出请求，支付宝公钥 + 回调地址保证付款结果回得来、验得了签。
+     * 只判「签得出来」（{@code canBuildCashierUrl()}）是不够的 —— 那会放行一条用户付得了款、
+     * 系统永远停留在待支付的链接。</p>
+     *
+     * <p>失败信息只含环境变量名，不含任何密钥内容，可直接进日志与接口 message。</p>
+     */
+    private void ensureCashierConfigured(String orderNo) {
+        if (alipayGatewayClient.isCashierConfigurationComplete()) {
+            return;
+        }
+        String missing = String.join("、", alipayGatewayClient.missingCashierConfiguration());
+        log.error("支付尚未配置完成，已拒绝发起支付（fail-closed）：orderNo={}, 缺少={}", orderNo, missing);
+        throw new BusinessException(409, "PAYMENT_NOT_CONFIGURED",
+                "支付尚未配置完成，无法发起支付（缺少配置项：" + missing + "）");
+    }
+
+    /**
+     * 取支付窗口的起点。
+     *
+     * <p>首次请求用幂等记录的创建时刻、无幂等键时用当前时刻。用记录而不是「当前时刻」是为了让
+     * 同一键的重放返回完全一致的 {@code expiresAt}；记录查不到（理论上只会在无幂等键时发生）
+     * 则退化为当前时刻。</p>
+     */
+    private LocalDateTime paymentWindowStart(Long userId, String idempotencyKey, boolean idempotent) {
+        if (!idempotent) {
+            return LocalDateTime.now();
+        }
+        IdempotencyRecord record = idempotencyRecordMapper.selectOne(new QueryWrapper<IdempotencyRecord>()
+                .eq("user_id", userId).eq("scope", SCOPE_START_PAYMENT).eq("idem_key", idempotencyKey));
+        return record == null || record.createdAt == null ? LocalDateTime.now() : record.createdAt;
+    }
+
+    private PaymentStartResponse startPaymentResponse(TravelOrder order, Payment payment, LocalDateTime windowStart) {
+        LocalDateTime anchor = windowStart == null ? LocalDateTime.now() : windowStart;
+        return new PaymentStartResponse(order.orderNo, payment.paymentNo, payment.channel,
+                order.totalAmount, cashierUrl(order), anchor.plusMinutes(PAYMENT_WINDOW_MINUTES));
+    }
+
+    /**
+     * 生成收银台地址：到这里配置已由 {@link #startPayment} 校验齐全，直接产出真实链接。
+     *
+     * <p>方法名保留「cashierUrl」是因为语义没变，但实现里<b>不再有「未配置就回退网关占位地址」</b>
+     * 那条分支 —— 占位地址看着能返回 200，实际用户付不了款、订单也不会更新，
+     * 属于把配置问题伪装成成功响应，正是本次评审要求去掉的东西。</p>
+     *
+     * <p>链接的有效期沿用调用方给定的窗口锚点（见 {@link #startPaymentResponse}）：配置齐备
+     * 只决定「签得出来」，窗口不滑动由幂等重放保证，两件事互不耦合。</p>
+     */
+    private String cashierUrl(TravelOrder order) {
+        return alipayGatewayClient.buildCashierUrl(
+                order.orderNo, order.totalAmount, "旅行社团购订单 " + order.orderNo);
+    }
+
+    /**
+     * 取消待支付订单并释放名额。
+     *
+     * <p>契约 {@code POST /orders/{orderNo}/cancel} 的 200 响应是 {@code OrderEnvelope}，
+     * 即 data 为取消后的订单对象；此前实现返回 void，实际响应 data 为 null。</p>
+     */
+    @Transactional
+    public OrderView cancel(String orderNo, Long userId) {
+        TravelOrder order = findByNo(orderNo);
+        ensureOwner(order, userId);
+        if (!OrderStatus.WAIT_PAY.equals(order.status)) {
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "仅待支付订单可以直接取消，已支付订单请申请退款");
         }
         order.status = OrderStatus.CANCELLED;
         order.cancelledAt = LocalDateTime.now();
         orderMapper.updateById(order);
         releaseReserved(order);
+        return loadOrderView(order);
     }
 
     /**
@@ -195,13 +541,41 @@ public class OrderService {
      */
     @Transactional
     public void markPaid(String orderNo, String tradeNo) {
+        markPaid(orderNo, tradeNo, null);
+    }
+
+    /**
+     * 支付回调入账，可携带回调声明的支付金额用于核对。
+     *
+     * <p>幂等由「条件更新」这一原子闸门保证：只有把支付单从非 PAID 成功改成 PAID 的那一次回调
+     * 才会继续推进订单并发送通知。并发重复投递时，后到的回调影响行数为 0，直接返回，
+     * 因此不会重复发通知，也不会把订单推进两次。</p>
+     *
+     * @param callbackAmount 回调声明的金额；为 null 表示调用方已完成金额核对
+     */
+    @Transactional
+    public void markPaid(String orderNo, String tradeNo, BigDecimal callbackAmount) {
         TravelOrder order = findByNo(orderNo);
         Payment payment = paymentFor(order.id);
         if (PaymentStatus.PAID.equals(payment.status)) {
             return;
         }
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
-            throw new BusinessException("订单当前状态不接受支付回调");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "订单当前状态不接受支付回调");
+        }
+        if (callbackAmount != null && !amountEquals(callbackAmount, order.totalAmount)) {
+            throw new BusinessException(409, "PAYMENT_AMOUNT_MISMATCH", "回调金额与订单应付金额不一致");
+        }
+        // 原子闸门：并发回调只有一个能把支付单从非 PAID 推进到 PAID
+        int claimed = paymentMapper.update(null, new UpdateWrapper<Payment>()
+                .eq("id", payment.id)
+                .ne("status", PaymentStatus.PAID)
+                .set("status", PaymentStatus.PAID)
+                .set("third_party_trade_no", tradeNo)
+                .set("paid_at", LocalDateTime.now()));
+        if (claimed != 1) {
+            // 已被并发回调抢先处理，本次属于重复投递，不再推进订单
+            return;
         }
         payment.status = PaymentStatus.PAID;
         payment.thirdPartyTradeNo = tradeNo;
@@ -215,15 +589,30 @@ public class OrderService {
         notify(order.userId, "支付成功", "订单 " + order.orderNo + " 已支付，等待旅行社确认报名。", "PAYMENT_SUCCESS");
     }
 
+    /** 金额按数值比较，避免 "2500.0" 与 "2500.00" 因标度不同被误判为不一致。 */
+    private static boolean amountEquals(BigDecimal left, BigDecimal right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        return left.compareTo(right) == 0;
+    }
+
+    /**
+     * 确认已支付订单的报名，返回确认后的订单。
+     *
+     * <p>契约 {@code POST /admin/orders/{orderNo}/confirm} 的 200 响应是 {@code OrderEnvelope}，
+     * 即 data 为确认后的订单对象；此前实现返回 void，实际响应 data 为 null 且类型不符
+     * （与 {@code cancel}、{@code approveRefund} 同类的遗漏）。</p>
+     */
     @Transactional
-    public void confirm(String orderNo, Long operatorId) {
+    public OrderView confirm(String orderNo, Long operatorId) {
         TravelOrder order = findByNo(orderNo);
         if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
-            throw new BusinessException("只有待确认订单可以审核");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以审核");
         }
         Departure departure = departureMapper.selectById(order.departureId);
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
-            throw new BusinessException("团期已关闭，无法确认报名");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "团期已关闭，无法确认报名");
         }
         int participantCount = participants(order);
         UpdateWrapper<Departure> confirm = new UpdateWrapper<>();
@@ -233,7 +622,7 @@ public class OrderService {
                 .setSql("reserved_people = GREATEST(COALESCE(reserved_people, 0) - " + participantCount + ", 0)")
                 .setSql("confirmed_people = COALESCE(confirmed_people, 0) + " + participantCount);
         if (departureMapper.update(null, confirm) != 1) {
-            throw new BusinessException("团期名额已不足，暂不能确认报名");
+            throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT", "团期名额已不足，暂不能确认报名");
         }
         order.status = OrderStatus.CONFIRMED;
         order.confirmedAt = LocalDateTime.now();
@@ -242,20 +631,49 @@ public class OrderService {
                 .eq("id", order.routeId)
                 .setSql("valid_booking_count = COALESCE(valid_booking_count, 0) + 1"));
         notify(order.userId, "报名已确认", "订单 " + order.orderNo + " 已通过旅行社审核。", "ORDER_CONFIRMED");
+        // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）
+        return loadOrderView(order);
     }
 
     @Transactional
-    public void applyRefund(String orderNo, Long userId, RefundRequest request) {
-        TravelOrder order = findByNo(orderNo);
+    public RefundView applyRefund(String orderNo, Long userId, RefundRequest request) {
+        return applyRefund(orderNo, userId, request, null);
+    }
+
+    /**
+     * 申请退款，支持契约要求的 Idempotency-Key 请求头。
+     *
+     * <p>两道并发防线：① 幂等键保证同一用户的重复提交只生成一条申请；
+     * ② 读取订单时加行锁（{@code SELECT ... FOR UPDATE}）把同一订单上的并发申请串行化，
+     * 后到者能看到前一条 APPLYING 申请并收到 409，而不是各自插入一条“处理中”退款单。</p>
+     */
+    @Transactional
+    public RefundView applyRefund(String orderNo, Long userId, RefundRequest request, String idempotencyKey) {
+        boolean idempotent = idempotencyKey != null && !idempotencyKey.isBlank();
+        if (idempotent) {
+            IdempotencyRecord replay = claimIdempotencyKey(userId, SCOPE_APPLY_REFUND, idempotencyKey);
+            if (replay != null) {
+                Refund replayed = replay.resourceNo == null ? null
+                        : refundMapper.selectById(Long.valueOf(replay.resourceNo));
+                if (replayed == null) {
+                    throw new BusinessException(409, "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                            "相同幂等键的请求正在处理中，请稍后重试");
+                }
+                TravelOrder replayOrder = orderMapper.selectById(replayed.orderId);
+                return RefundView.from(replayed, replayOrder == null ? orderNo : replayOrder.orderNo);
+            }
+        }
+
+        TravelOrder order = findByNoForUpdate(orderNo);
         ensureOwner(order, userId);
         if (!(OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)
                 || OrderStatus.CONFIRMED.equals(order.status))) {
-            throw new BusinessException("当前订单状态不允许申请退款");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许申请退款");
         }
         Refund existing = refundMapper.selectOne(new QueryWrapper<Refund>()
                 .eq("order_id", order.id).in("status", RefundStatus.APPLYING, RefundStatus.PROCESSING));
         if (existing != null) {
-            throw new BusinessException("该订单已有处理中退款申请");
+            throw new BusinessException(409, "REFUND_ALREADY_APPLYING", "该订单已有处理中退款申请");
         }
         Refund refund = new Refund();
         refund.orderId = order.id;
@@ -267,27 +685,148 @@ public class OrderService {
         refundMapper.insert(refund);
         order.status = OrderStatus.REFUND_APPLYING;
         orderMapper.updateById(order);
+        if (idempotent) {
+            recordIdempotencyResource(userId, SCOPE_APPLY_REFUND, idempotencyKey, "REFUND", String.valueOf(refund.id));
+        }
+        // 回查以带回 created_at / updated_at，契约 Refund 要求这两个字段必填。
+        Refund saved = refundMapper.selectById(refund.id);
+        return RefundView.from(saved == null ? refund : saved, order.orderNo);
     }
 
+    /**
+     * 后台审核退款：<b>同意时先真出款，成功才落状态</b>。
+     *
+     * <p>顺序是：抢占 {@code APPLYING → PROCESSING}（原子闸门，防并发双审）→ 出款闸门
+     * （{@link AlipayGatewayClient#isRefundConfigurationComplete()}）→
+     * <b>调 {@code alipay.trade.refund} → 成功之后</b>才释放名额、回退线路计数、
+     * 把退款单/订单/支付单落成 {@code REFUNDED}。</p>
+     *
+     * <p>出款刻意排在所有状态写入<b>之前</b>，是为了让「状态」与「钱」始终一致：
+     * 释放名额、落 {@code REFUNDED} 都是不可回退的对外事实，只有确实拿到支付宝的成功响应
+     * 才允许发生。</p>
+     *
+     * <p><b>出款没成功时有两条不同的出路，不能合并处理：</b></p>
+     * <ul>
+     *   <li><b>明确失败</b>（支付宝回了非空且非 {@code 10000} 的 {@code code}，钱确定没动）⇒
+     *       抛 {@code 503 REFUND_FAILED}，事务回滚，退款单退回 {@code APPLYING}，
+     *       名额与线路计数都不动 —— 审核人既能原样重试，也能拒绝。</li>
+     *   <li><b>结果未确认</b>（请求超时、{@code fund_change} 不是 {@code Y}，且用同一
+     *       {@code out_request_no} 查询也没查到确定结论）⇒ 钱<b>可能已经退出去</b>。
+     *       此时退回 {@code APPLYING} 是错的：拒绝分支会把订单恢复成申请前的状态，
+     *       于是出现「钱退了、后台显示退款被拒、订单仍已支付」，对不上账且无法自证。
+     *       因此改抛 {@link RefundPendingConfirmationException}，由
+     *       {@link #approveRefund} 上的 {@code noRollbackFor} 让事务<b>提交</b>，
+     *       把退款单落成持久的 {@code PROCESSING}（待确认）：结果确认前既不接受拒绝，
+     *       也不动订单；继续用同一请求号重试即可（{@code out_request_no} 恒定 ⇒ 支付宝幂等，
+     *       重试不会重复出款，且下一次可能查到确定结论而收敛）。</li>
+     * </ul>
+     *
+     * <p><b>状态推进只走条件更新，不靠事务回滚：</b>入口的抢占、出口的
+     * {@code → REFUNDED} 都是「带旧状态条件的 UPDATE + 影响行数」判定。后者兼作<b>幂等闸门</b>，
+     * 保证释放名额、改订单/支付单、回退线路计数这些<b>不可重复</b>的副作用
+     * 永远只发生一次（首次审批的并发由入口抢占挡住，「待确认重试」没有可抢的状态迁移，
+     * 由这道闸门兜底）。</p>
+     */
     @Transactional
     public void processRefund(Long refundId, String action, String comment, Long reviewerId) {
+        if (!"APPROVE".equalsIgnoreCase(action) && !"REJECT".equalsIgnoreCase(action)) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "审核动作只能是 APPROVE 或 REJECT");
+        }
         Refund refund = refundMapper.selectById(refundId);
-        if (refund == null || !RefundStatus.APPLYING.equals(refund.status)) {
-            throw new BusinessException("退款申请不存在或已处理");
+        if (refund == null) {
+            throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请不存在");
+        }
+        if (RefundStatus.REFUNDED.equals(refund.status) || RefundStatus.REJECTED.equals(refund.status)) {
+            throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请不存在或已处理");
+        }
+        // PROCESSING 是「出款已发出去、结果还没确认」的**持久**状态（见方法末尾的说明）。
+        // 此时钱可能已经退给游客，因此：
+        //   - 拒绝必须被拦住 —— 拒绝分支会把订单恢复成申请前的状态，那会造出
+        //     「钱退了、后台显示退款被拒、订单仍已支付」这种对不上账且无法自证的组合；
+        //   - 同意放行，作为「用同一请求号重试确认」的入口（支付宝按 out_request_no 幂等，
+        //     重试不会重复出款，下一次可能查到确定结论而收敛）。
+        boolean approvingPendingPayout = false;
+        if (RefundStatus.PROCESSING.equals(refund.status)) {
+            if (!"APPROVE".equalsIgnoreCase(action)) {
+                throw new BusinessException(409, RefundPendingConfirmationException.CODE,
+                        "该退款已发起出款但结果尚未确认，不能拒绝或恢复订单；"
+                                + "请重试「同意」以确认退款结果（出款请求号恒定，重试不会重复出款）");
+            }
+            approvingPendingPayout = true;
         }
         TravelOrder order = orderMapper.selectById(refund.orderId);
         if (order == null) {
-            throw new BusinessException("关联订单不存在");
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "关联订单不存在");
+        }
+        // 原子闸门：并发审批同一退款单时，只有一个请求能把 APPLYING 抢成 PROCESSING。
+        // 否则两个请求都会通过上面的状态检查，导致名额被释放两次、线路有效报名数被回退两次。
+        int claimed = refundMapper.update(null, new UpdateWrapper<Refund>()
+                .eq("id", refundId)
+                .eq("status", RefundStatus.APPLYING)
+                .set("status", RefundStatus.PROCESSING)
+                .set("reviewed_by", reviewerId)
+                .set("reviewed_at", LocalDateTime.now())
+                .set("review_comment", comment));
+        // 抢到 APPLYING→PROCESSING 的那一次即本次审核；「待确认重试」不需要再抢（进来时已是
+        // PROCESSING，没有状态迁移可抢），由下面的 REFUNDED 幂等闸门保证副作用只发生一次。
+        // 其余情况说明另一位审核人已经先推进了这张退款单。
+        if (claimed != 1 && !approvingPendingPayout) {
+            throw new BusinessException(409, "REFUND_STATE_CONFLICT", "退款申请已被其他审核人处理");
         }
         refund.reviewedBy = reviewerId;
         refund.reviewedAt = LocalDateTime.now();
         refund.reviewComment = comment;
         if ("APPROVE".equalsIgnoreCase(action)) {
-            refund.status = RefundStatus.PROCESSING;
-            refundMapper.updateById(refund);
-            releaseCapacity(order, refund.originalOrderStatus);
+            // 出款闸门：一旦把 REFUNDED 落库，对外就等于「钱已经退给游客了」。
+            // 配置不齐时绝不能落这个状态 —— 用户拿不到钱、后台却显示已退，比干脆不退款更糟。
+            // 判据与 startPayment 的收银台闸门同源（谓词分工见 AlipayGatewayClient 类注释）。
+            if (!alipayGatewayClient.isRefundConfigurationComplete()) {
+                throw new BusinessException(409, "REFUND_NOT_CONFIGURED",
+                        "退款出款尚未配置完成，缺少："
+                                + String.join("、", alipayGatewayClient.missingRefundConfiguration()));
+            }
+            // 出款排在「释放名额 / 落 REFUNDED」之前，让「没能确定钱退出去 ⇒ 这些不可回退的
+            // 对外事实一处都不发生」字面成立；失败后管理员也能原样重试。
+            // 重试安全的前提是 out_request_no 对同一退款单恒定（见 refundRequestNo），
+            // 支付宝按它幂等，不会重复出款。
+            AlipayGatewayClient.RefundResult payout = alipayGatewayClient.refund(
+                    order.orderNo, refundRequestNo(refund), refund.amount, refund.reason);
+            if (payout.unconfirmed()) {
+                // 「结果未知」与「明确失败」必须分开处置，否则会开出一条能把账做坏的出路：
+                // 若这里退回 APPLYING，管理员就还能点「拒绝」，而拒绝分支会恢复订单申请前的状态
+                // ⇒ 支付宝侧其实已经退款成功时，系统却显示「退款被拒、订单仍已支付」，
+                // 既对不上账，也没有任何重试入口能把它纠正回来。
+                // 所以把退款单落成持久的 PROCESSING（待确认）：approveRefund 上的 noRollbackFor
+                // 让本次事务提交，结果确认前「拒绝」与「恢复订单」都被入口守卫拦住。
+                // 继续确认的方式就是再调一次本方法（请求号恒定 ⇒ 不会重复出款）。
+                throw new RefundPendingConfirmationException(
+                        "支付宝已受理退款但结果尚未确认，退款单保持「处理中」待确认，"
+                                + "结果确认前不能拒绝该申请：" + payout.describe());
+            }
+            if (!payout.success()) {
+                // 明确失败（支付宝回了非空且非 10000 的 code）：钱确定没动，回滚回 APPLYING，
+                // 管理员既可原样重试，也可拒绝。
+                // 503 而不是 502：API.md §7 的状态码表把「第三方服务暂时不可用」定在 503，
+                // 表里没有 502，用 502 会让实现与冻结的状态码口径不一致。
+                throw new BusinessException(503, "REFUND_FAILED",
+                        "支付宝退款未成功，退款单保持待审核状态、可重试：" + payout.describe());
+            }
+            // 到这里钱已经退给游客了，才开始落状态与释放名额。
+            // 落 REFUNDED 兼作**幂等闸门**：只有把退款单从 APPLYING/PROCESSING 推到 REFUNDED 的
+            // 那一次，才允许执行释放名额、改订单/支付单、回退线路计数这些不可重复的副作用。
+            // 首次审批的并发双审由开头的 APPLYING→PROCESSING 抢占挡住；「待确认重试」没有可抢的
+            // 状态迁移（进来时已是 PROCESSING），由这道闸门兜底 ⇒ 两个并发重试只有一个能拿到 1 行，
+            // 另一个直接返回，名额只释放一次。
+            int finalized = refundMapper.update(null, new UpdateWrapper<Refund>()
+                    .eq("id", refundId)
+                    .ne("status", RefundStatus.REFUNDED)
+                    .set("status", RefundStatus.REFUNDED));
+            if (finalized != 1) {
+                // 另一个并发请求已经把这笔退款推到 REFUNDED，副作用归它做，这里不再重复。
+                return;
+            }
             refund.status = RefundStatus.REFUNDED;
-            refundMapper.updateById(refund);
+            releaseCapacity(order, refund.originalOrderStatus);
             order.status = OrderStatus.REFUNDED;
             order.paymentStatus = PaymentStatus.REFUNDED;
             orderMapper.updateById(order);
@@ -301,27 +840,40 @@ public class OrderService {
             payment.status = PaymentStatus.REFUNDED;
             paymentMapper.updateById(payment);
             notify(order.userId, "退款审核通过", "订单 " + order.orderNo + " 的退款已处理完成。", "REFUND_APPROVED");
-        } else if ("REJECT".equalsIgnoreCase(action)) {
+        } else {
+            // action 已在方法入口校验为 APPROVE / REJECT 之一，走到这里只能是 REJECT
             refund.status = RefundStatus.REJECTED;
             refundMapper.updateById(refund);
             order.status = refund.originalOrderStatus;
             orderMapper.updateById(order);
             notify(order.userId, "退款申请未通过", "订单 " + order.orderNo + " 的退款申请未通过。", "REFUND_REJECTED");
-        } else {
-            throw new BusinessException("审核动作只能是 APPROVE 或 REJECT");
         }
     }
 
+    /**
+     * 本次退款的支付宝请求号（{@code out_request_no}），由退款单主键派生。
+     *
+     * <p><b>必须对同一退款单保持恒定</b>：支付宝按 {@code out_trade_no + out_request_no} 幂等，
+     * 同值重复请求返回首次结果而不会重复出款。这正是「出款成功但本地事务回滚」之后
+     * 管理员再点一次审核仍然安全的原因 —— 不需要额外的定时对账兜底。</p>
+     *
+     * <p>用主键而不是时间戳/随机数：退款被驳回后重新申请会生成<b>新</b>的退款单（新 id），
+     * 于是拿到新的请求号，也不会被上一次的失败结果粘住。</p>
+     */
+    static String refundRequestNo(Refund refund) {
+        return "RF" + refund.id;
+    }
+
     @Transactional
-    public void review(String orderNo, Long userId, ReviewRequest request) {
+    public ReviewView review(String orderNo, Long userId, ReviewRequest request) {
         TravelOrder order = findByNo(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.COMPLETED.equals(order.status)) {
-            throw new BusinessException("行程完成后才可以评价");
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "行程完成后才可以评价");
         }
         Review existing = reviewMapper.selectOne(new QueryWrapper<Review>().eq("order_id", order.id));
         if (existing != null) {
-            throw new BusinessException("每个订单只能评价一次");
+            throw new BusinessException(409, "REVIEW_ALREADY_EXISTS", "每个订单只能评价一次");
         }
         Review review = new Review();
         review.orderId = order.id;
@@ -332,12 +884,189 @@ public class OrderService {
         review.status = "VISIBLE";
         reviewMapper.insert(review);
         refreshRouteRating(order.routeId);
+        // 回查以带回 created_at / updated_at，契约 Review 要求 createdAt 必填。
+        Review saved = reviewMapper.selectById(review.id);
+        return ReviewView.from(saved == null ? review : saved, order.orderNo, nicknameOf(userId));
+    }
+
+    // ------------------------------------------------------------------
+    // 退款（后台）
+    // ------------------------------------------------------------------
+
+    /**
+     * 后台退款分页查询，对齐契约 GET /admin/refunds。
+     */
+    public PageResponse<RefundView> listRefunds(String status, int page, int size) {
+        QueryWrapper<Refund> query = new QueryWrapper<>();
+        if (status != null && !status.isBlank()) {
+            query.eq("status", status);
+        }
+        query.orderByDesc("created_at");
+        Page<Refund> result = refundMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
+        Map<Long, String> orderNos = orderNoMap(result.getRecords().stream().map(r -> r.orderId).toList());
+        List<RefundView> items = result.getRecords().stream()
+                .map(r -> RefundView.from(r, orderNos.get(r.orderId)))
+                .toList();
+        return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages());
+    }
+
+    /**
+     * 后台退款详情，对齐契约 GET /admin/refunds/{refundId}。
+     */
+    public RefundView refundDetail(Long refundId) {
+        Refund refund = refundMapper.selectById(refundId);
+        if (refund == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "退款申请不存在");
+        }
+        TravelOrder order = orderMapper.selectById(refund.orderId);
+        return RefundView.from(refund, order == null ? null : order.orderNo);
+    }
+
+    /**
+     * 同意退款申请，返回审核后的退款记录。
+     * 契约 {@code POST /admin/refunds/{refundId}/approve} 的 200 响应是 RefundEnvelope，
+     * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。
+     *
+     * <p><b>{@code noRollbackFor} 是这条链路的关键，不是顺手加的：</b>
+     * 出款结果「未确认」时钱可能已经退出去，此时必须把退款单的 {@code PROCESSING}（待确认）
+     * 状态<b>落库</b>。若让它随事务回滚退回 {@code APPLYING}，管理员的「拒绝」就变成一条
+     * 能把已退款订单改回「已支付」的出路。所以这里让它提交，异常照常向上抛，
+     * 由全局异常处理器按 {@code 503 REFUND_RESULT_UNCONFIRMED} 回给调用方。</p>
+     *
+     * <p>提交的副作用只有退款单状态与审核留痕：释放名额、改订单/支付单、回退线路有效报名数
+     * 全部排在出款成功之后，未确认时一处都不会执行。</p>
+     */
+    @Transactional(noRollbackFor = RefundPendingConfirmationException.class)
+    public RefundView approveRefund(Long refundId, String comment, Long reviewerId) {
+        processRefund(refundId, "APPROVE", comment, reviewerId);
+        return refundDetail(refundId);
+    }
+
+    /**
+     * 拒绝退款申请，返回审核后的退款记录。
+     *
+     * <p>契约 {@code POST /admin/refunds/{refundId}/reject} 的 200 响应是 {@code RefundEnvelope}，
+     * 即 data 为退款对象；此前实现返回 void，实际响应 data 为 null 且类型不符。</p>
+     */
+    @Transactional
+    public RefundView rejectRefund(Long refundId, String comment, Long reviewerId) {
+        if (comment == null || comment.isBlank()) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "拒绝退款必须填写审核意见");
+        }
+        processRefund(refundId, "REJECT", comment, reviewerId);
+        return refundDetail(refundId);
+    }
+
+    // ------------------------------------------------------------------
+    // 评价（公开 + 后台）
+    // ------------------------------------------------------------------
+
+    /**
+     * 公开线路可见评价分页，对齐契约 GET /routes/{routeId}/reviews。
+     */
+    public PageResponse<ReviewView> listRouteReviews(Long routeId, int page, int size) {
+        // 线路不存在、已删除或未发布时不应对外暴露评价列表，契约要求返回 404。
+        TravelRoute route = routeMapper.selectById(routeId);
+        if (route == null || (route.deleted != null && route.deleted == 1)
+                || !RouteStatus.PUBLISHED.equals(route.status)) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "线路不存在或未发布");
+        }
+        QueryWrapper<Review> query = new QueryWrapper<Review>()
+                .eq("route_id", routeId).eq("status", "VISIBLE").orderByDesc("created_at");
+        Page<Review> result = reviewMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
+        return toReviewPage(result);
+    }
+
+    /**
+     * 线路公开详情内嵌的评价列表（契约 {@code RouteDetail.reviews}）。
+     *
+     * <p>与 {@link #listRouteReviews} 同一公开语义（仅 VISIBLE、按时间倒序），区别是不分页：
+     * 详情内嵌的评价是随线路一次性返回的数组，契约没有给它分页参数。</p>
+     *
+     * <p>必须组装成 {@link ReviewView}：早期实现用 {@code selectMaps} 直接返回数据库行，
+     * 键是 {@code route_id} / {@code created_at} 这类列名，而契约要求的是
+     * {@code routeId} / {@code createdAt} / {@code userNickname}，导致详情页评价区
+     * 的作者与时间恒为空白。</p>
+     */
+    public List<ReviewView> routeVisibleReviews(Long routeId) {
+        List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
+                .eq("route_id", routeId).eq("status", "VISIBLE").orderByDesc("created_at"));
+        Map<Long, String> orderNos = orderNoMap(reviews.stream().map(r -> r.orderId).toList());
+        Map<Long, String> nicknames = displayNameMap(reviews.stream().map(r -> r.userId).toList());
+        return reviews.stream()
+                .map(r -> ReviewView.from(r, orderNos.get(r.orderId), nicknames.get(r.userId)))
+                .toList();
+    }
+
+    /**
+     * 线路管理详情使用的线路评价列表。
+     *
+     * <p>与 {@link #listRouteReviews} 的区别：后者是公开接口语义（仅 PUBLISHED 线路 + VISIBLE 评价，
+     * 且必须分页）；后台查看线路时草稿和已下架线路也要能看到评价，并且需要看到被隐藏评价的状态，
+     * 因此这里不做线路状态与评价可见性过滤。</p>
+     */
+    public List<ReviewView> routeReviewsForAdmin(Long routeId) {
+        List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
+                .eq("route_id", routeId).orderByDesc("created_at"));
+        Map<Long, String> orderNos = orderNoMap(reviews.stream().map(r -> r.orderId).toList());
+        // 契约把 Review.userNickname 列为必填且不可空；用户未设置昵称时退回登录名，
+        // 避免后台线路详情返回 null 导致契约校验失败。
+        Map<Long, String> nicknames = displayNameMap(reviews.stream().map(r -> r.userId).toList());
+        return reviews.stream()
+                .map(r -> ReviewView.from(r, orderNos.get(r.orderId), nicknames.get(r.userId)))
+                .toList();
+    }
+
+    /**
+     * 后台评价分页查询，对齐契约 GET /admin/reviews。
+     */
+    public PageResponse<ReviewView> listReviews(String status, int page, int size) {
+        QueryWrapper<Review> query = new QueryWrapper<>();
+        if (status != null && !status.isBlank()) {
+            query.eq("status", status);
+        }
+        query.orderByDesc("created_at");
+        Page<Review> result = reviewMapper.selectPage(new Page<>(normalizePage(page), normalizeSize(size)), query);
+        return toReviewPage(result);
+    }
+
+    /**
+     * 调整评价可见状态（VISIBLE / HIDDEN），并重算线路平均分。
+     */
+    @Transactional
+    public ReviewView updateReviewStatus(Long reviewId, String status, Long operatorId) {
+        if (!"VISIBLE".equals(status) && !"HIDDEN".equals(status)) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "评价状态只能是 VISIBLE 或 HIDDEN");
+        }
+        Review review = reviewMapper.selectById(reviewId);
+        if (review == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "评价不存在");
+        }
+        review.status = status;
+        reviewMapper.updateById(review);
+        refreshRouteRating(review.routeId);
+        TravelOrder order = orderMapper.selectById(review.orderId);
+        return ReviewView.from(review, order == null ? null : order.orderNo, nicknameOf(review.userId));
     }
 
     public TravelOrder findByNo(String orderNo) {
         TravelOrder order = orderMapper.selectOne(new QueryWrapper<TravelOrder>().eq("order_no", orderNo));
         if (order == null) {
-            throw new BusinessException(404, "订单不存在");
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单不存在");
+        }
+        return order;
+    }
+
+    /**
+     * 按订单号读取并加行锁（{@code SELECT ... FOR UPDATE}），把同一订单上的并发写操作串行化。
+     * 必须在事务内调用；用于申请退款等「先检查后写入」的流程，避免检查与写入之间被并发插入。
+     */
+    private TravelOrder findByNoForUpdate(String orderNo) {
+        TravelOrder order = orderMapper.selectOne(new QueryWrapper<TravelOrder>()
+                .eq("order_no", orderNo).last("FOR UPDATE"));
+        if (order == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单不存在");
         }
         return order;
     }
@@ -345,29 +1074,123 @@ public class OrderService {
     public Payment paymentFor(Long orderId) {
         Payment payment = paymentMapper.selectOne(new QueryWrapper<Payment>().eq("order_id", orderId));
         if (payment == null) {
-            throw new BusinessException("订单支付记录不存在");
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单支付记录不存在");
         }
         return payment;
     }
 
     private OrderDetailResponse toDetail(TravelOrder order) {
-        List<TravelerView> travelers = orderTravelerMapper.selectList(new QueryWrapper<OrderTraveler>()
+        List<OrderTravelerView> travelers = orderTravelerMapper.selectList(new QueryWrapper<OrderTraveler>()
                         .eq("order_id", order.id).orderByAsc("id"))
                 .stream()
-                .map(snapshot -> new TravelerView(snapshot.id, snapshot.name, snapshot.gender, snapshot.birthDate,
-                        snapshot.idType, maskId(snapshot.idNo), snapshot.phone, snapshot.emergencyName, snapshot.emergencyPhone))
+                .map(OrderTravelerView::from)
                 .toList();
-        Refund refund = refundMapper.selectOne(new QueryWrapper<Refund>().eq("order_id", order.id)
-                .orderByDesc("created_at").last("LIMIT 1"));
         Payment payment = paymentFor(order.id);
         payment.callbackPayload = null;
-        return new OrderDetailResponse(order, routeMapper.selectById(order.routeId),
-                departureMapper.selectById(order.departureId), travelers, payment, refund);
+        PaymentView paymentView = PaymentView.from(payment, order.orderNo);
+        List<RefundView> refunds = refundMapper.selectList(new QueryWrapper<Refund>()
+                        .eq("order_id", order.id).orderByDesc("created_at"))
+                .stream()
+                .map(r -> RefundView.from(r, order.orderNo))
+                .toList();
+        Review review = reviewMapper.selectOne(new QueryWrapper<Review>()
+                .eq("order_id", order.id).orderByDesc("created_at").last("LIMIT 1"));
+        ReviewView reviewView = review == null ? null
+                : ReviewView.from(review, order.orderNo, nicknameOf(review.userId));
+        TravelRoute route = routeMapper.selectById(order.routeId);
+        Departure departure = departureMapper.selectById(order.departureId);
+        String routeName = route == null ? null : route.name;
+        return new OrderDetailResponse(OrderView.from(order, route, departure),
+                RouteSummaryView.from(route),
+                DepartureView.from(departure, routeName, guideNameOf(departure)),
+                travelers, paymentView, refunds, reviewView);
+    }
+
+    /** 团期所属导游姓名，供 DepartureView 补齐契约必填的 guideName；无团期或无导游时返回 null。 */
+    private String guideNameOf(Departure departure) {
+        if (departure == null || departure.guideId == null) {
+            return null;
+        }
+        Guide guide = guideMapper.selectById(departure.guideId);
+        return guide == null ? null : guide.name;
+    }
+
+    private Map<Long, TravelRoute> batchRoutes(List<TravelOrder> orders) {
+        List<Long> ids = orders.stream().map(order -> order.routeId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return routeMapper.selectList(new QueryWrapper<TravelRoute>().in("id", ids)).stream()
+                .collect(Collectors.toMap(route -> route.id, route -> route, (a, b) -> a));
+    }
+
+    private Map<Long, Departure> batchDepartures(List<TravelOrder> orders) {
+        List<Long> ids = orders.stream().map(order -> order.departureId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return departureMapper.selectList(new QueryWrapper<Departure>().in("id", ids)).stream()
+                .collect(Collectors.toMap(departure -> departure.id, departure -> departure, (a, b) -> a));
+    }
+
+    private PageResponse<ReviewView> toReviewPage(Page<Review> result) {
+        Map<Long, String> orderNos = orderNoMap(result.getRecords().stream().map(r -> r.orderId).toList());
+        Map<Long, String> nicknames = nicknameMap(result.getRecords().stream().map(r -> r.userId).toList());
+        List<ReviewView> items = result.getRecords().stream()
+                .map(r -> ReviewView.from(r, orderNos.get(r.orderId), nicknames.get(r.userId)))
+                .toList();
+        return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages());
+    }
+
+    private Map<Long, String> orderNoMap(Collection<Long> orderIds) {
+        List<Long> ids = distinctIds(orderIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return orderMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(o -> o.id, o -> o.orderNo, (a, b) -> a));
+    }
+
+    private Map<Long, String> nicknameMap(Collection<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return sysUserMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(u -> u.id, u -> u.nickname, (a, b) -> a));
+    }
+
+    /** 批量取展示名：昵称为空时退回登录名，保证契约要求的 userNickname 不为 null。 */
+    private Map<Long, String> displayNameMap(Collection<Long> userIds) {
+        List<Long> ids = distinctIds(userIds);
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return sysUserMapper.selectByIds(ids).stream()
+                .collect(Collectors.toMap(u -> u.id,
+                        u -> u.nickname == null || u.nickname.isBlank() ? u.username : u.nickname,
+                        (a, b) -> a));
+    }
+
+    private String nicknameOf(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        SysUser user = sysUserMapper.selectById(userId);
+        return user == null ? null : user.nickname;
+    }
+
+    private static List<Long> distinctIds(Collection<Long> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        return ids.stream().filter(Objects::nonNull).distinct().toList();
     }
 
     private void ensureOwner(TravelOrder order, Long userId) {
         if (!order.userId.equals(userId)) {
-            throw new BusinessException(403, "无权操作该订单");
+            throw new BusinessException(403, "ACCESS_DENIED", "无权操作该订单");
         }
     }
 
@@ -388,19 +1211,35 @@ public class OrderService {
         }
     }
 
+    /**
+     * 重算线路评分。
+     *
+     * <p>落库改用「单条 UPDATE + 子查询」，由数据库一次性算出统计值，取代原先的
+     * 「读评价列表 → 本地求和 → updateById 写回」。后者在并发评价或并发调整可见状态时，
+     * 两个事务会各自把基于旧快照算出的结果写回，导致 rating_count / rating_avg 长期偏离真实值。</p>
+     */
     private void refreshRouteRating(Long routeId) {
+        if (routeId == null) {
+            return;
+        }
         List<Review> reviews = reviewMapper.selectList(new QueryWrapper<Review>()
                 .eq("route_id", routeId).eq("status", "VISIBLE"));
         TravelRoute route = routeMapper.selectById(routeId);
         if (route == null) {
             return;
         }
+        // 同步内存对象，便于调用方与测试直接读取
         route.ratingCount = reviews.size();
         route.ratingAvg = reviews.isEmpty() ? BigDecimal.ZERO : reviews.stream()
                 .map(review -> BigDecimal.valueOf(review.rating))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal.valueOf(reviews.size()), 2, RoundingMode.HALF_UP);
-        routeMapper.updateById(route);
+        routeMapper.update(null, new UpdateWrapper<TravelRoute>()
+                .eq("id", routeId)
+                .setSql("rating_count = (SELECT COUNT(*) FROM review WHERE route_id = " + routeId
+                        + " AND status = 'VISIBLE')")
+                .setSql("rating_avg = (SELECT COALESCE(ROUND(AVG(rating), 2), 0) FROM review WHERE route_id = "
+                        + routeId + " AND status = 'VISIBLE')"));
     }
 
     private void notify(Long userId, String title, String content, String type) {
@@ -423,6 +1262,17 @@ public class OrderService {
 
     private static BigDecimal defaultAmount(BigDecimal amount) {
         return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private static int normalizePage(int page) {
+        return Math.max(page, 1);
+    }
+
+    private static int normalizeSize(int size) {
+        if (size < 1) {
+            return 20;
+        }
+        return Math.min(size, 100);
     }
 
     private static String generateOrderNo() {

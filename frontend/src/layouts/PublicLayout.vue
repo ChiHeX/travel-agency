@@ -1,15 +1,47 @@
 <script setup>
-import { computed, onMounted, provide, ref } from 'vue'
+import { computed, provide, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { accountApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import WorldMapCanvas from '@/components/WorldMapCanvas.vue'
+import MapPreview from '@/components/MapPreview.vue'
+import AccountNav from '@/components/AccountNav.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const loginLocation = computed(() => ({
+  name: 'login',
+  query: route.path.startsWith('/auth/') ? route.query : { redirect: route.fullPath }
+}))
 const unreadCount = ref(0)
+const mapItinerary = ref([])
+provide('setMapItinerary', (itinerary) => { mapItinerary.value = itinerary })
+const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
+let dragStart = null
+let sheetDragged = false
+
+function startSheetDrag(event) {
+  sheetDragged = false
+  dragStart = event.clientY
+  event.currentTarget.setPointerCapture(event.pointerId)
+}
+function endSheetDrag(event) {
+  if (dragStart == null) return
+  const delta = event.clientY - dragStart
+  dragStart = null
+  if (Math.abs(delta) < 30) return
+  sheetDragged = true
+  const levels = ['collapsed', 'half', 'full']
+  sheetSize.value = levels[Math.max(0, Math.min(2, levels.indexOf(sheetSize.value) + (delta < 0 ? 1 : -1)))]
+}
+function toggleSheet() {
+  if (sheetDragged) {
+    sheetDragged = false
+    return
+  }
+  sheetSize.value = sheetSize.value === 'full' ? 'half' : 'full'
+}
 
 // Sidebar expanded state: true = 180px with text, false = 56px with icon only
 const isSidebarExpanded = ref(true)
@@ -20,7 +52,7 @@ const isDrawerOpen = ref(route.name !== 'home')
 // Provide closeDrawer and isDrawerOpen to child views
 function closeDrawer() {
   isDrawerOpen.value = false
-  if (['search', 'routes', 'articles'].includes(route.name)) {
+  if (isMapActiveView.value) {
     router.push({ name: 'home' })
   }
 }
@@ -32,14 +64,22 @@ provide('openDrawer', openDrawer)
 provide('isDrawerOpen', isDrawerOpen)
 
 const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF') || auth.hasRole('GUIDE'))
-const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail'].includes(route.name))
+const guideViews = ['guides']
+const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', ...guideViews].includes(route.name))
 
-onMounted(async () => {
+async function refreshUnread() {
   if (auth.isLoggedIn) {
     try {
       unreadCount.value = (await accountApi.unreadCount())?.count || 0
     } catch (_) {}
-  }
+  } else unreadCount.value = 0
+}
+provide('refreshUnread', refreshUnread)
+watch(() => auth.isLoggedIn, refreshUnread, { immediate: true })
+watch(() => route.path, () => {
+  isDrawerOpen.value = route.name !== 'home'
+  sheetSize.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
+  refreshUnread()
 })
 
 function handleTabClick(routeName) {
@@ -51,7 +91,7 @@ function handleTabClick(routeName) {
 
   const isCurrentActive =
     (routeName === 'search' && route.name === 'search') ||
-    (routeName === 'articles' && (route.name === 'articles' || route.name === 'article-detail')) ||
+    (routeName === 'guides' && guideViews.includes(route.name)) ||
     (routeName === 'routes' && (route.name === 'routes' || route.name === 'route-detail'))
 
   if (isCurrentActive) {
@@ -87,12 +127,20 @@ function logout() {
       'drawer-closed': !isDrawerOpen && isMapActiveView
     }"
   >
-    <!-- ==========================================================================
-         1. Full-Screen 360° Infinite Continuous World Map Canvas (Underneath)
-         ========================================================================== -->
-    <WorldMapCanvas
+    <nav class="mobile-navigation" aria-label="主导航">
+      <RouterLink to="/" @click="goHome">行迹</RouterLink>
+      <button @click="handleTabClick('search')">搜索</button>
+      <button @click="handleTabClick('routes')">线路</button>
+      <button @click="handleTabClick('guides')">指南</button>
+      <RouterLink :to="auth.isLoggedIn ? '/account/profile' : loginLocation">{{ auth.isLoggedIn ? '我的' : '登录' }}</RouterLink>
+    </nav>
+    <!-- Main interactive map behind the content drawer -->
+    <MapPreview
       v-if="isMapActiveView"
-      :pins="[]"
+      :itinerary="mapItinerary"
+      :drawer-open="isDrawerOpen"
+      :sidebar-expanded="isSidebarExpanded"
+      :sheet-size="sheetSize"
     />
 
     <!-- ==========================================================================
@@ -134,13 +182,13 @@ function logout() {
           <span v-if="isSidebarExpanded" class="tab-title">搜索</span>
         </button>
 
-        <!-- Tab 2: 指南 (Articles / Guides) -->
+        <!-- Tab 2: 指南 -->
         <button
           type="button"
           class="rail-tab-item"
-          :class="{ active: isDrawerOpen && (route.name === 'articles' || route.name === 'article-detail') }"
+          :class="{ active: isDrawerOpen && guideViews.includes(route.name) }"
           title="指南"
-          @click="handleTabClick('articles')"
+          @click="handleTabClick('guides')"
         >
           <div class="tab-icon-box">
             <AppIcon name="guides" size="18" />
@@ -200,7 +248,7 @@ function logout() {
           </div>
         </div>
 
-        <RouterLink v-else to="/auth/login" class="login-action-btn" :class="{ 'icon-only': !isSidebarExpanded }">
+        <RouterLink v-else :to="loginLocation" class="login-action-btn" :class="{ 'icon-only': !isSidebarExpanded }">
           <span v-if="isSidebarExpanded">登录 / 注册</span>
           <span v-else>登录</span>
         </RouterLink>
@@ -219,6 +267,9 @@ function logout() {
       class="drawer-track-wrapper"
       :class="{
         'full-page-mode': !isMapActiveView,
+        'sheet-half': sheetSize === 'half',
+        'sheet-full': sheetSize === 'full',
+        'sheet-peek': sheetSize === 'collapsed',
         'drawer-collapsed': !isDrawerOpen && isMapActiveView
       }"
     >
@@ -228,7 +279,12 @@ function logout() {
           'full-page-mode': !isMapActiveView
         }"
       >
-        <RouterView />
+        <div v-if="isMapActiveView" class="sheet-handle">
+          <button type="button" :aria-expanded="sheetSize !== 'collapsed'" aria-label="切换抽屉高度" @pointerdown="startSheetDrag" @pointerup="endSheetDrag" @pointercancel="dragStart = null" @click="toggleSheet"><span></span></button>
+          <div class="sheet-size-actions"><button @click="sheetSize = 'collapsed'">收起</button><button @click="sheetSize = 'half'">半屏</button><button @click="sheetSize = 'full'">展开</button></div>
+        </div>
+        <AccountNav v-if="route.path.startsWith('/account/')" />
+        <div class="route-view-body"><RouterView :key="route.path" /></div>
       </section>
     </div>
   </div>
@@ -236,17 +292,38 @@ function logout() {
 
 <style scoped>
 /* ==========================================================================
-   Full-Bleed Map + Floating Frosted Glass UI Architecture
+   Full-screen map + floating content drawer
    ========================================================================== */
 
 .app-layout-shell {
+  --bg-canvas: var(--bg-secondary);
+  --bg-subtle: #f8f9fb;
+  --bg-hover: var(--bg-secondary);
+  --border-line: var(--border-divider);
+  --border-strong: #d2d2d7;
+  --brand-blue: var(--theme-blue);
+  --brand-blue-dark: #0062c4;
+  --brand-blue-subtle: var(--theme-blue-tint);
+  --brand-blue-tint: var(--theme-blue-tint);
+  --price-orange: var(--price-color);
+  --danger-red: var(--status-red);
+  --danger-text: #c52019;
+  --radius-xl: 20px;
+  --shadow-xs: var(--shadow-subtle);
+  --shadow-sm: var(--shadow-card);
+  --shadow-xl: var(--shadow-popover);
   position: relative;
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   display: flex;
   background: #9ec9eb;
 }
+
+.mobile-navigation, .sheet-handle { display: none; }
+.route-view-body { flex: 1; min-height: 0; min-width: 0; }
+.drawer-container { display: flex; flex-direction: column; }
+.drawer-container.full-page-mode .route-view-body { overflow-y: auto; }
 
 /* ==========================================================================
    2. Left Navigation Rail (Frosted Liquid Glass, Floating on Top)
@@ -471,7 +548,7 @@ function logout() {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: #5856d6;
+  background: var(--theme-blue);
   color: white;
   display: grid;
   place-items: center;
@@ -597,6 +674,8 @@ function logout() {
 
 /* Responsive */
 @media (max-width: 900px) {
+  .mobile-navigation { position: relative; z-index: 40; display: flex; align-items: center; justify-content: space-around; flex: 0 0 52px; padding-top: env(safe-area-inset-top); background: rgba(255,255,255,.94); border-bottom: 1px solid var(--border-divider); }
+  .mobile-navigation a, .mobile-navigation button { padding: 10px; background: none; border: 0; color: var(--theme-blue); cursor: pointer; }
   .app-layout-shell {
     flex-direction: column;
   }
@@ -604,13 +683,27 @@ function logout() {
     display: none;
   }
   .drawer-track-wrapper {
-    width: 100vw;
-    height: 100vh;
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 55%;
+    border-radius: 20px 20px 0 0;
+    transition: height .25s ease;
   }
+  .drawer-track-wrapper.sheet-full { height: calc(100% - 52px - env(safe-area-inset-top)); }
+  .drawer-track-wrapper.sheet-peek { height: 96px; }
+  .drawer-track-wrapper.drawer-collapsed { height: 0; }
+  .drawer-track-wrapper.full-page-mode { position: relative; flex: 1; min-height: 0; width: 100%; height: auto; border-radius: 0; }
   .drawer-container {
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
     box-shadow: none;
   }
+  .sheet-handle { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; touch-action: none; padding: 5px 12px; border-bottom: 1px solid var(--border-divider); }
+  .sheet-handle > button { width: 80px; min-height: 20px; display: grid; place-items: center; border: 0; background: none; }
+  .sheet-handle span { width: 36px; height: 4px; background: #b8b8bd; border-radius: 4px; }
+  .sheet-size-actions { display: flex; gap: 20px; }
+  .sheet-size-actions button { padding: 4px 12px; border: 0; background: none; color: var(--theme-blue); font-size: 11px; }
+  .route-view-body { overflow: auto; }
 }
 </style>

@@ -5,11 +5,13 @@ import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.domain.dto.TravelerRequest;
+import com.travelagency.domain.dto.TravelerUpdateRequest;
 import com.travelagency.domain.dto.TravelerView;
 import com.travelagency.domain.entity.Traveler;
 import com.travelagency.domain.mapper.TravelerMapper;
 import com.travelagency.domain.service.OrderService;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URI;
 import java.util.List;
 
 @RestController
@@ -39,33 +42,42 @@ public class TravelerController {
     }
 
     @PostMapping
-    public ApiResponse<TravelerView> create(@Valid @RequestBody TravelerRequest request) {
+    public ResponseEntity<ApiResponse<TravelerView>> create(@Valid @RequestBody TravelerRequest request) {
         Traveler traveler = fromRequest(request);
         traveler.userId = CurrentUser.required().userId();
         travelerMapper.insert(traveler);
-        return ApiResponse.ok(toView(traveler));
+        // 回查以带回 created_at / updated_at，契约 Traveler 要求这两个字段必填。
+        Traveler saved = travelerMapper.selectById(traveler.id);
+        TravelerView view = toView(saved == null ? traveler : saved);
+        return ResponseEntity.created(URI.create("/api/travelers/" + view.id())).body(ApiResponse.ok(view));
     }
 
     @PutMapping("/{id}")
-    public ApiResponse<TravelerView> update(@PathVariable Long id, @Valid @RequestBody TravelerRequest request) {
+    public ApiResponse<TravelerView> update(@PathVariable Long id, @Valid @RequestBody TravelerUpdateRequest request) {
         Traveler traveler = owned(id);
         Traveler updated = fromRequest(request);
+        // 契约 TravelerUpdateRequest：省略 idNo 表示保留原值。
+        // 列表接口按最小必要原则只返回 idNoMasked，前端编辑弹窗拿不到原文，提交时必然省略该字段。
+        if (request.idNo() == null) {
+            updated.idNo = traveler.idNo;
+        }
         updated.id = traveler.id;
         updated.userId = traveler.userId;
         travelerMapper.updateById(updated);
-        return ApiResponse.ok(toView(updated));
+        Traveler saved = travelerMapper.selectById(updated.id);
+        return ApiResponse.ok(toView(saved == null ? updated : saved));
     }
 
     @DeleteMapping("/{id}")
-    public ApiResponse<Void> delete(@PathVariable Long id) {
+    public ResponseEntity<Void> delete(@PathVariable Long id) {
         travelerMapper.deleteById(owned(id).id);
-        return ApiResponse.ok();
+        return ResponseEntity.noContent().build();
     }
 
     private Traveler owned(Long id) {
         Traveler traveler = travelerMapper.selectById(id);
         if (traveler == null || !traveler.userId.equals(CurrentUser.required().userId())) {
-            throw new BusinessException(404, "常用出行人不存在");
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "常用出行人不存在");
         }
         return traveler;
     }
@@ -83,9 +95,23 @@ public class TravelerController {
         return traveler;
     }
 
+    /** 更新请求与新增请求的唯一差别是 idNo 可省略，这里先原样拷贝，是否回填由调用方决定。 */
+    private Traveler fromRequest(TravelerUpdateRequest request) {
+        Traveler traveler = new Traveler();
+        traveler.name = request.name();
+        traveler.gender = request.gender();
+        traveler.birthDate = request.birthDate();
+        traveler.idType = request.idType();
+        traveler.idNo = request.idNo();
+        traveler.phone = request.phone();
+        traveler.emergencyName = request.emergencyName();
+        traveler.emergencyPhone = request.emergencyPhone();
+        return traveler;
+    }
+
     private TravelerView toView(Traveler traveler) {
         return new TravelerView(traveler.id, traveler.name, traveler.gender, traveler.birthDate,
                 traveler.idType, OrderService.maskId(traveler.idNo), traveler.phone,
-                traveler.emergencyName, traveler.emergencyPhone);
+                traveler.emergencyName, traveler.emergencyPhone, traveler.createdAt, traveler.updatedAt);
     }
 }

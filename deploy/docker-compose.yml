@@ -28,7 +28,7 @@ services:
       DB_URL: jdbc:mysql://mysql:3306/travel_agency?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
       DB_USERNAME: travel
       DB_PASSWORD: travel_password
-      JWT_SECRET: change-this-secret-before-deployment
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       CORS_ALLOWED_ORIGINS: http://localhost
     depends_on:
       mysql:

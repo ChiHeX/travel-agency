@@ -2,22 +2,33 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { accountApi } from '@/api/modules'
+import RequestState from '@/components/RequestState.vue'
 
 const items = ref([])
 const form = reactive({ title: '', content: '' })
 const loading = ref(false)
 const submitting = ref(false)
+const error = ref('')
+const submitError = ref('')
+const page = ref(1)
+const total = ref(0)
 
 async function load() {
   loading.value = true
+  error.value = ''
   try {
-    items.value = (await accountApi.consultations())?.items || []
+    const result = await accountApi.consultations({ page: page.value, size: 10 })
+    items.value = result.items
+    total.value = result.total
+  } catch (cause) { error.value = cause.message || '咨询加载失败'
   } finally {
     loading.value = false
   }
 }
 
 async function submit() {
+  if (submitting.value) return
+  submitError.value = ''
   if (!form.title.trim() || !form.content.trim()) return ElMessage.warning('请填写问题标题和详细内容')
   submitting.value = true
   try {
@@ -25,32 +36,37 @@ async function submit() {
     Object.assign(form, { title: '', content: '' })
     ElMessage.success('咨询工单已提交，客服将尽快答复')
     load()
+  } catch (cause) { submitError.value = cause.message || '提交失败，请重试'
   } finally {
     submitting.value = false
   }
 }
 
+function changePage(value) { page.value = value; load() }
+
 onMounted(load)
 </script>
 
 <template>
-  <div class="account-page">
-    <div class="container consultation-layout page-section">
-      <!-- Left: Create Consultation Form -->
-      <div class="consultation-form-col">
-        <div class="section-head">
-          <div>
-            <span class="eyebrow">HELP &amp; INQUIRY</span>
-            <h2>在线咨询客服</h2>
-            <p>工单式咨询服务，行程顾问与技术人员将直接为您解答疑问。</p>
-          </div>
+  <div class="account-page account-settings-page">
+    <main class="account-content">
+      <header class="account-page-heading">
+        <div>
+          <h1>咨询</h1>
+          <p>向客服提交问题，并查看历史答复。</p>
         </div>
+      </header>
+
+      <div class="consultation-layout">
+        <div class="consultation-form-col">
+          <div class="settings-heading"><h2>发起咨询</h2></div>
 
         <div class="admin-panel form-panel-box">
           <form class="consultation-form" @submit.prevent="submit">
+            <p v-if="submitError" class="form-error" role="alert">{{ submitError }}</p>
             <div class="form-field">
               <label>咨询主题 / 问题概要</label>
-              <input v-model="form.title" placeholder="例如：咨询集合地点或行程安排" required />
+              <input v-model="form.title" minlength="2" maxlength="100" placeholder="例如：咨询集合地点或行程安排" required />
             </div>
 
             <div class="form-field">
@@ -58,6 +74,8 @@ onMounted(load)
               <textarea
                 v-model="form.content"
                 rows="5"
+                minlength="2"
+                maxlength="2000"
                 placeholder="请详细描述您在预订、行程安排或费用方面的疑问..."
                 required
               ></textarea>
@@ -68,18 +86,13 @@ onMounted(load)
             </button>
           </form>
         </div>
-      </div>
-
-      <!-- Right: History List -->
-      <div class="consultation-history-col">
-        <div class="section-head compact-head">
-          <div>
-            <span class="eyebrow">HISTORY</span>
-            <h2>历史咨询记录</h2>
-          </div>
         </div>
 
-        <div v-if="loading">
+        <div class="consultation-history-col">
+          <div class="settings-heading"><h2>历史记录</h2></div>
+
+        <RequestState v-if="error" :error="error" @retry="load" />
+        <div v-else-if="loading">
           <el-skeleton :rows="6" animated />
         </div>
 
@@ -91,7 +104,7 @@ onMounted(load)
           >
             <div class="card-status-row">
               <span class="tag" :class="item.status === 'REPLIED' ? 'success' : 'warning'">
-                {{ item.status === 'REPLIED' ? '已回复' : '处理中' }}
+                {{ { REPLIED: '已回复', CLOSED: '已关闭', WAIT_REPLY: '等待回复' }[item.status] || item.status }}
               </span>
               <span class="consult-time">{{ item.createdAt }}</span>
             </div>
@@ -112,23 +125,28 @@ onMounted(load)
         <div v-else class="empty-box">
           暂无历史咨询记录。
         </div>
+        <el-pagination v-if="!loading && !error && total > 10" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="page" :page-size="10" :total="total" @current-change="changePage" />
+        </div>
       </div>
-    </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.account-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
 .consultation-layout {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
-  gap: 36px;
+  gap: 28px;
   align-items: flex-start;
 }
+
+.settings-heading {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #d9d9df;
+}
+
+.settings-heading h2 { font-size: 18px; }
 
 .form-panel-box {
   padding: 24px;

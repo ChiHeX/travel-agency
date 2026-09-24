@@ -1,5 +1,6 @@
 # Java / Maven
 backend/target/
+backend/config/application-local.properties
 *.class
 *.log
 
@@ -27,6 +28,9 @@ Thumbs.db
 
 # AGENTS
 AGENTS.md
+
+# WorkBuddy (project-local agent state, never commit)
+.workbuddy/
 
 # Tmp
 *.tmp

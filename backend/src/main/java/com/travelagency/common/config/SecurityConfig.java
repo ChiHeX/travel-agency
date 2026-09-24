@@ -28,7 +28,7 @@ public class SecurityConfig {
 
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
-            @Value("${app.cors.allowed-origins:http://localhost:5173}") String allowedOrigins) {
+            @Value("${app.cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}") String allowedOrigins) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.allowedOrigins = allowedOrigins;
     }
@@ -45,24 +45,32 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/login", "/api/auth/register", "/api/health", "/api/payments/alipay/callback", "/actuator/health").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/routes/**", "/api/articles/**", "/api/attractions/**").permitAll()
+                        .requestMatchers("/api/auth/login", "/api/auth/register", "/api/health", "/api/payments/alipay/notify", "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/home", "/api/routes/**", "/api/articles/**", "/api/attractions/**").permitAll()
                         .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "STAFF")
                         .requestMatchers("/api/guide/**").hasAnyRole("ADMIN", "GUIDE")
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, exception) -> {
-                            response.setStatus(401);
-                            response.setContentType("application/json;charset=UTF-8");
-                            response.getWriter().write("{\"success\":false,\"message\":\"请先登录\"}");
+                            writeError(response, 401, "AUTHENTICATION_REQUIRED", "请先登录");
                         })
                         .accessDeniedHandler((request, response, exception) -> {
-                            response.setStatus(403);
-                            response.setContentType("application/json;charset=UTF-8");
-                            response.getWriter().write("{\"success\":false,\"message\":\"无权访问该资源\"}");
+                            writeError(response, 403, "ACCESS_DENIED", "无权访问该资源");
                         }))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    /**
+     * 以契约统一错误结构写出 401/403 响应：{ code, message, data:null, errors:[], traceId }。
+     */
+    private static void writeError(jakarta.servlet.http.HttpServletResponse response, int status,
+                                   String code, String message) throws java.io.IOException {
+        response.setStatus(status);
+        response.setContentType("application/json;charset=UTF-8");
+        String traceId = java.util.UUID.randomUUID().toString();
+        response.getWriter().write("{\"code\":\"" + code + "\",\"message\":\"" + message
+                + "\",\"data\":null,\"errors\":[],\"traceId\":\"" + traceId + "\"}");
     }
 
     @Bean
@@ -71,7 +79,11 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(origin -> !origin.isBlank()).toList());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
+        // Idempotency-Key 必须列入白名单：契约把它定义为 POST /orders 与 /orders/{orderNo}/refunds
+        // 的必填请求头，属于非简单头，浏览器会先发 CORS 预检。
+        // 漏掉它时预检返回的 Access-Control-Allow-Headers 不含该头，浏览器会直接拦截真实请求
+        // （dev 默认走 Vite 代理属同源，会把这个问题掩盖掉，一旦直连后端或异源部署就必然触发）。
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With", "Idempotency-Key"));
         configuration.setExposedHeaders(List.of("Location"));
         configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

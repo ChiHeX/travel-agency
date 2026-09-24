@@ -121,7 +121,6 @@ onMounted(() => {
           <section v-if="home.popularDestinations?.length" class="discovery-section">
             <div class="results-title-row">
               <h3 class="section-title">热门目的地</h3>
-              <RouterLink :to="{ name: 'routes' }" class="view-all-link">查看全部<AppIcon name="chevron-right" size="12" /></RouterLink>
             </div>
             <div class="destination-pills-row">
               <button v-for="item in home.popularDestinations" :key="item.destination" type="button" class="destination-pill" @click="openDestination(item.destination)">
@@ -134,10 +133,9 @@ onMounted(() => {
           <section v-for="section in discoverySections" :key="section.key" class="discovery-section">
             <div class="results-title-row">
               <h3 class="section-title">{{ section.title }}</h3>
-              <RouterLink :to="{ name: 'routes' }" class="view-all-link">查看全部<AppIcon name="chevron-right" size="12" /></RouterLink>
             </div>
             <div class="route-cards-feed">
-              <button v-for="item in section.items.slice(0, 3)" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
+              <button v-for="item in section.items" :key="item.id" type="button" class="place-card-item" @click="openRoute(item.id)">
                 <div class="place-thumb">
                   <img v-if="item.coverUrl" :src="item.coverUrl" :alt="item.name" loading="lazy" />
                   <div v-else class="place-thumb-fallback"><span>{{ item.destination?.slice(0, 2) || '—' }}</span></div>
@@ -163,7 +161,6 @@ onMounted(() => {
       <section v-else class="results-section">
         <div class="results-title-row">
           <h3 class="section-title">可报名路线 ({{ total }})</h3>
-          <RouterLink :to="{ name: 'routes', query: { keyword: keyword.trim() } }" class="view-all-link">路线筛选<AppIcon name="chevron-right" size="12" /></RouterLink>
         </div>
 
         <div v-if="loading" class="skeleton-list"><el-skeleton v-for="i in 3" :key="i" :rows="3" animated style="margin-bottom: 12px" /></div>
@@ -212,7 +209,6 @@ onMounted(() => {
 .discovery-section { display: flex; flex-direction: column; gap: 2px; }
 .section-title { margin: 0 0 10px; color: #1d1d1f; font-size: 14px; font-weight: 700; }
 .results-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.view-all-link { display: inline-flex; align-items: center; gap: 2px; color: var(--theme-blue); font-size: 12px; text-decoration: none; }
 .destination-pills-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .destination-pill { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid rgba(0,0,0,.07); border-radius: var(--radius-pill); background: rgba(255,255,255,.78); color: var(--text-primary); font-size: 12px; cursor: pointer; }
 .destination-pill:hover { border-color: var(--theme-blue); background: #fff; }

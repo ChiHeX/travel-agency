@@ -49,8 +49,15 @@ VALUES
     (@route_id, 3, '大理 · 丽江', '游览古城，前往丽江。', '旅游大巴', '早、午餐', @hotel_id)
 ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), hotel_id = VALUES(hotel_id);
 
+SET @day1_id = (SELECT id FROM route_itinerary_day WHERE route_id = @route_id AND day_number = 1 LIMIT 1);
 SET @day2_id = (SELECT id FROM route_itinerary_day WHERE route_id = @route_id AND day_number = 2 LIMIT 1);
 SET @day3_id = (SELECT id FROM route_itinerary_day WHERE route_id = @route_id AND day_number = 3 LIMIT 1);
+-- Kunming is an approximate city-center waypoint for the demo itinerary, not an actual meeting address.
+INSERT INTO route_itinerary_item (day_id, sort_no, item_type, name, description, longitude, latitude)
+SELECT @day1_id, 1, 'TRANSPORT', '抵达昆明', '昆明市区示意位置，实际集合地点以出团通知为准。', 102.7120000, 25.0400000
+WHERE @day1_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM route_itinerary_item WHERE day_id = @day1_id AND name = '抵达昆明');
+
 INSERT INTO route_itinerary_item (day_id, sort_no, item_type, name, description, attraction_id, longitude, latitude)
 VALUES
     (@day2_id, 1, 'ATTRACTION', '大理古城', '古城步行游览。', @dali_id, 100.1650000, 25.6940000),
@@ -60,6 +67,31 @@ INSERT INTO departure (route_id, start_date, end_date, adult_price, child_price,
 SELECT @route_id, DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 35 DAY), 3980.00, 3280.00, 30, 'OPEN'
 WHERE @route_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM departure WHERE route_id = @route_id AND start_date = DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY));
+
+-- A single-location demo route for checking that the map shows one marker without a route line.
+INSERT INTO travel_route (name, departure_city, destination, duration_days, description, included, excluded, booking_notice, status)
+SELECT '大理古城单地点演示团', '大理', '大理', 1,
+       '课程测试线路：仅包含大理古城一个行程地点，用于验证单点地图展示。',
+       '大理古城导览服务', '交通、餐食及个人消费', '课程演示数据，不代表实际旅行社产品。', 'PUBLISHED'
+WHERE @dali_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM travel_route WHERE name = '大理古城单地点演示团' AND deleted = 0);
+SET @single_route_id = (SELECT id FROM travel_route WHERE name = '大理古城单地点演示团' AND deleted = 0 ORDER BY id LIMIT 1);
+
+INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals)
+SELECT @single_route_id, 1, '大理古城一日游', '在大理古城游览，行程地图仅标记此处。', '步行', '自理'
+WHERE @single_route_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM route_itinerary_day WHERE route_id = @single_route_id AND day_number = 1);
+SET @single_day_id = (SELECT id FROM route_itinerary_day WHERE route_id = @single_route_id AND day_number = 1 LIMIT 1);
+
+INSERT INTO route_itinerary_item (day_id, sort_no, item_type, name, description, attraction_id, longitude, latitude)
+SELECT @single_day_id, 1, 'ATTRACTION', '大理古城', '单地点地图展示用演示行程。', a.id, a.longitude, a.latitude
+FROM attraction a WHERE a.id = @dali_id AND @single_day_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM route_itinerary_item WHERE day_id = @single_day_id AND sort_no = 1);
+
+INSERT INTO departure (route_id, start_date, end_date, adult_price, child_price, max_people, status)
+SELECT @single_route_id, DATE_ADD(CURRENT_DATE, INTERVAL 14 DAY), DATE_ADD(CURRENT_DATE, INTERVAL 14 DAY), 299.00, 199.00, 20, 'OPEN'
+WHERE @single_route_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM departure WHERE route_id = @single_route_id AND start_date = DATE_ADD(CURRENT_DATE, INTERVAL 14 DAY));
 
 INSERT INTO data_source (data_name, source, source_type, used_date, license, remark)
 VALUES ('演示景点与线路基础资料', '团队原创整理的课程测试数据', 'TEAM_TEST_DATA', CURRENT_DATE, '仅限课程项目开发、测试与答辩演示', '不代表真实旅行社经营数据');

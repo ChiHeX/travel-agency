@@ -45,6 +45,8 @@ DEALLOCATE PREPARE stmt;
 |---|---|
 | `001-add-idempotency-record.sql` | 新增 `idempotency_record` 表，支撑下单与退款的 `Idempotency-Key` 幂等 |
 | `002-repair-demo-text-encoding.sql` | 仅修复与原始演示文字精确匹配的乱码，保留线路、景点、酒店和行程的主键及关联；执行前备份这些内容表 |
+| `003-add-kunming-demo-waypoint.sql` | 为已有的彩云之南演示线路补充昆明抵达示意点，避免地图只显示大理至丽江 |
+| `004-add-single-location-demo-route.sql` | 新增只有大理古城一个地图地点的演示线路和测试团期，用于检查单点地图展示 |
 
 中文 SQL 文件须以 UTF-8 保存并原样传给客户端。`test-data.sql` 显式使用 `SET NAMES utf8mb4`，避免客户端默认字符集将 UTF-8 字节误当成 latin1；它不能修复在文件传输之前已被错误转码的文本。
 存量乱码使用 `002` 定向修复，不要重新导入整套演示数据。脚本不会改动订单、游客快照、账号或正常中文；第二次执行不会再次转换已修复内容。

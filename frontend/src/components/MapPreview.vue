@@ -84,7 +84,7 @@ function renderMap() {
   })
   if (data.length > 1) {
     L.polyline(data.map((point) => point.position), {
-      color: '#0071e3', weight: 5, opacity: 0.82
+      color: '#0071e3', weight: 4, opacity: 0.82, dashArray: '8 8'
     }).addTo(overlays)
   }
   const isMobile = window.innerWidth <= 900

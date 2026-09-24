@@ -1,14 +1,18 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
 const props = defineProps({
   itinerary: { type: Array, default: () => [] },
+  places: { type: Array, default: () => [] },
+  focusedPlace: { type: Object, default: null },
   drawerOpen: { type: Boolean, default: false },
   sidebarExpanded: { type: Boolean, default: true },
   sheetSize: { type: String, default: 'half' }
 })
+const router = useRouter()
 
 const mapElement = ref(null)
 let mapInstance
@@ -35,6 +39,18 @@ function onMapResize() {
 }
 
 function points() {
+  if (props.places.length) {
+    return props.places
+      .filter((item) => item.longitude != null && item.latitude != null)
+      .map((item, index) => ({
+        position: [Number(item.latitude), Number(item.longitude)],
+        name: item.name,
+        placeId: item.attractionId,
+        order: index + 1
+      }))
+      .filter((item) => Number.isFinite(item.position[0]) && Number.isFinite(item.position[1])
+        && Math.abs(item.position[0]) <= 90 && Math.abs(item.position[1]) <= 180)
+  }
   return props.itinerary
     .flatMap((day) => day.items || [])
     .filter((item) => item.longitude != null && item.latitude != null)
@@ -78,11 +94,24 @@ function renderMap() {
       iconSize: [24, 24],
       iconAnchor: [12, 12]
     })
-    L.marker(point.position, { icon, title: point.name })
-      .bindPopup(`<strong>${point.order}. ${escapeHtml(point.name)}</strong>`)
-      .addTo(overlays)
+    const marker = L.marker(point.position, { icon, title: point.name })
+    if (point.placeId) {
+      const popup = L.DomUtil.create('div', 'guide-place-popup')
+      const name = L.DomUtil.create('strong', '', popup)
+      name.textContent = `${point.order}. ${point.name}`
+      const open = L.DomUtil.create('button', '', popup)
+      open.type = 'button'
+      open.textContent = '查看地点详情'
+      open.addEventListener('click', () => router.push({
+        name: 'attraction-detail', params: { id: point.placeId }
+      }))
+      marker.bindPopup(popup)
+    } else {
+      marker.bindPopup(`<strong>${point.order}. ${escapeHtml(point.name)}</strong>`)
+    }
+    marker.addTo(overlays)
   })
-  if (data.length > 1) {
+  if (!props.places.length && data.length > 1) {
     L.polyline(data.map((point) => point.position), {
       color: '#0071e3', weight: 4, opacity: 0.82, dashArray: '8 8'
     }).addTo(overlays)
@@ -106,11 +135,30 @@ function escapeHtml(value = '') {
   })[char])
 }
 
+function focusPlace() {
+  if (!mapInstance || !props.focusedPlace) return
+  const latitude = Number(props.focusedPlace.latitude)
+  const longitude = Number(props.focusedPlace.longitude)
+  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    const zoom = Math.max(12, mapInstance.getZoom())
+    const isMobile = window.innerWidth <= 900
+    const leftOffset = isMobile || !props.drawerOpen ? 0 : (props.sidebarExpanded ? 305 : 243)
+    const bottomOffset = isMobile && props.drawerOpen
+      ? (props.sheetSize === 'collapsed' ? 55 : Math.round(window.innerHeight * .275))
+      : 0
+    const center = mapInstance.project([latitude, longitude], zoom)
+      .subtract(L.point(leftOffset, -bottomOffset))
+    mapInstance.flyTo(mapInstance.unproject(center, zoom), zoom)
+  }
+}
+
 onMounted(() => {
   renderMap()
   window.addEventListener('resize', onMapResize)
 })
 watch(() => props.itinerary, renderMap, { deep: true })
+watch(() => props.places, renderMap, { deep: true })
+watch(() => props.focusedPlace, focusPlace)
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onMapResize)
   mapInstance?.remove()
@@ -173,6 +221,9 @@ onBeforeUnmount(() => {
   color: #000;
   cursor: pointer;
 }
+
+.map-canvas :deep(.guide-place-popup) { display: grid; gap: 5px; }
+.map-canvas :deep(.guide-place-popup button) { padding: 0; border: 0; color: #0071e3; background: transparent; text-align: left; cursor: pointer; }
 
 .map-reset:hover,
 .map-reset:focus-visible { background: #f4f4f4; }

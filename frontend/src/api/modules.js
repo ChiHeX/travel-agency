@@ -67,6 +67,13 @@ export const contentApi = {
   attractions: (params) => request.get('/attractions', { params })
 }
 
+export const placeGuideApi = {
+  list: (params) => request.get('/place-guides', { params }),
+  detail: (id) => request.get(`/place-guides/${id}`),
+  cities: () => request.get('/place-guides/cities'),
+  publishers: () => request.get('/place-guides/publishers')
+}
+
 export const adminApi = {
   dashboard: (params) => request.get('/admin/dashboard', { params }),
 

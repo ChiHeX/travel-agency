@@ -1,30 +1,18 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { contentApi } from '@/api/modules'
+import { onMounted, ref } from 'vue'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import RequestState from '@/components/RequestState.vue'
 
-const articles = ref([])
+const publishers = ref([])
 const loading = ref(true)
 const error = ref('')
-
-const publishers = computed(() => {
-  const groups = new Map()
-  for (const article of articles.value) {
-    const key = String(article.authorId)
-    const current = groups.get(key) || { id: key, name: article.authorName, count: 0, destinations: new Set() }
-    current.count += 1
-    if (article.destination || article.city) current.destinations.add(article.destination || article.city)
-    groups.set(key, current)
-  }
-  return [...groups.values()].map((item) => ({ ...item, destinations: [...item.destinations] }))
-})
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    articles.value = (await contentApi.articles({ page: 1, size: 100 }))?.items || []
+    publishers.value = await placeGuideApi.publishers()
   } catch (cause) {
     error.value = cause.message || '发布者加载失败'
   } finally {
@@ -38,7 +26,7 @@ onMounted(load)
 <template>
   <div class="publisher-directory">
     <header>
-      <RouterLink :to="{ name: 'articles' }" class="back-button" aria-label="返回指南"><AppIcon name="chevron-left" size="13" /></RouterLink>
+      <RouterLink :to="{ name: 'guides' }" class="back-button" aria-label="返回指南"><AppIcon name="chevron-left" size="13" /></RouterLink>
       <div><h1>指南</h1><p>按发布者浏览</p></div>
     </header>
     <main>
@@ -47,7 +35,7 @@ onMounted(load)
       <div v-else-if="publishers.length" class="publisher-list">
         <RouterLink v-for="publisher in publishers" :key="publisher.id" :to="{ name: 'publisher-guides', params: { id: publisher.id }, query: { name: publisher.name } }" class="publisher-row">
           <span class="publisher-mark">{{ publisher.name.slice(0, 1) }}</span>
-          <span class="publisher-copy"><strong>{{ publisher.name }}</strong><small>{{ publisher.count }} 个指南<template v-if="publisher.destinations.length"> · {{ publisher.destinations.slice(0, 2).join('、') }}</template></small></span>
+          <span class="publisher-copy"><strong>{{ publisher.name }}</strong><small>{{ publisher.count }} 个指南</small></span>
           <AppIcon name="chevron-right" size="20" color="#8e8e93" />
         </RouterLink>
       </div>

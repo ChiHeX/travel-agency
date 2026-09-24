@@ -10,6 +10,11 @@ import LoginView from '@/views/public/LoginView.vue'
 import RegisterView from '@/views/public/RegisterView.vue'
 import ArticlesView from '@/views/public/ArticlesView.vue'
 import GuidesView from '@/views/public/GuidesView.vue'
+import LatestGuidesView from '@/views/public/LatestGuidesView.vue'
+import CityGuidesView from '@/views/public/CityGuidesView.vue'
+import GuidePublishersView from '@/views/public/GuidePublishersView.vue'
+import PublisherGuidesView from '@/views/public/PublisherGuidesView.vue'
+import PlaceGuideDetailView from '@/views/public/PlaceGuideDetailView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
 import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
 import OrderCreateView from '@/views/public/OrderCreateView.vue'
@@ -44,6 +49,11 @@ const routes = [
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
       { path: 'guides', name: 'guides', component: GuidesView },
+      { path: 'guides/latest', name: 'latest-guides', component: LatestGuidesView },
+      { path: 'guides/cities/:city', name: 'city-guides', component: CityGuidesView },
+      { path: 'guides/publishers', name: 'guide-publishers', component: GuidePublishersView },
+      { path: 'guides/publishers/:id', name: 'publisher-guides', component: PublisherGuidesView },
+      { path: 'guides/:id', name: 'guide-detail', component: PlaceGuideDetailView },
       { path: 'articles', name: 'articles', component: ArticlesView },
       { path: 'articles/latest', redirect: { name: 'articles' } },
       { path: 'articles/cities/:city', redirect: (to) => ({ name: 'articles', query: { destination: to.params.city } }) },

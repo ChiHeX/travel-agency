@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { contentApi } from '@/api/modules'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import RequestState from '@/components/RequestState.vue'
 
@@ -11,7 +11,7 @@ const loading = ref(true)
 const error = ref('')
 const destination = ref('')
 const failedImages = ref(new Set())
-const publisherName = computed(() => route.query.name || articles.value[0]?.authorName || '指南发布者')
+const publisherName = computed(() => articles.value[0]?.authorName || '指南发布者')
 const destinations = computed(() => [...new Set(articles.value.map((item) => item.destination || item.city).filter(Boolean))])
 const visibleArticles = computed(() => destination.value ? articles.value.filter((item) => [item.destination, item.city].includes(destination.value)) : articles.value)
 
@@ -19,8 +19,13 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const result = await contentApi.articles({ page: 1, size: 100 })
-    articles.value = (result?.items || []).filter((item) => String(item.authorId) === String(route.params.id))
+    const first = await placeGuideApi.list({ page: 1, size: 100, authorId: route.params.id })
+    const all = [...(first?.items || [])]
+    for (let page = 2; page <= (first?.totalPages || 1); page += 1) {
+      const result = await placeGuideApi.list({ page, size: 100, authorId: route.params.id })
+      all.push(...(result?.items || []))
+    }
+    articles.value = all
   } catch (cause) {
     error.value = cause.message || '发布者指南加载失败'
   } finally {
@@ -38,14 +43,14 @@ async function share() {
   else await navigator.clipboard?.writeText(data.url)
 }
 
-onMounted(load)
+watch(() => route.params.id, load, { immediate: true })
 </script>
 
 <template>
   <div class="publisher-page">
     <header>
       <div class="top-actions">
-        <RouterLink :to="{ name: 'article-publishers' }" class="circle-button" aria-label="返回发布者列表"><AppIcon name="chevron-left" size="19" /></RouterLink>
+        <RouterLink :to="{ name: 'guide-publishers' }" class="circle-button" aria-label="返回发布者列表"><AppIcon name="chevron-left" size="19" /></RouterLink>
         <button type="button" class="circle-button" aria-label="分享" @click="share"><AppIcon name="share" size="18" /></button>
       </div>
       <div class="publisher-brand"><span>{{ publisherName.slice(0, 1) }}</span><h1>{{ publisherName }}</h1></div>
@@ -58,7 +63,7 @@ onMounted(load)
       <RequestState v-if="error" :error="error" @retry="load" />
       <div v-else-if="loading"><el-skeleton :rows="9" animated /></div>
       <div v-else-if="visibleArticles.length" class="publisher-guides">
-        <RouterLink v-for="article in visibleArticles" :key="article.id" :to="{ name: 'article-detail', params: { id: article.id } }" class="publisher-guide-card">
+        <RouterLink v-for="article in visibleArticles" :key="article.id" :to="{ name: 'guide-detail', params: { id: article.id } }" class="publisher-guide-card">
           <div class="guide-fallback"><AppIcon name="guides" size="32" /></div>
           <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
           <span></span><strong>{{ article.title }}</strong>

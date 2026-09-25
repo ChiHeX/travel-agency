@@ -73,11 +73,11 @@ watch(() => route.params.id, load, { immediate: true })
 </template>
 
 <style scoped>
-.publisher-page { height: 100%; overflow-y: auto; background: #dff6fb; }
-header { padding: 20px 22px 28px; background: linear-gradient(135deg,#edf8f5,#e7f5db); }
+.publisher-page { height: 100%; overflow-y: auto; color: #111; background: #f7faf9; }
+header { padding: 18px 22px 20px; background: #f7faf9; }
 .publisher-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 11px; }.publisher-brand > span { width: 40px; height: 40px; border: 2px solid #9b7b38; border-radius: 50%; display: grid; place-items: center; color: #9b7b38; font-weight: 800; }.publisher-brand h1 { margin: 0; font-size: 27px; letter-spacing: -.04em; }
-nav { display: flex; gap: 8px; overflow-x: auto; padding: 16px 22px; background: linear-gradient(135deg,#edf8f5,#e7f5db); scrollbar-width: none; } nav::-webkit-scrollbar { display: none; }
-nav button { flex: 0 0 auto; padding: 8px 14px; border: 1px solid rgba(0,0,0,.1); border-radius: 999px; background: transparent; cursor: pointer; } nav button.active { color: white; border-color: var(--theme-blue); background: var(--theme-blue); }
+nav { display: flex; gap: 8px; overflow-x: auto; padding: 0 22px 18px; background: #f7faf9; scrollbar-width: none; } nav::-webkit-scrollbar { display: none; }
+nav button { flex: 0 0 auto; padding: 7px 14px; border: 1px solid rgba(0,0,0,.08); border-radius: 999px; color: #1d1d1f; background: white; font-size: 13px; font-weight: 500; cursor: pointer; transition: all .15s ease; } nav button:hover { background: #f2f2f7; } nav button.active { color: white; border-color: var(--theme-blue); background: var(--theme-blue); }
 main { padding: 0 22px 30px; }.publisher-guides { display: grid; gap: 13px; }
 .publisher-guide-card { position: relative; height: 220px; overflow: hidden; border-radius: 18px; color: white; background: #bfe6ed; }
 .publisher-guide-card img, .guide-fallback { width: 100%; height: 100%; object-fit: cover; }.publisher-guide-card img { position: absolute; inset: 0; }.guide-fallback { display: grid; place-items: center; color: #1b789a; }

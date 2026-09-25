@@ -331,7 +331,6 @@ function toggleScopeMenu() {
 .latest-grid::-webkit-scrollbar { display: none; }
 .portrait-card { height: 238px; border-radius: 17px; scroll-snap-align: start; }
 .card-copy strong { font-size: 14px; line-height: 1.2; }
-.city-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .city-grid button { position: relative; min-height: 112px; padding: 14px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }.city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.6),transparent 70%); }
 .city-grid button:nth-child(2n) { background: linear-gradient(145deg,#807766,#464238); }

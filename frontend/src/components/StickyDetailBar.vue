@@ -36,7 +36,7 @@ onBeforeUnmount(() => scrollContainer?.removeEventListener('scroll', updateScrol
 </template>
 
 <style scoped>
-.sticky-detail-bar { position: sticky; top: 0; z-index: 20; box-sizing: border-box; display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 12px; height: 56px; padding: 0 20px; background: rgba(255,255,255,.95); backdrop-filter: blur(18px); }
+.sticky-detail-bar { position: sticky; top: 0; z-index: 20; box-sizing: border-box; display: grid; grid-template-columns: 32px minmax(0, 1fr) 32px; align-items: center; gap: 12px; height: 56px; padding: 0 20px; background: rgba(247,250,249,.92); backdrop-filter: blur(18px); }
 .sticky-detail-bar.overlay { margin-bottom: -56px; }
 .sticky-detail-bar.overlay:not(.scrolled) { background: transparent; backdrop-filter: none; }
 .sticky-title { overflow: hidden; color: #1d1d1f; font-size: 15px; font-weight: 700; text-align: center; text-overflow: ellipsis; white-space: nowrap; opacity: 0; }

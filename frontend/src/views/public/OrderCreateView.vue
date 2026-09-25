@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { accountApi, orderApi, routeApi } from '@/api/modules'
 import { createIdempotencyKey, idTypeLabels } from '@/utils/order'
 import PanelIconButton from '@/components/PanelIconButton.vue'
+import { returnToPrevious } from '@/utils/navigation'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -113,15 +114,7 @@ function savedTravelerDisabled(savedId, currentIndex) {
 
 function returnToRoute() {
   const routeId = String(currentRoute.query.routeId || '')
-  const previousPath = window.history.state?.back
-  if (previousPath) {
-    const previousRoute = router.resolve(previousPath)
-    if (previousRoute.name === 'route-detail' && String(previousRoute.params.id) === routeId) {
-      router.back()
-      return
-    }
-  }
-  router.replace(routeId ? { name: 'route-detail', params: { id: routeId } } : { name: 'routes' })
+  returnToPrevious(router, routeId ? { name: 'route-detail', params: { id: routeId } } : { name: 'routes' })
 }
 
 async function submit() {
@@ -188,7 +181,7 @@ async function submit() {
 <template>
   <div class="checkout-page">
     <main class="booking-shell">
-      <PanelIconButton class="back-action" action="back" :label="currentRoute.query.routeId ? '返回线路详情' : '返回线路列表'" @click="returnToRoute" />
+      <PanelIconButton class="back-action" action="back" label="返回上一页" :fallback-to="currentRoute.query.routeId ? { name: 'route-detail', params: { id: currentRoute.query.routeId } } : { name: 'routes' }" />
       <header class="booking-heading">
         <h1>填写报名信息</h1>
         <p>核对团期，填写联系人与出行人信息。</p>
@@ -201,7 +194,7 @@ async function submit() {
       <div v-else-if="loadError" class="empty-box booking-error">
         <strong>报名信息暂时无法加载</strong>
         <p>{{ loadError }}</p>
-        <button type="button" class="secondary-button" @click="returnToRoute">{{ currentRoute.query.routeId ? '返回线路详情' : '返回线路列表' }}</button>
+        <button type="button" class="secondary-button" @click="returnToRoute">返回上一页</button>
       </div>
 
       <template v-else-if="departure && routeData?.route">

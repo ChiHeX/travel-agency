@@ -68,7 +68,7 @@ onMounted(load)
       <header class="detail-hero" :class="{ 'without-cover': !article.coverUrl || heroImageFailed }">
         <img v-if="article.coverUrl && !heroImageFailed" :src="article.coverUrl" :alt="article.title" @error="heroImageFailed = true" />
         <span class="hero-overlay"></span>
-        <PanelIconButton class="hero-action back" action="back" label="返回攻略列表" @click="router.push({ name: 'articles', query: article.destination ? { destination: article.destination } : {} })" />
+        <PanelIconButton class="hero-action back" action="back" label="返回上一页" :fallback-to="{ name: 'articles', query: article.destination ? { destination: article.destination } : {} }" />
         <PanelIconButton class="hero-action share" action="share" label="分享攻略" @click="share" />
         <div class="hero-content">
           <small>{{ article.authorName }}</small>

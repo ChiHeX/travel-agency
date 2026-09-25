@@ -51,7 +51,7 @@ watch(() => route.params.id, load, { immediate: true })
   <div class="publisher-page">
     <header>
       <div class="top-actions">
-        <PanelIconButton action="back" label="返回发布者列表" :to="{ name: 'guide-publishers' }" />
+        <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guide-publishers' }" />
         <PanelIconButton action="share" @click="share" />
       </div>
       <div class="publisher-brand"><span>{{ publisherName.slice(0, 1) }}</span><h1>{{ publisherName }}</h1></div>

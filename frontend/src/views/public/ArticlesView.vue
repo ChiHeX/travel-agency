@@ -1,12 +1,11 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { contentApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
-const router = useRouter()
 const route = useRoute()
 const articles = ref([])
 const loading = ref(true)
@@ -50,7 +49,7 @@ watch(destination, () => { page.value = 1; load() }, { immediate: true })
 <template>
   <div class="latest-page">
     <header>
-      <PanelIconButton action="back" label="返回上一页" @click="router.back()" />
+      <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'home' }" />
       <div><h1>旅行攻略</h1><p v-if="destination">{{ destination }}的相关攻略</p></div>
     </header>
 

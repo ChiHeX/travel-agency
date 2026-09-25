@@ -104,7 +104,7 @@ async function submit() {
 
       <div class="auth-card-footer">
         <span>已有行迹账号？</span>
-        <RouterLink to="/auth/login" class="text-link">返回登录 →</RouterLink>
+        <RouterLink to="/auth/login" class="text-link">前往登录 →</RouterLink>
       </div>
     </div>
   </div>

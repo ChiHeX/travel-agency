@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { contentApi, routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
@@ -8,7 +8,6 @@ import RequestState from '@/components/RequestState.vue'
 import RouteResultCard from '@/components/RouteResultCard.vue'
 
 const route = useRoute()
-const router = useRouter()
 const setMapFocus = inject('setMapFocus', () => {})
 const place = ref(null)
 const departures = ref([])
@@ -93,7 +92,7 @@ onBeforeUnmount(() => setMapFocus(null))
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="12" animated /></div>
     <template v-else-if="place">
       <header class="place-header">
-        <div class="top-actions"><PanelIconButton action="back" @click="router.back()" /><PanelIconButton action="share" label="分享地点" @click="share" /></div>
+        <div class="top-actions"><PanelIconButton action="back" :fallback-to="route.query.guideId ? { name: 'guide-detail', params: { id: route.query.guideId } } : { name: 'guides' }" /><PanelIconButton action="share" label="分享地点" @click="share" /></div>
         <div class="place-kicker"><AppIcon name="pin" size="14" /><span>{{ place.city }} · 地点</span></div>
         <h1>{{ place.name }}</h1>
         <p v-if="place.address" class="place-address">{{ place.address }}</p>

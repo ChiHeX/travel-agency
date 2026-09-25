@@ -14,7 +14,6 @@ const cityData = ref([])
 const loading = ref(true)
 const error = ref('')
 const failedImages = ref(new Set())
-const pageRoot = ref(null)
 const showScopeMenu = ref(false)
 const openRegion = ref('')
 const wideSubmenu = ref(false)
@@ -127,14 +126,12 @@ function openCity(name) {
 }
 
 function setSubmenuPosition(target) {
-  const pageRootEl = pageRoot.value
-  const targetRect = target?.getBoundingClientRect()
-  if (!pageRootEl) return
-  const pageRect = pageRootEl.getBoundingClientRect()
+  const rect = target?.getBoundingClientRect()
+  if (!rect) return
   const width = Math.min(360, Math.max(280, window.innerWidth * 0.3))
   submenuPosition.value = {
-    top: `${Math.min(targetRect?.top || pageRect.top + 210, window.innerHeight - 260)}px`,
-    left: `${Math.min(pageRect.right + 12, window.innerWidth - width - 18)}px`,
+    top: `${Math.min(rect.top, window.innerHeight - 260)}px`,
+    left: `${Math.min(rect.right + 12, window.innerWidth - width - 18)}px`,
     width: `${width}px`
   }
 }
@@ -176,7 +173,7 @@ watch(city, load, { immediate: true })
 </script>
 
 <template>
-  <div ref="pageRoot" class="city-guide-page">
+  <div class="city-guide-page">
     <header class="city-header">
       <div>
         <h2>指南</h2>

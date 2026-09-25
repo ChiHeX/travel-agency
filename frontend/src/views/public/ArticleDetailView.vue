@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { contentApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import PanelIconButton from '@/components/PanelIconButton.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -65,11 +65,10 @@ onMounted(load)
     <RequestState v-if="error" :error="error" @retry="load" />
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="10" animated /></div>
     <template v-else-if="article">
+      <StickyDetailBar :title="article.title" :fallback-to="{ name: 'articles', query: article.destination ? { destination: article.destination } : {} }" overlay @share="share" />
       <header class="detail-hero" :class="{ 'without-cover': !article.coverUrl || heroImageFailed }">
         <img v-if="article.coverUrl && !heroImageFailed" :src="article.coverUrl" :alt="article.title" @error="heroImageFailed = true" />
         <span class="hero-overlay"></span>
-        <PanelIconButton class="hero-action back" action="back" label="返回上一页" :fallback-to="{ name: 'articles', query: article.destination ? { destination: article.destination } : {} }" />
-        <PanelIconButton class="hero-action share" action="share" label="分享攻略" @click="share" />
         <div class="hero-content">
           <small>{{ article.authorName }}</small>
           <h1>{{ article.title }}</h1>
@@ -125,7 +124,6 @@ onMounted(load)
 .detail-hero.without-cover { min-height: 330px; background: linear-gradient(150deg,#17384a,#4b8da7 58%,#b8d8cb); }
 .detail-hero > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .hero-overlay { position: absolute; inset: 0; background: linear-gradient(0deg,rgba(20,8,5,.92),rgba(20,8,5,.05) 70%); }
-.hero-action { position: absolute; top: 20px; z-index: 2; }.hero-action.back { left: 20px; }.hero-action.share { right: 20px; }
 .hero-content { position: relative; z-index: 1; padding: 28px 24px 24px; }
 .hero-content small { font-size: 14px; font-weight: 700; }.hero-content h1 { margin: 12px 0; font-size: 36px; line-height: 1.03; letter-spacing: -.045em; }
 .hero-content p { max-height: 6.3em; overflow: hidden; margin: 0; color: rgba(255,255,255,.8); font-size: 16px; line-height: 1.55; }

@@ -3,7 +3,7 @@ import { inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import PanelIconButton from '@/components/PanelIconButton.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -58,13 +58,10 @@ onBeforeUnmount(() => {
     <RequestState v-if="error" :error="error" @retry="load" />
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="12" animated /></div>
     <template v-else-if="guide">
+      <StickyDetailBar :title="guide.title" :fallback-to="{ name: 'guides' }" overlay @share="share" />
       <header class="detail-hero" :class="{ 'without-cover': !guide.coverUrl || coverFailed }">
         <img v-if="guide.coverUrl && !coverFailed" :src="guide.coverUrl" :alt="guide.title" @error="coverFailed = true" />
         <span class="hero-shade"></span>
-        <div class="hero-actions">
-          <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guides' }" />
-          <PanelIconButton action="share" label="分享指南" @click="share" />
-        </div>
         <div class="hero-copy">
           <small>{{ guide.authorName }} · {{ guide.city }}</small>
           <h1>{{ guide.title }}</h1>
@@ -103,7 +100,6 @@ onBeforeUnmount(() => {
 .detail-hero { position: relative; min-height: 290px; overflow: hidden; color: white; background: linear-gradient(135deg, #76b6c6, #518273); }
 .detail-hero img, .hero-shade { position: absolute; inset: 0; width: 100%; height: 100%; }
 .detail-hero img { object-fit: cover; }.hero-shade { background: linear-gradient(0deg, rgba(0,0,0,.75), transparent 75%); }
-.hero-actions { position: relative; display: flex; justify-content: space-between; padding: 20px; }
 .hero-copy { position: relative; padding: 125px 22px 22px; }.hero-copy small { font-size: 12px; font-weight: 650; }.hero-copy h1 { margin: 5px 0 0; font-size: 26px; line-height: 1.15; }
 main { padding: 22px; }.summary { margin: 0 0 24px; color: #545e5a; font-size: 14px; line-height: 1.7; }
 .places-heading { display: flex; justify-content: space-between; align-items: end; gap: 8px; margin-bottom: 12px; }

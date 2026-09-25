@@ -3,7 +3,7 @@ import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { contentApi, routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import PanelIconButton from '@/components/PanelIconButton.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 import RouteResultCard from '@/components/RouteResultCard.vue'
 
@@ -91,8 +91,8 @@ onBeforeUnmount(() => setMapFocus(null))
     <RequestState v-if="error" :error="error" @retry="load" />
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="12" animated /></div>
     <template v-else-if="place">
+      <StickyDetailBar :title="place.name" :fallback-to="route.query.guideId ? { name: 'guide-detail', params: { id: route.query.guideId } } : { name: 'guides' }" @share="share" />
       <header class="place-header">
-        <div class="top-actions"><PanelIconButton action="back" :fallback-to="route.query.guideId ? { name: 'guide-detail', params: { id: route.query.guideId } } : { name: 'guides' }" /><PanelIconButton action="share" label="分享地点" @click="share" /></div>
         <div class="place-kicker"><AppIcon name="pin" size="14" /><span>{{ place.city }} · 地点</span></div>
         <h1>{{ place.name }}</h1>
         <p v-if="place.address" class="place-address">{{ place.address }}</p>
@@ -155,7 +155,7 @@ onBeforeUnmount(() => setMapFocus(null))
 
 <style scoped>
 .place-detail { height: 100%; overflow-y: auto; color: #101010; background: #f4f8fa; }.loading-block { padding: 28px 22px; }
-.place-header { padding: 20px 22px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,.07); }.top-actions { display: flex; justify-content: space-between; margin-bottom: 28px; }
+.place-header { padding: 20px 22px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,.07); }
 .place-kicker { display: flex; align-items: center; gap: 5px; color: var(--theme-blue); font-size: 12px; font-weight: 700; }
 .place-header h1 { margin: 7px 0 0; font-size: clamp(28px, 6vw, 34px); line-height: 1.15; letter-spacing: -.04em; }.place-address { margin: 8px 0 0; color: #66717b; font-size: 14px; line-height: 1.5; }
 main { display: grid; gap: 28px; padding: 24px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.035em; }

@@ -101,15 +101,14 @@ onBeforeUnmount(() => setMapFocus(null))
           <h2>途经此地点的团期</h2>
           <p v-if="!departures.length" class="departure-empty">暂无未来开放团期</p>
           <div v-else class="departure-list">
-            <div v-for="departure in departures" :key="departure.id" class="departure-row">
+            <RouterLink v-for="departure in departures" :key="departure.id" class="departure-row"
+                        :to="{ name: 'route-detail', params: { id: departure.routeId } }">
               <div class="departure-route">
-                <RouterLink :to="{ name: 'route-detail', params: { id: departure.routeId } }">{{ departure.routeName }}</RouterLink>
+                <strong>{{ departure.routeName }}</strong>
                 <small>{{ departure.departureCity }}出发</small>
               </div>
               <DepartureCard :departure="departure" />
-              <RouterLink v-if="departure.availableSeats > 0" class="primary-button departure-book"
-                          :to="{ name: 'order-create', query: { routeId: departure.routeId, departureId: departure.id } }">立即报名</RouterLink>
-            </div>
+            </RouterLink>
           </div>
         </section>
 
@@ -158,7 +157,7 @@ onBeforeUnmount(() => setMapFocus(null))
 main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.035em; }
 .visual-strip { display: grid; grid-template-columns: 1.1fr 1fr; gap: 10px; overflow: hidden; }.visual-placeholder { height: 220px; border-radius: 18px; display: grid; place-items: center; align-content: center; gap: 10px; color: #2f7698; background: linear-gradient(145deg,#8fd9ef,#d8f2df); text-align: center; }.visual-placeholder span { padding: 0 14px; font-size: 11px; }.visual-placeholder.secondary { background: linear-gradient(145deg,#beddeb,#85b5c9); }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
-.departure-list { display: grid; gap: 16px; }.departure-row { display: grid; gap: 8px; }.departure-route { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }.departure-route a { color: var(--text-primary); font-size: 13px; font-weight: 700; }.departure-route small, .departure-empty { color: var(--text-secondary); }.departure-book { justify-self: end; text-decoration: none; }
+.departure-list { display: grid; gap: 16px; }.departure-row { display: grid; gap: 8px; color: inherit; text-decoration: none; }.departure-row:hover, .departure-row:focus-visible { color: var(--theme-blue); }.departure-row:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 4px; border-radius: 8px; }.departure-route { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }.departure-route strong { font-size: 13px; font-weight: 700; }.departure-route small, .departure-empty { color: var(--text-secondary); }
 .about-card .muted { color: #8e8e93; }
 .horizontal-list { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scrollbar-width: none; }.horizontal-list::-webkit-scrollbar { display: none; }
 .guide-tile { position: relative; overflow: hidden; border-radius: 17px; background: white; }.guide-tile img, .tile-fallback { width: 100%; height: 130px; object-fit: cover; }.guide-tile img { position: absolute; inset: 0 0 auto; }.tile-fallback { display: grid; place-items: center; color: #3184aa; background: #bfe7ef; }.guide-tile strong, .guide-tile small { position: relative; display: block; margin: 11px 13px 0; }.guide-tile strong { font-size: 15px; line-height: 1.2; }.guide-tile small { margin-top: 3px; margin-bottom: 12px; color: #8e8e93; }

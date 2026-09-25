@@ -1170,6 +1170,9 @@ paths:
         - { $ref: '#/components/parameters/Size' }
         - name: keyword
           in: query
+          description: >-
+            可选筛选，匹配导游姓名、电话与简介。实现此前已接受该参数（用 name/phone/intro 做筛选），
+            本次仅把它补进契约并校验长度上限，属向后兼容的补充：不传时行为不变。
           schema: { type: string, maxLength: 100 }
         - name: status
           in: query

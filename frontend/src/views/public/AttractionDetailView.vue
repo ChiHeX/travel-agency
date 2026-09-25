@@ -21,9 +21,6 @@ const error = ref('')
 const failedImages = ref(new Set())
 
 const hasCoordinates = computed(() => place.value?.longitude != null && place.value?.latitude != null)
-const mapUrl = computed(() => hasCoordinates.value
-  ? `https://www.openstreetmap.org/?mlat=${place.value.latitude}&mlon=${place.value.longitude}#map=15/${place.value.latitude}/${place.value.longitude}`
-  : '')
 
 async function loadRouteCards() {
   const routeIds = [...new Set(departures.value.map((departure) => departure.routeId))]
@@ -99,11 +96,6 @@ onBeforeUnmount(() => setMapFocus(null))
         <div class="place-kicker"><AppIcon name="pin" size="14" /><span>{{ place.city }} · 地点</span></div>
         <h1>{{ place.name }}</h1>
         <p v-if="place.address" class="place-address">{{ place.address }}</p>
-        <RouterLink v-if="route.query.guideId" :to="{ name: 'guide-detail', params: { id: route.query.guideId } }" class="back-guide">返回指南地点列表</RouterLink>
-        <nav class="place-actions" aria-label="地点操作">
-          <a class="place-action place-action-primary" href="#place-departures"><AppIcon name="routes" size="20" /><span>查看线路</span></a>
-          <a v-if="mapUrl" class="place-action" :href="mapUrl" target="_blank" rel="noopener" aria-label="在 OpenStreetMap 中查看地点"><AppIcon name="pin" size="20" /><span>打开地图</span></a>
-        </nav>
       </header>
 
       <main>
@@ -167,8 +159,6 @@ onBeforeUnmount(() => setMapFocus(null))
 .circle-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #49535b; background: #f0f2f4; cursor: pointer; }.circle-button:hover, .circle-button:focus-visible { background: #e3e8ed; }
 .place-kicker { display: flex; align-items: center; gap: 5px; color: var(--theme-blue); font-size: 12px; font-weight: 700; }
 .place-header h1 { margin: 7px 0 0; font-size: clamp(28px, 6vw, 34px); line-height: 1.15; letter-spacing: -.04em; }.place-address { margin: 8px 0 0; color: #66717b; font-size: 14px; line-height: 1.5; }
-.back-guide { display: inline-block; margin-top: 12px; color: var(--theme-blue); font-size: 13px; }
-.place-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 24px; }.place-action { min-height: 54px; border-radius: 13px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--theme-blue); background: #eef2f4; font-size: 14px; font-weight: 700; text-decoration: none; }.place-action:only-child { grid-column: 1 / -1; }.place-action-primary { color: #fff; background: var(--theme-blue); }.place-action:hover { filter: brightness(.96); }.place-action:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 2px; }
 main { display: grid; gap: 28px; padding: 24px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.035em; }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
 .departure-list { display: grid; gap: 10px; }.departure-empty { color: var(--text-secondary); }.departure-empty p { margin: 0 0 8px; }.retry-button { padding: 6px 10px; border: 0; border-radius: 8px; color: white; background: var(--theme-blue); cursor: pointer; }

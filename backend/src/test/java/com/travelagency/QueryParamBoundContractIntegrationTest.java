@@ -16,6 +16,7 @@ import org.springframework.web.context.WebApplicationContext;
 import java.util.List;
 
 import static org.hamcrest.Matchers.endsWith;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -45,7 +46,11 @@ class QueryParamBoundContractIntegrationTest {
 
     private static final List<Bound> BOUNDS = List.of(
             new Bound("durationDays", List.of("1", "2", "365"), List.of("0", "-3")),
-            new Bound("departureMonth", List.of("1", "6", "12"), List.of("0", "13", "-1")));
+            new Bound("departureMonth", List.of("1", "6", "12"), List.of("0", "13", "-1")),
+            // 价格：契约 Money 是"非负、固定两位小数"的字符串；实现接受不带小数的写法
+            // （现有搜索页与收藏链接会传 minPrice=100），但负数与超过两位小数的值必须拒绝。
+            new Bound("minPrice", List.of("0", "0.00", "100", "2999.00", "999.5"), List.of("-1", "-0.01", "1.234")),
+            new Bound("maxPrice", List.of("0", "0.00", "100", "2999.00", "999.5"), List.of("-1", "-0.01", "1.234")));
 
     @Autowired
     private WebApplicationContext context;
@@ -79,6 +84,34 @@ class QueryParamBoundContractIntegrationTest {
                         .andExpect(jsonPath("$.errors[0].field", endsWith(b.name())))
                         .andExpect(jsonPath("$.errors[0].message").isNotEmpty());
             }
+        }
+    }
+
+    @Test
+    @DisplayName("非数值价格是参数类型错误 → 400（与其它 BigDecimal 参数一致，不是 422）")
+    void nonNumericPriceIsBadRequest() throws Exception {
+        for (String name : List.of("minPrice", "maxPrice")) {
+            for (String value : List.of("abc", "1.2.3", "1,000")) {
+                int status = mvc.perform(routes(name, value)).andReturn().getResponse().getStatus();
+                assertEquals(400, status, name + "=" + value + " 应因参数类型错误返回 400");
+            }
+        }
+    }
+
+    /**
+     * 记录一个容易踩的既有行为：Java 的 {@code BigDecimal} 经由 {@code Character.digit} 解析数字，
+     * 因此**全角数字**（Unicode Nd）也是合法数值，{@code minPrice=１２３} 会被当成 123 收下。
+     *
+     * <p>契约的 {@code Money} 模式只覆盖 ASCII 数字，所以这里属于上一段注释里"宽松一档"的又一处；
+     * 若要把入参收紧到与模式完全一致（同时拒绝全角数字与不带小数的写法），需要改这条断言，
+     * 并同步规范前端与 URL 入参。</p>
+     */
+    @Test
+    @DisplayName("全角数字被当作同一数值接受（BigDecimal 解析口径，属契约模式的宽松超集）")
+    void fullWidthDigitsAreParsedAsNumbers() throws Exception {
+        for (String name : List.of("minPrice", "maxPrice")) {
+            assertEquals(200, mvc.perform(routes(name, "１２３")).andReturn().getResponse().getStatus(),
+                    name + " 的全角数字当前会被 BigDecimal 解析为 123");
         }
     }
 

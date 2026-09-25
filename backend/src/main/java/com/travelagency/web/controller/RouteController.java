@@ -10,6 +10,8 @@ import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.hibernate.validator.constraints.CodePointLength;
@@ -41,6 +43,12 @@ public class RouteController {
      * <p>响应 items 必须是契约 {@code RouteSummary}：前端线路卡片与订单页都依赖
      * {@code availableSeats} / {@code nextDepartureDate}，直出实体时这两个字段缺失，
      * 会让"余位"永远显示为空。{@code favorite} 需要登录态，未登录恒为 false。</p>
+     *
+     * <p>数值型筛选参数按契约边界校验：{@code durationDays >= 1}、{@code departureMonth} 1..12、
+     * 价格非负且最多两位小数。价格这里刻意比契约的 {@code Money} 模式（固定两位小数字符串）
+     * <b>宽松一档</b>：现有搜索页与收藏的链接会传 {@code minPrice=100} 这种不带小数的写法，
+     * 严格套模式会把可用页面变成 422。若要收紧到与 {@code Money} 完全一致，需同时把前端与
+     * URL 入参规范成两位小数，再改这里的约束。</p>
      */
     @GetMapping
     public ApiResponse<PageResponse<RouteSummaryView>> list(
@@ -52,8 +60,14 @@ public class RouteController {
             @CodePointLength(max = 64, message = "departureCity 长度不能超过 64 个字符") String departureCity,
             @RequestParam(required = false)
             @CodePointLength(max = 128, message = "destination 长度不能超过 128 个字符") String destination,
-            @RequestParam(required = false) BigDecimal minPrice,
-            @RequestParam(required = false) BigDecimal maxPrice,
+            @RequestParam(required = false)
+            @DecimalMin(value = "0.00", message = "minPrice 不能为负数")
+            @Digits(integer = 9, fraction = 2, message = "minPrice 最多两位小数")
+            BigDecimal minPrice,
+            @RequestParam(required = false)
+            @DecimalMin(value = "0.00", message = "maxPrice 不能为负数")
+            @Digits(integer = 9, fraction = 2, message = "maxPrice 最多两位小数")
+            BigDecimal maxPrice,
             @RequestParam(required = false)
             @Min(value = 1, message = "durationDays 不能小于 1") Integer durationDays,
             @RequestParam(required = false)

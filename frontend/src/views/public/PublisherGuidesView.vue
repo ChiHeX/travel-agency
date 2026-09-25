@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import PanelIconButton from '@/components/PanelIconButton.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -49,11 +49,8 @@ watch(() => route.params.id, load, { immediate: true })
 
 <template>
   <div class="publisher-page">
+    <StickyDetailBar :title="publisherName" :fallback-to="{ name: 'guide-publishers' }" @share="share" />
     <header>
-      <div class="top-actions">
-        <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guide-publishers' }" />
-        <PanelIconButton action="share" @click="share" />
-      </div>
       <div class="publisher-brand"><span>{{ publisherName.slice(0, 1) }}</span><h1>{{ publisherName }}</h1></div>
     </header>
     <nav v-if="destinations.length" aria-label="发布者目的地筛选">
@@ -78,7 +75,6 @@ watch(() => route.params.id, load, { immediate: true })
 <style scoped>
 .publisher-page { height: 100%; overflow-y: auto; background: #dff6fb; }
 header { padding: 20px 22px 28px; background: linear-gradient(135deg,#edf8f5,#e7f5db); }
-.top-actions { display: flex; justify-content: space-between; }
 .publisher-brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 11px; }.publisher-brand > span { width: 40px; height: 40px; border: 2px solid #9b7b38; border-radius: 50%; display: grid; place-items: center; color: #9b7b38; font-weight: 800; }.publisher-brand h1 { margin: 0; font-size: 27px; letter-spacing: -.04em; }
 nav { display: flex; gap: 8px; overflow-x: auto; padding: 16px 22px; background: linear-gradient(135deg,#edf8f5,#e7f5db); scrollbar-width: none; } nav::-webkit-scrollbar { display: none; }
 nav button { flex: 0 0 auto; padding: 8px 14px; border: 1px solid rgba(0,0,0,.1); border-radius: 999px; background: transparent; cursor: pointer; } nav button.active { color: white; border-color: var(--theme-blue); background: var(--theme-blue); }

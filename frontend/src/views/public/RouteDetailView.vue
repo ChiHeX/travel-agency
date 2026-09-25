@@ -367,7 +367,6 @@ onBeforeUnmount(() => setMapItinerary([]))
   justify-content: space-between;
   align-items: center;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .sheet-actions {

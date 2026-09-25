@@ -47,7 +47,7 @@ onMounted(load)
 
 <style scoped>
 .publisher-directory { height: 100%; overflow-y: auto; background: #edf9f5; }
-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px 10px; border-bottom: 1px solid rgba(0,0,0,.07); background: rgba(255,255,255,.72); }
+header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 16px 20px 10px; background: rgba(255,255,255,.95); backdrop-filter: blur(18px); }
 header h1 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; letter-spacing: -.01em; } header p { margin: 2px 0 0; color: #8e8e93; font-size: 13px; font-weight: 500; }
 main { padding: 8px 22px 30px; }
 .publisher-list { overflow: hidden; border-radius: 17px; background: white; }

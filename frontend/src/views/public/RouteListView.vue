@@ -309,7 +309,6 @@ onMounted(load)
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .drawer-header-bar h2 {

@@ -1,6 +1,5 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
@@ -12,8 +11,6 @@ const props = defineProps({
   sidebarExpanded: { type: Boolean, default: true },
   sheetSize: { type: String, default: 'half' }
 })
-const router = useRouter()
-
 const mapElement = ref(null)
 let mapInstance
 let overlays
@@ -45,7 +42,6 @@ function points() {
       .map((item, index) => ({
         position: [Number(item.latitude), Number(item.longitude)],
         name: item.name,
-        placeId: item.attractionId,
         order: index + 1
       }))
       .filter((item) => Number.isFinite(item.position[0]) && Number.isFinite(item.position[1])
@@ -87,34 +83,23 @@ function renderMap() {
   const data = points()
   overlays.clearLayers()
   if (!data.length) return
-  data.forEach((point) => {
-    const icon = L.divIcon({
-      className: 'route-marker',
-      html: `<span>${point.order}</span>`,
-      iconSize: [24, 24],
-      iconAnchor: [12, 12]
-    })
-    const marker = L.marker(point.position, { icon, title: point.name })
-    if (point.placeId) {
-      const popup = L.DomUtil.create('div', 'guide-place-popup')
-      const name = L.DomUtil.create('strong', '', popup)
-      name.textContent = `${point.order}. ${point.name}`
-      const open = L.DomUtil.create('button', '', popup)
-      open.type = 'button'
-      open.textContent = '查看地点详情'
-      open.addEventListener('click', () => router.push({
-        name: 'attraction-detail', params: { id: point.placeId }
-      }))
-      marker.bindPopup(popup)
-    } else {
+  if (!props.places.length) {
+    data.forEach((point) => {
+      const icon = L.divIcon({
+        className: 'route-marker',
+        html: `<span>${point.order}</span>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+      const marker = L.marker(point.position, { icon, title: point.name })
       marker.bindPopup(`<strong>${point.order}. ${escapeHtml(point.name)}</strong>`)
+      marker.addTo(overlays)
+    })
+    if (data.length > 1) {
+      L.polyline(data.map((point) => point.position), {
+        color: '#0071e3', weight: 4, opacity: 0.82, dashArray: '8 8'
+      }).addTo(overlays)
     }
-    marker.addTo(overlays)
-  })
-  if (!props.places.length && data.length > 1) {
-    L.polyline(data.map((point) => point.position), {
-      color: '#0071e3', weight: 4, opacity: 0.82, dashArray: '8 8'
-    }).addTo(overlays)
   }
   const isMobile = window.innerWidth <= 900
   const leftPadding = isMobile ? 24 : props.drawerOpen
@@ -221,9 +206,6 @@ onBeforeUnmount(() => {
   color: #000;
   cursor: pointer;
 }
-
-.map-canvas :deep(.guide-place-popup) { display: grid; gap: 5px; }
-.map-canvas :deep(.guide-place-popup button) { padding: 0; border: 0; color: #0071e3; background: transparent; text-align: left; cursor: pointer; }
 
 .map-reset:hover,
 .map-reset:focus-visible { background: #f4f4f4; }

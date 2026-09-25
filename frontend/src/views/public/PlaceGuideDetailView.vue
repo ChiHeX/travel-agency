@@ -77,7 +77,7 @@ onBeforeUnmount(() => {
         <p v-if="guide.summary" class="summary">{{ guide.summary }}</p>
         <div class="places-heading">
           <div><small>{{ guide.city }}</small><h2>{{ guide.places.length }} 个地点</h2></div>
-          <span><AppIcon name="pin" size="15" /> 已显示在地图上</span>
+          <span><AppIcon name="pin" size="15" /> 地图已聚焦该区域</span>
         </div>
         <div class="place-list">
           <button v-for="place in guide.places" :key="place.attractionId" type="button"

@@ -96,21 +96,17 @@ onBeforeUnmount(() => setMapFocus(null))
     <template v-else-if="place">
       <header class="place-header">
         <div class="top-actions"><button type="button" class="circle-button" aria-label="返回" @click="router.back()"><AppIcon name="chevron-left" size="19" /></button><button type="button" class="circle-button" aria-label="分享地点" @click="share"><AppIcon name="share" size="18" /></button></div>
+        <div class="place-kicker"><AppIcon name="pin" size="14" /><span>{{ place.city }} · 地点</span></div>
         <h1>{{ place.name }}</h1>
-        <p>{{ place.city }}<template v-if="place.address"> · {{ place.address }}</template></p>
+        <p v-if="place.address" class="place-address">{{ place.address }}</p>
         <RouterLink v-if="route.query.guideId" :to="{ name: 'guide-detail', params: { id: route.query.guideId } }" class="back-guide">返回指南地点列表</RouterLink>
-        <div class="primary-actions">
-          <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noopener"><AppIcon name="pin" size="19" /><span>在地图中查看</span></a>
-          <a href="#place-departures"><AppIcon name="routes" size="19" /><span>查看线路</span></a>
-        </div>
+        <nav class="place-actions" aria-label="地点操作">
+          <a class="place-action place-action-primary" href="#place-departures"><AppIcon name="routes" size="20" /><span>查看线路</span></a>
+          <a v-if="mapUrl" class="place-action" :href="mapUrl" target="_blank" rel="noopener" aria-label="在 OpenStreetMap 中查看地点"><AppIcon name="pin" size="20" /><span>打开地图</span></a>
+        </nav>
       </header>
 
       <main>
-        <section class="visual-strip" aria-label="地点图片">
-          <div class="visual-placeholder"><AppIcon name="pin" size="42" /><span>地点图片待资料接口提供</span></div>
-          <div class="visual-placeholder secondary"><AppIcon name="compass" size="38" /></div>
-        </section>
-
         <section>
           <h2>关于</h2>
           <div class="info-card about-card"><p v-if="place.intro">{{ place.intro }}</p><p v-else class="muted">该地点暂无公开简介。</p>
@@ -166,14 +162,14 @@ onBeforeUnmount(() => setMapFocus(null))
 </template>
 
 <style scoped>
-.place-detail { height: 100%; overflow-y: auto; color: #101010; background: #dff4fb; }.loading-block { padding: 28px 22px; }
-.place-header { padding: 20px 22px 18px; }.top-actions { display: flex; justify-content: space-between; margin-bottom: 18px; }
-.circle-button { width: 42px; height: 42px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #738089; background: rgba(0,0,0,.055); cursor: pointer; }
-.place-header h1 { margin: 0; font-size: 28px; line-height: 1.1; letter-spacing: -.04em; }.place-header > p { margin: 5px 0 0; color: #1f73c9; font-size: 14px; }
-.back-guide { display: inline-block; margin-top: 10px; color: var(--theme-blue); font-size: 13px; }
-.primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 20px; }.primary-actions a { min-height: 64px; border-radius: 14px; display: grid; place-items: center; align-content: center; gap: 3px; color: white; background: var(--theme-blue); font-size: 12px; font-weight: 700; }.primary-actions a + a { color: var(--theme-blue); background: rgba(0,113,227,.09); }
-main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.035em; }
-.visual-strip { display: grid; grid-template-columns: 1.1fr 1fr; gap: 10px; overflow: hidden; }.visual-placeholder { height: 220px; border-radius: 18px; display: grid; place-items: center; align-content: center; gap: 10px; color: #2f7698; background: linear-gradient(145deg,#8fd9ef,#d8f2df); text-align: center; }.visual-placeholder span { padding: 0 14px; font-size: 11px; }.visual-placeholder.secondary { background: linear-gradient(145deg,#beddeb,#85b5c9); }
+.place-detail { height: 100%; overflow-y: auto; color: #101010; background: #f4f8fa; }.loading-block { padding: 28px 22px; }
+.place-header { padding: 20px 22px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,.07); }.top-actions { display: flex; justify-content: space-between; margin-bottom: 28px; }
+.circle-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #49535b; background: #f0f2f4; cursor: pointer; }.circle-button:hover, .circle-button:focus-visible { background: #e3e8ed; }
+.place-kicker { display: flex; align-items: center; gap: 5px; color: var(--theme-blue); font-size: 12px; font-weight: 700; }
+.place-header h1 { margin: 7px 0 0; font-size: clamp(28px, 6vw, 34px); line-height: 1.15; letter-spacing: -.04em; }.place-address { margin: 8px 0 0; color: #66717b; font-size: 14px; line-height: 1.5; }
+.back-guide { display: inline-block; margin-top: 12px; color: var(--theme-blue); font-size: 13px; }
+.place-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 24px; }.place-action { min-height: 54px; border-radius: 13px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--theme-blue); background: #eef2f4; font-size: 14px; font-weight: 700; text-decoration: none; }.place-action:only-child { grid-column: 1 / -1; }.place-action-primary { color: #fff; background: var(--theme-blue); }.place-action:hover { filter: brightness(.96); }.place-action:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 2px; }
+main { display: grid; gap: 28px; padding: 24px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.035em; }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
 .departure-list { display: grid; gap: 10px; }.departure-empty { color: var(--text-secondary); }.departure-empty p { margin: 0 0 8px; }.retry-button { padding: 6px 10px; border: 0; border-radius: 8px; color: white; background: var(--theme-blue); cursor: pointer; }
 .about-card .muted { color: #8e8e93; }

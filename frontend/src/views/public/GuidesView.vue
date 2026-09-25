@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
@@ -19,6 +19,10 @@ const showScopeMenu = ref(false)
 const openRegion = ref('')
 const wideSubmenu = ref(false)
 const submenuPosition = ref({ top: '0px', left: '0px', width: '320px' })
+
+const latestGridRef = ref(null)
+const canScrollLatestLeft = ref(false)
+const canScrollLatestRight = ref(false)
 
 const cityCards = computed(() => cityData.value.map((item) => ({ ...item, coverGuide: item.coverUrl ? { id: item.city, coverUrl: item.coverUrl } : null })))
 const regionGroups = computed(() => {
@@ -41,6 +45,28 @@ const scopeLabel = computed(() => activeCity.value || activeRegion.value || '全
 const featured = computed(() => visibleGuides.value[0])
 const latest = computed(() => visibleGuides.value.slice(0, 4))
 
+function updateLatestScrollState() {
+  if (!latestGridRef.value) return
+  const { scrollLeft, scrollWidth, clientWidth } = latestGridRef.value
+  canScrollLatestLeft.value = scrollLeft > 6
+  canScrollLatestRight.value = scrollLeft + clientWidth < scrollWidth - 6
+}
+
+function scrollCarousel(el, direction) {
+  if (!el) return
+  const card = el.firstElementChild
+  const step = card ? card.offsetWidth + 10 : el.clientWidth * 0.75
+  el.scrollBy({
+    left: direction === 'left' ? -step : step,
+    behavior: 'smooth'
+  })
+}
+
+watch([latest, loading], async () => {
+  await nextTick()
+  updateLatestScrollState()
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -58,7 +84,14 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  window.addEventListener('resize', updateLatestScrollState, { passive: true })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateLatestScrollState)
+})
 
 function openGuide(id) {
   router.push({ name: 'guide-detail', params: { id } })
@@ -117,7 +150,6 @@ function toggleScopeMenu() {
     wideSubmenu.value = false
   }
 }
-
 </script>
 
 <template>
@@ -168,13 +200,35 @@ function toggleScopeMenu() {
         </button>
 
         <section v-if="latest.length" class="content-section">
-          <RouterLink class="section-title" :to="{ name: 'latest-guides' }"><h2>最新</h2><AppIcon name="chevron-right" size="16" color="#8e8e93" /></RouterLink>
-          <div class="latest-grid">
-            <button v-for="guide in latest" :key="guide.id" type="button" class="portrait-card" @click="openGuide(guide.id)">
-              <div class="media-fallback"><AppIcon name="guides" size="26" /></div>
-              <img v-if="guide.coverUrl && !failedImages.has(String(guide.id))" :src="guide.coverUrl" :alt="guide.title" @error="markImageFailed(guide.id)" />
-              <span class="card-shade"></span>
-              <span class="card-copy"><small>{{ guide.authorName }}</small><strong>{{ guide.title }}</strong></span>
+          <RouterLink class="section-title" :to="{ name: 'latest-guides' }">
+            <h2>最新</h2><AppIcon name="chevron-right" size="14" color="#8e8e93" />
+          </RouterLink>
+          <div class="carousel-container">
+            <button
+              v-show="canScrollLatestLeft"
+              type="button"
+              class="carousel-nav-btn prev"
+              aria-label="向左滚动"
+              @click="scrollCarousel(latestGridRef, 'left')"
+            >
+              <AppIcon name="chevron-left" size="16" />
+            </button>
+            <div ref="latestGridRef" class="latest-grid" @scroll.passive="updateLatestScrollState">
+              <button v-for="guide in latest" :key="guide.id" type="button" class="portrait-card" @click="openGuide(guide.id)">
+                <div class="media-fallback"><AppIcon name="guides" size="26" /></div>
+                <img v-if="guide.coverUrl && !failedImages.has(String(guide.id))" :src="guide.coverUrl" :alt="guide.title" @error="markImageFailed(guide.id)" />
+                <span class="card-shade"></span>
+                <span class="card-copy"><small>{{ guide.authorName }}</small><strong>{{ guide.title }}</strong></span>
+              </button>
+            </div>
+            <button
+              v-show="canScrollLatestRight"
+              type="button"
+              class="carousel-nav-btn next"
+              aria-label="向右滚动"
+              @click="scrollCarousel(latestGridRef, 'right')"
+            >
+              <AppIcon name="chevron-right" size="16" />
             </button>
           </div>
         </section>
@@ -224,7 +278,56 @@ function toggleScopeMenu() {
 .section-title { display: inline-flex; align-items: center; gap: 3px; margin-bottom: 10px; border-radius: 7px; color: inherit; text-decoration: none; }.section-title:hover { color: var(--theme-blue); }
 .content-section h2 { margin: 0 0 10px; color: #1d1d1f; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
 .section-title h2 { margin: 0; color: #1d1d1f; font-size: 15px; font-weight: 700; }
-.latest-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.carousel-container { position: relative; }
+.carousel-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #1d1d1f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.18s ease, background 0.15s ease;
+}
+.carousel-container:hover .carousel-nav-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.carousel-nav-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  transform: translateY(-50%) scale(1.08);
+}
+.carousel-nav-btn:active {
+  transform: translateY(-50%) scale(0.94);
+}
+.carousel-nav-btn.prev {
+  left: -12px;
+}
+.carousel-nav-btn.next {
+  right: -12px;
+}
+.latest-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 72%;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
 .latest-grid::-webkit-scrollbar { display: none; }
 .portrait-card { height: 238px; border-radius: 17px; scroll-snap-align: start; }
 .card-copy strong { font-size: 14px; line-height: 1.2; }

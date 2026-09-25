@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
@@ -19,6 +19,14 @@ const showScopeMenu = ref(false)
 const openRegion = ref('')
 const wideSubmenu = ref(false)
 const submenuPosition = ref({ top: '0px', left: '0px', width: '320px' })
+
+const guideCardsRef = ref(null)
+const latestCardsRef = ref(null)
+const canScrollGuideLeft = ref(false)
+const canScrollGuideRight = ref(false)
+const canScrollLatestLeft = ref(false)
+const canScrollLatestRight = ref(false)
+
 const city = computed(() => String(route.params.city || ''))
 const cityArticles = computed(() => articles.value.filter((item) => item.city === city.value))
 const featured = computed(() => cityArticles.value[0] || null)
@@ -45,6 +53,40 @@ const regionGroups = computed(() => {
   return [...groups.values()].map((group) => ({ name: group.name, cities: [...group.cities] }))
 })
 
+function updateGuideScrollState() {
+  if (!guideCardsRef.value) return
+  const { scrollLeft, scrollWidth, clientWidth } = guideCardsRef.value
+  canScrollGuideLeft.value = scrollLeft > 6
+  canScrollGuideRight.value = scrollLeft + clientWidth < scrollWidth - 6
+}
+
+function updateLatestScrollState() {
+  if (!latestCardsRef.value) return
+  const { scrollLeft, scrollWidth, clientWidth } = latestCardsRef.value
+  canScrollLatestLeft.value = scrollLeft > 6
+  canScrollLatestRight.value = scrollLeft + clientWidth < scrollWidth - 6
+}
+
+function updateAllScrollStates() {
+  updateGuideScrollState()
+  updateLatestScrollState()
+}
+
+function scrollCarousel(el, direction) {
+  if (!el) return
+  const card = el.firstElementChild
+  const step = card ? card.offsetWidth + 10 : el.clientWidth * 0.75
+  el.scrollBy({
+    left: direction === 'left' ? -step : step,
+    behavior: 'smooth'
+  })
+}
+
+watch([guideCards, latestCards, loading], async () => {
+  await nextTick()
+  updateAllScrollStates()
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -62,6 +104,14 @@ async function load() {
   }
 }
 
+onMounted(() => {
+  window.addEventListener('resize', updateAllScrollStates, { passive: true })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateAllScrollStates)
+})
+
 function markImageFailed(id) {
   failedImages.value = new Set(failedImages.value).add(String(id))
 }
@@ -77,9 +127,10 @@ function openCity(name) {
 }
 
 function setSubmenuPosition(target) {
-  const pageRect = pageRoot.value?.getBoundingClientRect()
+  const pageRootEl = pageRoot.value
   const targetRect = target?.getBoundingClientRect()
-  if (!pageRect) return
+  if (!pageRootEl) return
+  const pageRect = pageRootEl.getBoundingClientRect()
   const width = Math.min(360, Math.max(280, window.innerWidth * 0.3))
   submenuPosition.value = {
     top: `${Math.min(targetRect?.top || pageRect.top + 210, window.innerHeight - 260)}px`,
@@ -174,11 +225,31 @@ watch(city, load, { immediate: true })
 
         <section v-if="guideCards.length" class="guide-section">
           <h2>旅行指南</h2>
-          <div class="card-row">
-            <button v-for="article in guideCards" :key="article.id" type="button" class="guide-card" @click="openArticle(article.id)">
-              <div class="media-fallback"><AppIcon name="guides" size="28" /></div>
-              <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
-              <i></i><span><small>{{ article.authorName }}</small><strong>{{ article.title }}</strong></span>
+          <div class="carousel-container">
+            <button
+              v-show="canScrollGuideLeft"
+              type="button"
+              class="carousel-nav-btn prev"
+              aria-label="向左滚动"
+              @click="scrollCarousel(guideCardsRef, 'left')"
+            >
+              <AppIcon name="chevron-left" size="16" />
+            </button>
+            <div ref="guideCardsRef" class="card-row" @scroll.passive="updateGuideScrollState">
+              <button v-for="article in guideCards" :key="article.id" type="button" class="guide-card" @click="openArticle(article.id)">
+                <div class="media-fallback"><AppIcon name="guides" size="28" /></div>
+                <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
+                <i></i><span><small>{{ article.authorName }}</small><strong>{{ article.title }}</strong></span>
+              </button>
+            </div>
+            <button
+              v-show="canScrollGuideRight"
+              type="button"
+              class="carousel-nav-btn next"
+              aria-label="向右滚动"
+              @click="scrollCarousel(guideCardsRef, 'right')"
+            >
+              <AppIcon name="chevron-right" size="16" />
             </button>
           </div>
         </section>
@@ -187,11 +258,31 @@ watch(city, load, { immediate: true })
           <RouterLink class="section-title" :to="{ name: 'latest-guides', query: { city } }">
             <h2>最新</h2><AppIcon name="chevron-right" size="16" color="#8e8e93" />
           </RouterLink>
-          <div class="card-row">
-            <button v-for="article in latestCards" :key="article.id" type="button" class="guide-card" @click="openArticle(article.id)">
-              <div class="media-fallback"><AppIcon name="guides" size="28" /></div>
-              <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
-              <i></i><span><small>{{ article.authorName }}</small><strong>{{ article.title }}</strong></span>
+          <div class="carousel-container">
+            <button
+              v-show="canScrollLatestLeft"
+              type="button"
+              class="carousel-nav-btn prev"
+              aria-label="向左滚动"
+              @click="scrollCarousel(latestCardsRef, 'left')"
+            >
+              <AppIcon name="chevron-left" size="16" />
+            </button>
+            <div ref="latestCardsRef" class="card-row" @scroll.passive="updateLatestScrollState">
+              <button v-for="article in latestCards" :key="article.id" type="button" class="guide-card" @click="openArticle(article.id)">
+                <div class="media-fallback"><AppIcon name="guides" size="28" /></div>
+                <img v-if="article.coverUrl && !failedImages.has(String(article.id))" :src="article.coverUrl" :alt="article.title" @error="markImageFailed(article.id)" />
+                <i></i><span><small>{{ article.authorName }}</small><strong>{{ article.title }}</strong></span>
+              </button>
+            </div>
+            <button
+              v-show="canScrollLatestRight"
+              type="button"
+              class="carousel-nav-btn next"
+              aria-label="向右滚动"
+              @click="scrollCarousel(latestCardsRef, 'right')"
+            >
+              <AppIcon name="chevron-right" size="16" />
             </button>
           </div>
         </section>
@@ -233,7 +324,57 @@ main { padding: 8px 22px 34px; }.loading-block { padding-top: 8px; }
 .hero-card small, .guide-card small { font-size: 11px; font-weight: 650; }.hero-card strong { font-size: 18px; line-height: 1.15; }.guide-card strong { font-size: 14px; line-height: 1.2; }
 .guide-section { margin-top: 24px; }.guide-section h2 { margin: 0 0 10px; color: #1d1d1f; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
 .section-title { display: inline-flex; align-items: center; gap: 3px; margin-bottom: 10px; border-radius: 7px; color: inherit; text-decoration: none; }.section-title h2 { margin: 0; color: #1d1d1f; font-size: 15px; font-weight: 700; }.section-title:hover { color: var(--theme-blue); }
-.card-row { display: grid; grid-auto-flow: column; grid-auto-columns: calc(50% - 5px); gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }.card-row::-webkit-scrollbar { display: none; }
+.carousel-container { position: relative; }
+.carousel-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #1d1d1f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.18s ease, background 0.15s ease;
+}
+.carousel-container:hover .carousel-nav-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.carousel-nav-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  transform: translateY(-50%) scale(1.08);
+}
+.carousel-nav-btn:active {
+  transform: translateY(-50%) scale(0.94);
+}
+.carousel-nav-btn.prev {
+  left: -12px;
+}
+.carousel-nav-btn.next {
+  right: -12px;
+}
+.card-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: calc(50% - 5px);
+  gap: 10px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.card-row::-webkit-scrollbar { display: none; }
 .guide-card { height: 220px; border-radius: 17px; scroll-snap-align: start; }
 .cities-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

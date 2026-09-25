@@ -2744,7 +2744,7 @@ components:
     AttractionTrip:
       type: object
       additionalProperties: false
-      required: [id, routeId, routeName, departureCity, startDate, endDate, adultPrice, availableSeats]
+      required: [id, routeId, routeName, departureCity, startDate, endDate, adultPrice, childPrice, availableSeats]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         routeId: { $ref: '#/components/schemas/Id' }
@@ -2753,6 +2753,7 @@ components:
         startDate: { $ref: '#/components/schemas/Date' }
         endDate: { $ref: '#/components/schemas/Date' }
         adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
         availableSeats: { type: integer, minimum: 0 }
     AttractionDetail:
       type: object

@@ -21,7 +21,7 @@ public record AttractionDetailView(Place attraction, List<Trip> departures) {
     }
 
     public record Trip(Long id, Long routeId, String routeName, String departureCity,
-                       LocalDate startDate, LocalDate endDate, BigDecimal adultPrice,
+                       LocalDate startDate, LocalDate endDate, BigDecimal adultPrice, BigDecimal childPrice,
                        int availableSeats) {
     }
 }

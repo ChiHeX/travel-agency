@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
+import DepartureCard from '@/components/DepartureCard.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -221,31 +222,9 @@ onBeforeUnmount(() => setMapItinerary([]))
           </div>
 
           <div v-if="departures.length" class="departures-sheet-list">
-            <div
-              v-for="item in departures"
-              :key="item.id"
-              class="departure-card-item"
-              :class="{
-                selected: selectedDepartureId === item.id,
-                soldout: getAvailableSeats(item) != null && getAvailableSeats(item) <= 0
-              }"
-              :aria-disabled="!isDepartureBookable(item)"
-              @click="selectDeparture(item)"
-            >
-              <div class="dep-dates">
-                <strong>{{ item.startDate }}</strong>
-                <span>至 {{ item.endDate }}</span>
-              </div>
-              <div class="dep-prices">
-                <span class="adult">¥{{ item.adultPrice }}<small>/成人</small></span>
-                <span class="child">¥{{ item.childPrice }}<small>/儿童</small></span>
-              </div>
-              <div class="dep-seats">
-                <span v-if="getAvailableSeats(item) != null && getAvailableSeats(item) > 0" class="tag success">余 {{ getAvailableSeats(item) }}</span>
-                <span v-else-if="getAvailableSeats(item) === 0" class="tag danger">已满</span>
-                <span v-else class="tag">余量待同步</span>
-              </div>
-            </div>
+            <DepartureCard v-for="item in departures" :key="item.id" :departure="item"
+                           :selected="selectedDepartureId === item.id" interactive
+                           @select="selectDeparture(item)" />
           </div>
           <div v-else class="empty-box">暂无排期。</div>
         </div>
@@ -683,68 +662,6 @@ onBeforeUnmount(() => setMapItinerary([]))
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.departure-card-item {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.departure-card-item[aria-disabled='true'] {
-  cursor: not-allowed;
-  opacity: 0.62;
-}
-
-.departure-card-item:hover {
-  background: rgba(255, 255, 255, 0.95);
-}
-
-.departure-card-item.selected {
-  border-color: var(--theme-blue);
-  background: var(--theme-blue-tint);
-}
-
-.dep-dates strong {
-  display: block;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.dep-dates span {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.dep-prices {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.dep-prices .adult {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--theme-blue);
-}
-
-.dep-prices .child {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.dep-prices small {
-  font-size: 9px;
-  color: var(--text-tertiary);
 }
 
 /* Day Itinerary */

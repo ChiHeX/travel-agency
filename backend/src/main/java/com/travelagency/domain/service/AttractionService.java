@@ -52,7 +52,8 @@ public class AttractionService {
                     TravelRoute route = routeById.get(departure.routeId);
                     return new AttractionDetailView.Trip(departure.id, route.id, route.name,
                             route.departureCity, departure.startDate, departure.endDate,
-                            departure.adultPrice, DepartureView.availableSeats(departure));
+                            departure.adultPrice, departure.childPrice,
+                            DepartureView.availableSeats(departure));
                 }).toList();
         return new AttractionDetailView(AttractionDetailView.Place.from(attraction), trips);
     }

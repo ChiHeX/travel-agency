@@ -3,6 +3,7 @@ import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { contentApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import DepartureCard from '@/components/DepartureCard.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -101,12 +102,13 @@ onBeforeUnmount(() => setMapFocus(null))
           <p v-if="!departures.length" class="departure-empty">暂无未来开放团期</p>
           <div v-else class="departure-list">
             <div v-for="departure in departures" :key="departure.id" class="departure-row">
-              <RouterLink :to="{ name: 'route-detail', params: { id: departure.routeId } }" class="departure-name">{{ departure.routeName }}</RouterLink>
-              <small>{{ departure.departureCity }}出发 · {{ departure.startDate }} 至 {{ departure.endDate }}</small>
-              <div class="departure-footer">
-                <span>成人 ¥{{ departure.adultPrice }} / 人 · {{ departure.availableSeats ? `剩余 ${departure.availableSeats} 位` : '已满' }}</span>
-                <RouterLink v-if="departure.availableSeats > 0" :to="{ name: 'order-create', query: { routeId: departure.routeId, departureId: departure.id } }">选择团期</RouterLink>
+              <div class="departure-route">
+                <RouterLink :to="{ name: 'route-detail', params: { id: departure.routeId } }">{{ departure.routeName }}</RouterLink>
+                <small>{{ departure.departureCity }}出发</small>
               </div>
+              <DepartureCard :departure="departure" />
+              <RouterLink v-if="departure.availableSeats > 0" class="primary-button departure-book"
+                          :to="{ name: 'order-create', query: { routeId: departure.routeId, departureId: departure.id } }">立即报名</RouterLink>
             </div>
           </div>
         </section>
@@ -156,7 +158,7 @@ onBeforeUnmount(() => setMapFocus(null))
 main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.035em; }
 .visual-strip { display: grid; grid-template-columns: 1.1fr 1fr; gap: 10px; overflow: hidden; }.visual-placeholder { height: 220px; border-radius: 18px; display: grid; place-items: center; align-content: center; gap: 10px; color: #2f7698; background: linear-gradient(145deg,#8fd9ef,#d8f2df); text-align: center; }.visual-placeholder span { padding: 0 14px; font-size: 11px; }.visual-placeholder.secondary { background: linear-gradient(145deg,#beddeb,#85b5c9); }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
-.departure-list { display: grid; gap: 9px; }.departure-row { display: grid; gap: 6px; padding: 15px; border-radius: 15px; background: white; }.departure-name { color: #1d1d1f; font-weight: 700; }.departure-row small, .departure-empty { color: #6f7780; }.departure-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }.departure-footer a { padding: 8px 11px; border-radius: 9px; color: white; background: var(--theme-blue); white-space: nowrap; }
+.departure-list { display: grid; gap: 16px; }.departure-row { display: grid; gap: 8px; }.departure-route { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }.departure-route a { color: var(--text-primary); font-size: 13px; font-weight: 700; }.departure-route small, .departure-empty { color: var(--text-secondary); }.departure-book { justify-self: end; text-decoration: none; }
 .about-card .muted { color: #8e8e93; }
 .horizontal-list { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scrollbar-width: none; }.horizontal-list::-webkit-scrollbar { display: none; }
 .guide-tile { position: relative; overflow: hidden; border-radius: 17px; background: white; }.guide-tile img, .tile-fallback { width: 100%; height: 130px; object-fit: cover; }.guide-tile img { position: absolute; inset: 0 0 auto; }.tile-fallback { display: grid; place-items: center; color: #3184aa; background: #bfe7ef; }.guide-tile strong, .guide-tile small { position: relative; display: block; margin: 11px 13px 0; }.guide-tile strong { font-size: 15px; line-height: 1.2; }.guide-tile small { margin-top: 3px; margin-bottom: 12px; color: #8e8e93; }

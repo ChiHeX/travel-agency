@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { accountApi, orderApi, routeApi } from '@/api/modules'
 import { createIdempotencyKey, idTypeLabels } from '@/utils/order'
-import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -188,11 +188,7 @@ async function submit() {
 <template>
   <div class="checkout-page">
     <main class="booking-shell">
-      <button
-        type="button"
-        class="back-link"
-        @click="returnToRoute"
-      ><AppIcon name="chevron-left" size="14" /><span>{{ currentRoute.query.routeId ? '返回线路详情' : '返回线路列表' }}</span></button>
+      <PanelIconButton class="back-action" action="back" :label="currentRoute.query.routeId ? '返回线路详情' : '返回线路列表'" @click="returnToRoute" />
       <header class="booking-heading">
         <h1>填写报名信息</h1>
         <p>核对团期，填写联系人与出行人信息。</p>
@@ -416,23 +412,7 @@ async function submit() {
   padding: 32px 0 72px;
 }
 
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-height: 32px;
-  margin-bottom: 24px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--theme-blue);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.back-link:hover { color: var(--theme-blue-active); }
-.back-link:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 3px; }
+.back-action { margin-bottom: 24px; }
 
 .booking-heading { margin-bottom: 32px; }
 .booking-heading h1 {

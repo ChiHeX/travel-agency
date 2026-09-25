@@ -3,6 +3,7 @@ import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -157,12 +158,8 @@ onMounted(load)
     <div class="drawer-header-bar">
       <h2>路线</h2>
       <div class="header-action-icons">
-        <button type="button" class="drawer-icon-btn" title="清空路线与筛选" aria-label="清空路线与筛选" @click="resetFilters">
-          <AppIcon name="refresh" size="13" />
-        </button>
-        <button type="button" class="drawer-icon-btn" title="关闭面板" aria-label="关闭面板" @click="closeDrawer">
-          <AppIcon name="close" size="13" />
-        </button>
+        <PanelIconButton action="reset" label="清空路线与筛选" @click="resetFilters" />
+        <PanelIconButton action="close" label="关闭面板" @click="closeDrawer" />
       </div>
     </div>
 
@@ -326,24 +323,6 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.drawer-icon-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  border: none;
-  font-size: 14px;
-  color: var(--text-secondary);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-}
-
-.drawer-icon-btn:hover {
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text-primary);
 }
 
 /* Scroll Body */

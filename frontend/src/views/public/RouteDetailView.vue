@@ -6,6 +6,7 @@ import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
 import DepartureCard from '@/components/DepartureCard.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -125,24 +126,12 @@ onBeforeUnmount(() => setMapItinerary([]))
     </div>
 
     <template v-else-if="data && data.route">
-      <!-- Sheet Top Bar (Screenshot 3: 路线 📤 ✕) -->
       <div class="sheet-top-bar">
-        <button type="button" class="back-link-btn" @click="router.back()">
-          <AppIcon name="chevron-left" size="14" />
-          <span>返回</span>
-        </button>
+        <PanelIconButton action="back" @click="router.back()" />
         <div class="sheet-actions">
-          <button type="button" class="sheet-action-btn" :class="{ favorited: favorite }" :disabled="favoriteSubmitting" @click="toggleFavorite">
-            <AppIcon v-if="favorite" name="heart-filled" size="13" color="#ff3b30" />
-            <AppIcon v-else name="heart" size="13" />
-            <span>{{ favorite ? '已收藏' : '收藏' }}</span>
-          </button>
-          <button type="button" class="sheet-icon-circle" title="分享" @click="shareRoute">
-            <AppIcon name="share" size="13" />
-          </button>
-          <button type="button" class="sheet-icon-circle" title="关闭面板" @click="closeDrawer">
-            <AppIcon name="close" size="13" />
-          </button>
+          <PanelIconButton action="favorite" :active="favorite" :disabled="favoriteSubmitting" @click="toggleFavorite" />
+          <PanelIconButton action="share" @click="shareRoute" />
+          <PanelIconButton action="close" label="关闭面板" @click="closeDrawer" />
         </div>
       </div>
 
@@ -381,54 +370,10 @@ onBeforeUnmount(() => setMapItinerary([]))
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-.back-link-btn {
-  background: transparent;
-  border: none;
-  color: var(--theme-blue);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
 .sheet-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.sheet-action-btn {
-  padding: 5px 12px;
-  border-radius: var(--radius-pill);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
-  color: var(--text-primary);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sheet-action-btn.favorited {
-  color: var(--status-red);
-  background: var(--status-red-bg);
-  border-color: transparent;
-}
-
-.sheet-icon-circle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  border: none;
-  font-size: 13px;
-  color: var(--text-secondary);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
 }
 
 /* Sheet Scroll Body */

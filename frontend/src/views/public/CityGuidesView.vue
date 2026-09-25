@@ -3,6 +3,7 @@ import { computed, inject, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -132,7 +133,7 @@ watch(city, load, { immediate: true })
           <span>{{ city }}</span><AppIcon name="chevron-down" size="14" />
         </button>
       </div>
-      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="13" /></button>
+      <PanelIconButton action="close" label="关闭指南" @click="closeDrawer" />
     </header>
 
     <div v-if="showScopeMenu" class="scope-menu-layer" @click.self="closeScopeMenu">
@@ -216,7 +217,6 @@ watch(city, load, { immediate: true })
 .city-header h1, .city-header h2 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
 .city-selector { display: inline-flex; align-items: center; gap: 3px; margin: 3px 0 0 -3px; padding: 2px 4px; border: 0; border-radius: 6px; color: var(--theme-blue); background: transparent; font-size: 15px; font-weight: 650; line-height: 1.2; cursor: pointer; }
 .city-selector svg { margin-top: 1px; transition: transform .18s ease; }.city-selector[aria-expanded="true"] svg { transform: rotate(180deg); }.city-selector:hover { background: rgba(0,113,227,.07); }
-.circle-button { width: 28px; height: 28px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
 .scope-menu-layer { position: absolute; z-index: 4; inset: 64px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
 .scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
 .scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 52px; padding: 0 20px; border: 0; color: #1d1d1f; background: transparent; font-size: 15px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }.checkmark { margin-left: auto; font-size: 20px; font-weight: 400; }

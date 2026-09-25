@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { homeApi, routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RouteResultCard from '@/components/RouteResultCard.vue'
 
 const router = useRouter()
@@ -106,9 +107,7 @@ onMounted(() => {
   <div class="search-drawer-panel">
     <div class="drawer-header-bar">
       <h2>搜索</h2>
-      <button type="button" class="drawer-close-btn" title="关闭面板" @click="closeDrawer">
-        <AppIcon name="close" size="13" color="#86868b" />
-      </button>
+      <PanelIconButton action="close" label="关闭面板" @click="closeDrawer" />
     </div>
 
     <div class="drawer-search-box">
@@ -165,7 +164,6 @@ onMounted(() => {
 .search-drawer-panel { display: flex; flex-direction: column; height: 100%; background: transparent; }
 .drawer-header-bar { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 10px; }
 .drawer-header-bar h2 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
-.drawer-close-btn { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 50%; background: rgba(0,0,0,.05); cursor: pointer; }
 .drawer-search-box { padding: 4px 18px 14px; }
 .search-input-pill { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: var(--radius-sm); background: rgba(0,0,0,.05); }
 .search-input-pill input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-size: 13px; }

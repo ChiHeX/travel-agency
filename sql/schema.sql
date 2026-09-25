@@ -216,6 +216,8 @@ CREATE TABLE IF NOT EXISTS travel_order (
     UNIQUE KEY uk_order_no (order_no),
     KEY idx_order_user_status (user_id, status),
     KEY idx_order_departure (departure_id),
+    -- 后台工作台的今日订单数与 orderTrend 都按 created_at 过滤/分组，避免全表扫描。
+    KEY idx_order_created_at (created_at),
     CONSTRAINT fk_order_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_order_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_order_departure FOREIGN KEY (departure_id) REFERENCES departure(id)

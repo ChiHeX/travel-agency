@@ -373,7 +373,6 @@ main { padding: 8px 22px 34px; }.loading-block { padding-top: 8px; }
 }
 .card-row::-webkit-scrollbar { display: none; }
 .guide-card { height: 220px; border-radius: 17px; scroll-snap-align: start; }
-.cities-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .city-grid button { position: relative; min-height: 112px; padding: 14px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }
 .city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.62),transparent 70%); }

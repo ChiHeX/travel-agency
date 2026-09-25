@@ -120,7 +120,7 @@ function logout() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 18 9 12 15 6" />
         </svg>
-        返回游客端前台
+        切换到游客端前台
       </RouterLink>
     </aside>
 

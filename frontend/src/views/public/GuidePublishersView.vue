@@ -27,7 +27,7 @@ onMounted(load)
 <template>
   <div class="publisher-directory">
     <header>
-      <PanelIconButton action="back" label="返回指南" :to="{ name: 'guides' }" />
+      <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guides' }" />
       <div><h1>指南</h1><p>按发布者浏览</p></div>
     </header>
     <main>

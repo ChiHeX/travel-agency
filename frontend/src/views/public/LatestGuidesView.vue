@@ -1,12 +1,11 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
-const router = useRouter()
 const route = useRoute()
 const articles = ref([])
 const loading = ref(true)
@@ -48,7 +47,7 @@ watch(() => route.query.city, () => { page.value = 1; load() }, { immediate: tru
 <template>
   <div class="latest-page">
     <header>
-      <PanelIconButton action="back" label="返回指南" @click="router.back()" />
+      <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guides' }" />
       <h1>最新</h1>
     </header>
 

@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { orderApi } from '@/api/modules'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import {
   createIdempotencyKey,
   genderLabels,
@@ -131,10 +132,7 @@ onMounted(load)
       </div>
 
       <template v-else-if="detail">
-        <!-- Back Navigation -->
-        <RouterLink to="/account/orders" class="back-orders-btn">
-          ← 返回订单列表
-        </RouterLink>
+        <PanelIconButton class="back-orders-btn" action="back" label="返回上一页" :fallback-to="{ name: 'account-orders' }" />
 
         <!-- Order Hero Card -->
         <div class="order-hero-card">
@@ -381,10 +379,6 @@ onMounted(load)
 }
 
 .back-orders-btn {
-  display: inline-block;
-  color: var(--brand-blue);
-  font-size: 13px;
-  font-weight: 600;
   margin-bottom: 16px;
 }
 

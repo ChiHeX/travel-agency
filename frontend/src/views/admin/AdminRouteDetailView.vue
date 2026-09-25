@@ -1,10 +1,11 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
 import RouteFormDialog from '@/components/RouteFormDialog.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 
 /**
  * 线路管理详情页：线路资料、团期概览、每日行程与行程项目管理。
@@ -13,7 +14,6 @@ import RouteFormDialog from '@/components/RouteFormDialog.vue'
  * 所有写操作都走契约中的 Admin Routes 接口，不在前端伪造或缓存业务数据。
  */
 const vRoute = useRoute()
-const router = useRouter()
 const routeId = vRoute.params.id
 
 const detail = ref(null)
@@ -289,9 +289,7 @@ onMounted(load)
   <div class="admin-route-detail">
     <div class="admin-page-head">
       <div>
-        <button type="button" class="text-button back-link" @click="router.push({ name: 'admin-routes' })">
-          ← 返回线路列表
-        </button>
+        <PanelIconButton class="back-link" action="back" label="返回上一页" :fallback-to="{ name: 'admin-routes' }" />
         <h2>
           {{ routeInfo?.name || '线路详情' }}
           <span v-if="routeInfo" class="tag" :class="statusClasses[routeInfo.status] || ''">
@@ -590,8 +588,7 @@ onMounted(load)
 }
 
 .back-link {
-  color: var(--text-secondary);
-  padding: 0;
+  margin-bottom: 8px;
 }
 
 .head-actions {

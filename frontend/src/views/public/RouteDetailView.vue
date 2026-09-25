@@ -127,7 +127,7 @@ onBeforeUnmount(() => setMapItinerary([]))
 
     <template v-else-if="data && data.route">
       <div class="sheet-top-bar">
-        <PanelIconButton action="back" @click="router.back()" />
+        <PanelIconButton action="back" :fallback-to="{ name: 'routes' }" />
         <div class="sheet-actions">
           <PanelIconButton action="favorite" :active="favorite" :disabled="favoriteSubmitting" @click="toggleFavorite" />
           <PanelIconButton action="share" @click="shareRoute" />

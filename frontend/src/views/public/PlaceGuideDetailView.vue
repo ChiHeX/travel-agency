@@ -62,7 +62,7 @@ onBeforeUnmount(() => {
         <img v-if="guide.coverUrl && !coverFailed" :src="guide.coverUrl" :alt="guide.title" @error="coverFailed = true" />
         <span class="hero-shade"></span>
         <div class="hero-actions">
-          <PanelIconButton action="back" label="返回指南" @click="router.back()" />
+          <PanelIconButton action="back" label="返回上一页" :fallback-to="{ name: 'guides' }" />
           <PanelIconButton action="share" label="分享指南" @click="share" />
         </div>
         <div class="hero-copy">

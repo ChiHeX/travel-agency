@@ -1,16 +1,19 @@
 <script setup>
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import AppIcon from '@/components/AppIcon.vue'
+import { returnToPrevious } from '@/utils/navigation'
 
 const props = defineProps({
   action: { type: String, required: true },
   label: { type: String, default: '' },
-  to: { type: [String, Object], default: null },
+  fallbackTo: { type: [String, Object], default: () => ({ name: 'home' }) },
   active: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['click'])
+const router = useRouter()
 const icon = computed(() => ({
   back: 'chevron-left',
   share: 'share',
@@ -25,15 +28,17 @@ const accessibleLabel = computed(() => props.label || ({
   favorite: props.active ? '取消收藏' : '收藏',
   reset: '重置'
 })[props.action])
+
+function handleClick(event) {
+  if (props.action === 'back') returnToPrevious(router, props.fallbackTo)
+  else emit('click', event)
+}
 </script>
 
 <template>
-  <RouterLink v-if="to" class="panel-icon-button" :to="to" :aria-label="accessibleLabel" :title="accessibleLabel">
-    <AppIcon :name="icon" size="16" />
-  </RouterLink>
-  <button v-else type="button" class="panel-icon-button" :class="{ active: action === 'favorite' && active }"
+  <button type="button" class="panel-icon-button" :class="{ active: action === 'favorite' && active }"
           :aria-label="accessibleLabel" :title="accessibleLabel" :aria-pressed="action === 'favorite' ? active : undefined"
-          :disabled="disabled" @click="emit('click', $event)">
+          :disabled="disabled" @click="handleClick">
     <AppIcon :name="icon" size="16" />
   </button>
 </template>

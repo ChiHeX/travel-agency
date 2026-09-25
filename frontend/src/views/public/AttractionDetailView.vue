@@ -3,6 +3,7 @@ import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { contentApi, routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 import RouteResultCard from '@/components/RouteResultCard.vue'
 
@@ -92,7 +93,7 @@ onBeforeUnmount(() => setMapFocus(null))
     <div v-else-if="loading" class="loading-block"><el-skeleton :rows="12" animated /></div>
     <template v-else-if="place">
       <header class="place-header">
-        <div class="top-actions"><button type="button" class="circle-button" aria-label="返回" @click="router.back()"><AppIcon name="chevron-left" size="19" /></button><button type="button" class="circle-button" aria-label="分享地点" @click="share"><AppIcon name="share" size="18" /></button></div>
+        <div class="top-actions"><PanelIconButton action="back" @click="router.back()" /><PanelIconButton action="share" label="分享地点" @click="share" /></div>
         <div class="place-kicker"><AppIcon name="pin" size="14" /><span>{{ place.city }} · 地点</span></div>
         <h1>{{ place.name }}</h1>
         <p v-if="place.address" class="place-address">{{ place.address }}</p>
@@ -156,7 +157,6 @@ onBeforeUnmount(() => setMapFocus(null))
 <style scoped>
 .place-detail { height: 100%; overflow-y: auto; color: #101010; background: #f4f8fa; }.loading-block { padding: 28px 22px; }
 .place-header { padding: 20px 22px 24px; background: #fff; border-bottom: 1px solid rgba(0,0,0,.07); }.top-actions { display: flex; justify-content: space-between; margin-bottom: 28px; }
-.circle-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #49535b; background: #f0f2f4; cursor: pointer; }.circle-button:hover, .circle-button:focus-visible { background: #e3e8ed; }
 .place-kicker { display: flex; align-items: center; gap: 5px; color: var(--theme-blue); font-size: 12px; font-weight: 700; }
 .place-header h1 { margin: 7px 0 0; font-size: clamp(28px, 6vw, 34px); line-height: 1.15; letter-spacing: -.04em; }.place-address { margin: 8px 0 0; color: #66717b; font-size: 14px; line-height: 1.5; }
 main { display: grid; gap: 28px; padding: 24px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.035em; }

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { contentApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const router = useRouter()
@@ -49,7 +50,7 @@ watch(destination, () => { page.value = 1; load() }, { immediate: true })
 <template>
   <div class="latest-page">
     <header>
-      <button type="button" class="back-button" aria-label="返回上一页" @click="router.back()"><AppIcon name="chevron-left" size="21" /></button>
+      <PanelIconButton action="back" label="返回上一页" @click="router.back()" />
       <div><h1>旅行攻略</h1><p v-if="destination">{{ destination }}的相关攻略</p></div>
     </header>
 
@@ -75,7 +76,6 @@ watch(destination, () => { page.value = 1; load() }, { immediate: true })
 <style scoped>
 .latest-page { height: 100%; overflow-y: auto; color: #111; background: #f7faf9; }
 header { position: sticky; z-index: 4; top: 0; display: flex; align-items: center; gap: 14px; padding: 20px 22px 14px; background: rgba(247,250,249,.92); backdrop-filter: blur(18px); }
-.back-button { width: 42px; height: 42px; flex: 0 0 auto; border: 0; border-radius: 50%; display: grid; place-items: center; color: #6f777b; background: rgba(0,0,0,.055); cursor: pointer; }
 header h1 { margin: 0; font-size: 29px; letter-spacing: -.04em; }
 header p { margin: 3px 0 0; color: #777; font-size: 13px; }
 main { padding: 10px 22px 34px; }.loading-block { padding-top: 8px; }

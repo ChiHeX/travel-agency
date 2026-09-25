@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { accountApi } from '@/api/modules'
 import RouteCard from '@/components/RouteCard.vue'
-import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 
 const routes = ref([])
 const loading = ref(false)
@@ -78,16 +78,8 @@ onMounted(load)
       <div v-else-if="routes.length" class="favorites-grid">
         <div v-for="item in routes" :key="item.id" class="favorite-item-wrapper">
           <RouteCard :route="item" />
-          <button
-            type="button"
-            class="remove-fav-btn"
-            title="取消收藏"
-            :disabled="removing"
-            @click.stop="remove(item.id)"
-          >
-            <AppIcon name="heart-filled" size="13" color="#ff3b30" />
-            <span>已收藏</span>
-          </button>
+          <PanelIconButton class="remove-fav-btn" action="favorite" label="取消收藏" active
+                           :disabled="removing" @click.stop="remove(item.id)" />
         </div>
       </div>
 
@@ -122,23 +114,7 @@ onMounted(load)
   top: 10px;
   right: 10px;
   z-index: 2;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid var(--border-divider);
-  color: var(--status-red);
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
   box-shadow: var(--shadow-card);
-  transition: all 0.15s ease;
-}
-
-.remove-fav-btn:hover {
-  background: var(--status-red-bg);
 }
 
 @media (max-width: 900px) {

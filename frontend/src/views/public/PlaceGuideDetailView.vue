@@ -3,6 +3,7 @@ import { inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
@@ -61,8 +62,8 @@ onBeforeUnmount(() => {
         <img v-if="guide.coverUrl && !coverFailed" :src="guide.coverUrl" :alt="guide.title" @error="coverFailed = true" />
         <span class="hero-shade"></span>
         <div class="hero-actions">
-          <button type="button" aria-label="返回指南" @click="router.back()"><AppIcon name="chevron-left" size="20" /></button>
-          <button type="button" aria-label="分享指南" @click="share"><AppIcon name="share" size="18" /></button>
+          <PanelIconButton action="back" label="返回指南" @click="router.back()" />
+          <PanelIconButton action="share" label="分享指南" @click="share" />
         </div>
         <div class="hero-copy">
           <small>{{ guide.authorName }} · {{ guide.city }}</small>
@@ -103,7 +104,6 @@ onBeforeUnmount(() => {
 .detail-hero img, .hero-shade { position: absolute; inset: 0; width: 100%; height: 100%; }
 .detail-hero img { object-fit: cover; }.hero-shade { background: linear-gradient(0deg, rgba(0,0,0,.75), transparent 75%); }
 .hero-actions { position: relative; display: flex; justify-content: space-between; padding: 20px; }
-.hero-actions button { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 50%; color: #1d1d1f; background: rgba(255,255,255,.9); cursor: pointer; }
 .hero-copy { position: relative; padding: 125px 22px 22px; }.hero-copy small { font-size: 12px; font-weight: 650; }.hero-copy h1 { margin: 5px 0 0; font-size: 26px; line-height: 1.15; }
 main { padding: 22px; }.summary { margin: 0 0 24px; color: #545e5a; font-size: 14px; line-height: 1.7; }
 .places-heading { display: flex; justify-content: space-between; align-items: end; gap: 8px; margin-bottom: 12px; }

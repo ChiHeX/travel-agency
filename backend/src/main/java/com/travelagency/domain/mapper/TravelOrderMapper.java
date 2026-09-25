@@ -7,11 +7,23 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
 public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
+
+    /**
+     * 取数据库当前日期，作为"今天"的唯一定义来源。
+     *
+     * <p>工作台的 {@code todayOrderCount} 与 {@code orderTrend} 都按自然日切分，而日界由
+     * MySQL 的会话时区（{@code serverTimezone}）决定；如果改用 JVM 的 {@code LocalDate.now()}，
+     * 一旦两者时区不同（CI/容器常见 UTC），窗口末位会与库内日期错开一天，当天订单会掉出统计。
+     * 因此统一从库里取当天日期。</p>
+     */
+    @Select("SELECT CURDATE()")
+    LocalDate databaseToday();
 
     /**
      * 按日聚合的订单趋势，供后台工作台的 {@code orderTrend} 使用。

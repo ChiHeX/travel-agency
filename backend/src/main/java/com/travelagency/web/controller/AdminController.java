@@ -178,11 +178,14 @@ public class AdminController {
     public ApiResponse<DashboardView> dashboard(
             @RequestParam(defaultValue = "7")
             @Pattern(regexp = "7|30", message = "days 只能是 7 或 30") String days) {
+        // 当天日期以库内为准：todayOrderCount 与 orderTrend 都按自然日切分，
+        // 用 JVM 的 LocalDate.now() 会在 JVM 与库会话时区不一致时（CI 常见 UTC）错开一天。
+        LocalDate today = orderMapper.databaseToday();
         int users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0)).intValue();
         int routes = (int) routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
         int departures = departureMapper.selectCount(new QueryWrapper<Departure>().eq("status", "OPEN")).intValue();
         int todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .ge("created_at", LocalDate.now().atStartOfDay())).intValue();
+                .ge("created_at", today.atStartOfDay())).intValue();
         int pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
                 .eq("status", OrderStatus.PAID_WAIT_CONFIRM)).intValue();
         int pendingRefund = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
@@ -196,12 +199,17 @@ public class AdminController {
                 .stream().findFirst().orElse(0)).intValue();
         return ApiResponse.ok(new DashboardView(users, routes, departures, todayOrders,
                 pendingConfirm, pendingRefund, participants, revenue,
-                orderTrend(Integer.parseInt(days)), popularRoutes(), routeMapper.popularDestinations()));
+                orderTrend(Integer.parseInt(days), today), popularRoutes(), routeMapper.popularDestinations()));
     }
 
-    /** 近 {@code days} 天的订单趋势。库里只返回有订单的日期，这里按日历补零。 */
-    private List<DashboardView.Metric> orderTrend(int days) {
-        LocalDate from = LocalDate.now().minusDays(days - 1L);
+    /**
+     * 近 {@code days} 天的订单趋势。库里只返回有订单的日期，这里按日历补零。
+     *
+     * <p>{@code today} 由 {@link TravelOrderMapper#databaseToday()} 提供（库内日期），
+     * 保证窗口末位与 {@code GROUP BY DATE(created_at)} 的口径完全一致。</p>
+     */
+    private List<DashboardView.Metric> orderTrend(int days, LocalDate today) {
+        LocalDate from = today.minusDays(days - 1L);
         Map<LocalDate, DashboardView.Metric> byDate = new LinkedHashMap<>();
         orderMapper.dailyTrend(from.atStartOfDay()).forEach(metric -> byDate.put(metric.date(), metric));
         List<DashboardView.Metric> series = new ArrayList<>(days);

@@ -26,6 +26,7 @@ import java.util.TreeSet;
 import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -85,6 +86,10 @@ class AdminDashboardContractIntegrationTest {
     @Autowired
     private JsonMapper json;
 
+    /** 与生产同源：工作台的"今天"取自库内日期，测试不再用 JVM 时区自行推导期望值。 */
+    @Autowired
+    private com.travelagency.domain.mapper.TravelOrderMapper orderMapper;
+
     private MockMvc mvc;
 
     @BeforeEach
@@ -133,6 +138,40 @@ class AdminDashboardContractIntegrationTest {
         }
     }
 
+    /**
+     * 嵌套对象里的计数字段同样必须是 JSON 数字。
+     *
+     * <p>本模块曾经的违约正是"计数被序列化成字符串"：顶层 7 个字段有断言，但
+     * {@code DashboardMetric} / {@code DestinationStatistic} / {@code RouteSummary} 里的
+     * {@code orderCount}、{@code participantCount}、{@code validBookingCount}、{@code ratingCount}
+     * 之前只校验了字段名。契约把它们都声明为 {@code integer}，这里逐项断言类型，
+     * 避免以后有人把其中任一改成 {@code Long}（或经 {@code Map} 装箱）时静默回归。</p>
+     */
+    @Test
+    @DisplayName("嵌套结构里的计数字段也是数字：orderTrend / popularDestinations / popularRoutes")
+    void nestedCountFieldsAreNumbers() throws Exception {
+        JsonNode data = dashboard("/api/admin/dashboard");
+
+        JsonNode trend = data.get("orderTrend");
+        assertFalse(trend.isEmpty(), "orderTrend 至少有 days 个补零点，不应为空");
+        for (JsonNode point : trend) {
+            assertTrue(point.get("orderCount").isNumber(), "orderTrend[].orderCount 应是数字：" + point);
+            assertTrue(point.get("participantCount").isNumber(), "orderTrend[].participantCount 应是数字：" + point);
+            assertTrue(point.get("orderAmount").isTextual(), "orderTrend[].orderAmount 应是 Money 字符串：" + point);
+        }
+
+        for (JsonNode destination : data.get("popularDestinations")) {
+            assertTrue(destination.get("validBookingCount").isNumber(),
+                    "popularDestinations[].validBookingCount 应是数字：" + destination);
+        }
+
+        for (JsonNode route : data.get("popularRoutes")) {
+            assertTrue(route.get("ratingCount").isNumber(), "popularRoutes[].ratingCount 应是数字：" + route);
+            assertTrue(route.get("validBookingCount").isNumber(),
+                    "popularRoutes[].validBookingCount 应是数字：" + route);
+        }
+    }
+
     @Test
     @DisplayName("days 取契约 enum 之外的任何值都回 422，且 errors[] 能定位到该参数")
     void daysOutsideEnumIsRejected() throws Exception {
@@ -155,12 +194,18 @@ class AdminDashboardContractIntegrationTest {
         return json.readTree(response.getContentAsString(StandardCharsets.UTF_8)).get("data");
     }
 
-    /** orderTrend 必须是「长度 = days、按日期升序、逐日连续、末位是今天」，即缺失日期被补零。 */
+    /**
+     * orderTrend 必须是「长度 = days、按日期升序、逐日连续、末位是今天」，即缺失日期被补零。
+     *
+     * <p>"今天"取库内日期（{@code SELECT CURDATE()}），与生产实现同一来源；
+     * 不用 {@code LocalDate.now()}，否则在 JVM 时区与库会话时区不一致的环境（CI 常见 UTC）里，
+     * 断言会跟着实现一起错，失去回归意义。</p>
+     */
     private void assertTrend(JsonNode data, int days) {
         JsonNode trend = data.get("orderTrend");
         assertEquals(days, trend.size(), "orderTrend 长度应等于 days");
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = orderMapper.databaseToday();
         List<String> expected = new ArrayList<>();
         for (int i = days - 1; i >= 0; i--) {
             expected.add(today.minusDays(i).toString());

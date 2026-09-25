@@ -66,6 +66,7 @@ class AttractionTripIntegrationTest {
         assertEquals(2, data.path("departures").size());
         assertEquals(available.id.toString(), data.path("departures").get(0).path("id").asText());
         assertEquals(1, data.path("departures").get(0).path("availableSeats").asInt());
+        assertEquals("499.00", data.path("departures").get(0).path("childPrice").asText());
         assertEquals(full.id.toString(), data.path("departures").get(1).path("id").asText());
         assertEquals(0, data.path("departures").get(1).path("availableSeats").asInt());
     }

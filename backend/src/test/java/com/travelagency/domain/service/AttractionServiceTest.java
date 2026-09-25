@@ -63,6 +63,7 @@ class AttractionServiceTest {
         assertEquals(List.of(5, 0), detail.departures().stream()
                 .map(AttractionDetailView.Trip::availableSeats).toList());
         assertEquals("大理行程", detail.departures().get(0).routeName());
+        assertEquals(new BigDecimal("499.00"), detail.departures().get(0).childPrice());
     }
 
     private static Departure trip(Long id, Long routeId, int capacity, int reserved, int confirmed) {
@@ -72,6 +73,7 @@ class AttractionServiceTest {
         departure.startDate = LocalDate.now().plusDays(3);
         departure.endDate = LocalDate.now().plusDays(5);
         departure.adultPrice = new BigDecimal("899.00");
+        departure.childPrice = new BigDecimal("499.00");
         departure.maxPeople = capacity;
         departure.reservedPeople = reserved;
         departure.confirmedPeople = confirmed;

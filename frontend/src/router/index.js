@@ -38,6 +38,7 @@ import AdminUsersView from '@/views/admin/AdminUsersView.vue'
 import GuideDashboardView from '@/views/guide/GuideDashboardView.vue'
 import GuideTripsView from '@/views/guide/GuideTripsView.vue'
 import ComingSoonView from '@/views/ComingSoonView.vue'
+import { getScrollEntryId, restoreScrollPosition, saveScrollPosition } from '@/utils/scrollRestoration'
 
 const routes = [
   {
@@ -126,7 +127,19 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior: () => ({ top: 0 })
+  scrollBehavior: (_to, _from, savedPosition) => savedPosition || { top: 0 }
+})
+
+let activeScrollEntryId = getScrollEntryId()
+
+router.beforeEach(() => {
+  saveScrollPosition(activeScrollEntryId)
+})
+
+router.afterEach((_to, _from, failure) => {
+  if (failure) return
+  activeScrollEntryId = getScrollEntryId()
+  restoreScrollPosition(activeScrollEntryId)
 })
 
 router.beforeEach(async (to) => {

@@ -1,16 +1,19 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { contentApi } from '@/api/modules'
+import { contentApi, routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import DepartureCard from '@/components/DepartureCard.vue'
 import RequestState from '@/components/RequestState.vue'
+import RouteResultCard from '@/components/RouteResultCard.vue'
 
 const route = useRoute()
 const router = useRouter()
 const setMapFocus = inject('setMapFocus', () => {})
 const place = ref(null)
 const departures = ref([])
+const routeCards = ref([])
+const routeCardsLoading = ref(false)
+const routeCardsError = ref('')
 const relatedArticles = ref([])
 const nearbyPlaces = ref([])
 const loading = ref(true)
@@ -22,17 +25,34 @@ const mapUrl = computed(() => hasCoordinates.value
   ? `https://www.openstreetmap.org/?mlat=${place.value.latitude}&mlon=${place.value.longitude}#map=15/${place.value.latitude}/${place.value.longitude}`
   : '')
 
+async function loadRouteCards() {
+  const routeIds = [...new Set(departures.value.map((departure) => departure.routeId))]
+  routeCardsLoading.value = true
+  routeCardsError.value = ''
+  try {
+    routeCards.value = await Promise.all(routeIds.map(async (id) => (await routeApi.detail(id)).route))
+  } catch (cause) {
+    routeCards.value = []
+    routeCardsError.value = cause.message || '关联线路加载失败'
+  } finally {
+    routeCardsLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   place.value = null
   departures.value = []
+  routeCards.value = []
+  routeCardsError.value = ''
   relatedArticles.value = []
   setMapFocus(null)
   try {
     const detail = await contentApi.attraction(route.params.id)
     place.value = detail.attraction
     departures.value = detail.departures || []
+    if (departures.value.length) loadRouteCards()
     if (hasCoordinates.value) {
       setMapFocus({ latitude: place.value.latitude, longitude: place.value.longitude })
     }
@@ -81,7 +101,7 @@ onBeforeUnmount(() => setMapFocus(null))
         <RouterLink v-if="route.query.guideId" :to="{ name: 'guide-detail', params: { id: route.query.guideId } }" class="back-guide">返回指南地点列表</RouterLink>
         <div class="primary-actions">
           <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noopener"><AppIcon name="pin" size="19" /><span>在地图中查看</span></a>
-          <a href="#place-departures"><AppIcon name="routes" size="19" /><span>查看团期</span></a>
+          <a href="#place-departures"><AppIcon name="routes" size="19" /><span>查看线路</span></a>
         </div>
       </header>
 
@@ -98,17 +118,15 @@ onBeforeUnmount(() => setMapFocus(null))
         </section>
 
         <section id="place-departures">
-          <h2>途经此地点的团期</h2>
-          <p v-if="!departures.length" class="departure-empty">暂无未来开放团期</p>
+          <h2>途经此地点的线路</h2>
+          <p v-if="!departures.length" class="departure-empty">暂无有未来开放团期的途经线路</p>
+          <div v-else-if="routeCardsError" class="departure-empty">
+            <p>{{ routeCardsError }}</p>
+            <button type="button" class="retry-button" @click="loadRouteCards">重新加载</button>
+          </div>
+          <div v-else-if="routeCardsLoading" class="departure-list"><el-skeleton :rows="3" animated /></div>
           <div v-else class="departure-list">
-            <RouterLink v-for="departure in departures" :key="departure.id" class="departure-row"
-                        :to="{ name: 'route-detail', params: { id: departure.routeId } }">
-              <div class="departure-route">
-                <strong>{{ departure.routeName }}</strong>
-                <small>{{ departure.departureCity }}出发</small>
-              </div>
-              <DepartureCard :departure="departure" />
-            </RouterLink>
+            <RouteResultCard v-for="item in routeCards" :key="item.id" :route="item" />
           </div>
         </section>
 
@@ -157,7 +175,7 @@ onBeforeUnmount(() => setMapFocus(null))
 main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.035em; }
 .visual-strip { display: grid; grid-template-columns: 1.1fr 1fr; gap: 10px; overflow: hidden; }.visual-placeholder { height: 220px; border-radius: 18px; display: grid; place-items: center; align-content: center; gap: 10px; color: #2f7698; background: linear-gradient(145deg,#8fd9ef,#d8f2df); text-align: center; }.visual-placeholder span { padding: 0 14px; font-size: 11px; }.visual-placeholder.secondary { background: linear-gradient(145deg,#beddeb,#85b5c9); }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
-.departure-list { display: grid; gap: 16px; }.departure-row { display: grid; gap: 8px; color: inherit; text-decoration: none; }.departure-row:hover, .departure-row:focus-visible { color: var(--theme-blue); }.departure-row:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 4px; border-radius: 8px; }.departure-route { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }.departure-route strong { font-size: 13px; font-weight: 700; }.departure-route small, .departure-empty { color: var(--text-secondary); }
+.departure-list { display: grid; gap: 10px; }.departure-empty { color: var(--text-secondary); }.departure-empty p { margin: 0 0 8px; }.retry-button { padding: 6px 10px; border: 0; border-radius: 8px; color: white; background: var(--theme-blue); cursor: pointer; }
 .about-card .muted { color: #8e8e93; }
 .horizontal-list { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scrollbar-width: none; }.horizontal-list::-webkit-scrollbar { display: none; }
 .guide-tile { position: relative; overflow: hidden; border-radius: 17px; background: white; }.guide-tile img, .tile-fallback { width: 100%; height: 130px; object-fit: cover; }.guide-tile img { position: absolute; inset: 0 0 auto; }.tile-fallback { display: grid; place-items: center; color: #3184aa; background: #bfe7ef; }.guide-tile strong, .guide-tile small { position: relative; display: block; margin: 11px 13px 0; }.guide-tile strong { font-size: 15px; line-height: 1.2; }.guide-tile small { margin-top: 3px; margin-bottom: 12px; color: #8e8e93; }

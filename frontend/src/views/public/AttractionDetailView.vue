@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { contentApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
@@ -7,7 +7,9 @@ import RequestState from '@/components/RequestState.vue'
 
 const route = useRoute()
 const router = useRouter()
+const setMapFocus = inject('setMapFocus', () => {})
 const place = ref(null)
+const departures = ref([])
 const relatedArticles = ref([])
 const nearbyPlaces = ref([])
 const loading = ref(true)
@@ -22,20 +24,23 @@ const mapUrl = computed(() => hasCoordinates.value
 async function load() {
   loading.value = true
   error.value = ''
+  place.value = null
+  departures.value = []
   relatedArticles.value = []
+  setMapFocus(null)
   try {
-    let page = 1
-    let pageResult
-    const collected = []
-    do {
-      pageResult = await contentApi.attractions({ page, size: 100, ...(route.query.city ? { city: route.query.city } : {}) })
-      collected.push(...(pageResult?.items || []))
-      place.value = collected.find((item) => String(item.id) === String(route.params.id)) || null
-      page += 1
-    } while (!place.value && page <= (pageResult?.totalPages || 1))
-
-    if (!place.value) throw new Error('未找到该地点，可能已停止公开展示')
-    nearbyPlaces.value = collected.filter((item) => String(item.id) !== String(place.value.id)).slice(0, 6)
+    const detail = await contentApi.attraction(route.params.id)
+    place.value = detail.attraction
+    departures.value = detail.departures || []
+    if (hasCoordinates.value) {
+      setMapFocus({ latitude: place.value.latitude, longitude: place.value.longitude })
+    }
+    try {
+      const nearby = await contentApi.attractions({ page: 1, size: 20, city: place.value.city })
+      nearbyPlaces.value = (nearby?.items || []).filter((item) => String(item.id) !== String(place.value.id)).slice(0, 6)
+    } catch (_) {
+      nearbyPlaces.value = []
+    }
     try {
       const articleResult = await contentApi.articles({ page: 1, size: 100, destination: place.value.city })
       relatedArticles.value = (articleResult?.items || []).filter((item) => String(item.attractionId) === String(place.value.id))
@@ -59,7 +64,8 @@ function markImageFailed(id) {
   failedImages.value = new Set(failedImages.value).add(String(id))
 }
 
-onMounted(load)
+watch(() => route.params.id, load, { immediate: true })
+onBeforeUnmount(() => setMapFocus(null))
 </script>
 
 <template>
@@ -71,9 +77,10 @@ onMounted(load)
         <div class="top-actions"><button type="button" class="circle-button" aria-label="返回" @click="router.back()"><AppIcon name="chevron-left" size="19" /></button><button type="button" class="circle-button" aria-label="分享地点" @click="share"><AppIcon name="share" size="18" /></button></div>
         <h1>{{ place.name }}</h1>
         <p>{{ place.city }}<template v-if="place.address"> · {{ place.address }}</template></p>
+        <RouterLink v-if="route.query.guideId" :to="{ name: 'guide-detail', params: { id: route.query.guideId } }" class="back-guide">返回指南地点列表</RouterLink>
         <div class="primary-actions">
           <a v-if="mapUrl" :href="mapUrl" target="_blank" rel="noopener"><AppIcon name="pin" size="19" /><span>在地图中查看</span></a>
-          <RouterLink :to="{ name: 'routes', query: { keyword: place.name } }"><AppIcon name="routes" size="19" /><span>相关线路</span></RouterLink>
+          <a href="#place-departures"><AppIcon name="routes" size="19" /><span>查看团期</span></a>
         </div>
       </header>
 
@@ -86,6 +93,21 @@ onMounted(load)
         <section>
           <h2>关于</h2>
           <div class="info-card about-card"><p v-if="place.intro">{{ place.intro }}</p><p v-else class="muted">该地点暂无公开简介。</p>
+          </div>
+        </section>
+
+        <section id="place-departures">
+          <h2>途经此地点的团期</h2>
+          <p v-if="!departures.length" class="departure-empty">暂无未来开放团期</p>
+          <div v-else class="departure-list">
+            <div v-for="departure in departures" :key="departure.id" class="departure-row">
+              <RouterLink :to="{ name: 'route-detail', params: { id: departure.routeId } }" class="departure-name">{{ departure.routeName }}</RouterLink>
+              <small>{{ departure.departureCity }}出发 · {{ departure.startDate }} 至 {{ departure.endDate }}</small>
+              <div class="departure-footer">
+                <span>成人 ¥{{ departure.adultPrice }} / 人 · {{ departure.availableSeats ? `剩余 ${departure.availableSeats} 位` : '已满' }}</span>
+                <RouterLink v-if="departure.availableSeats > 0" :to="{ name: 'order-create', query: { routeId: departure.routeId, departureId: departure.id } }">选择团期</RouterLink>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -102,7 +124,7 @@ onMounted(load)
         </section>
 
         <section v-if="nearbyPlaces.length">
-          <h2>在此地点还有</h2>
+          <h2>同城其他地点</h2>
           <div class="horizontal-list nearby-list">
             <RouterLink v-for="nearby in nearbyPlaces" :key="nearby.id" :to="{ name: 'attraction-detail', params: { id: nearby.id }, query: { city: nearby.city } }" class="nearby-tile">
               <span><AppIcon name="pin" size="18" /></span><strong>{{ nearby.name }}</strong><small>{{ nearby.city }}</small>
@@ -129,10 +151,12 @@ onMounted(load)
 .place-header { padding: 20px 22px 18px; }.top-actions { display: flex; justify-content: space-between; margin-bottom: 18px; }
 .circle-button { width: 42px; height: 42px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #738089; background: rgba(0,0,0,.055); cursor: pointer; }
 .place-header h1 { margin: 0; font-size: 28px; line-height: 1.1; letter-spacing: -.04em; }.place-header > p { margin: 5px 0 0; color: #1f73c9; font-size: 14px; }
+.back-guide { display: inline-block; margin-top: 10px; color: var(--theme-blue); font-size: 13px; }
 .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 20px; }.primary-actions a { min-height: 64px; border-radius: 14px; display: grid; place-items: center; align-content: center; gap: 3px; color: white; background: var(--theme-blue); font-size: 12px; font-weight: 700; }.primary-actions a + a { color: var(--theme-blue); background: rgba(0,113,227,.09); }
 main { display: grid; gap: 27px; padding: 8px 22px 36px; }section h2 { margin: 0 0 10px; font-size: 23px; letter-spacing: -.035em; }
 .visual-strip { display: grid; grid-template-columns: 1.1fr 1fr; gap: 10px; overflow: hidden; }.visual-placeholder { height: 220px; border-radius: 18px; display: grid; place-items: center; align-content: center; gap: 10px; color: #2f7698; background: linear-gradient(145deg,#8fd9ef,#d8f2df); text-align: center; }.visual-placeholder span { padding: 0 14px; font-size: 11px; }.visual-placeholder.secondary { background: linear-gradient(145deg,#beddeb,#85b5c9); }
 .info-card { overflow: hidden; border-radius: 18px; background: white; }.about-card { padding: 20px; }.about-card p { margin: 0; font-size: 16px; line-height: 1.65; white-space: pre-wrap; }
+.departure-list { display: grid; gap: 9px; }.departure-row { display: grid; gap: 6px; padding: 15px; border-radius: 15px; background: white; }.departure-name { color: #1d1d1f; font-weight: 700; }.departure-row small, .departure-empty { color: #6f7780; }.departure-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }.departure-footer a { padding: 8px 11px; border-radius: 9px; color: white; background: var(--theme-blue); white-space: nowrap; }
 .about-card .muted { color: #8e8e93; }
 .horizontal-list { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scrollbar-width: none; }.horizontal-list::-webkit-scrollbar { display: none; }
 .guide-tile { position: relative; overflow: hidden; border-radius: 17px; background: white; }.guide-tile img, .tile-fallback { width: 100%; height: 130px; object-fit: cover; }.guide-tile img { position: absolute; inset: 0 0 auto; }.tile-fallback { display: grid; place-items: center; color: #3184aa; background: #bfe7ef; }.guide-tile strong, .guide-tile small { position: relative; display: block; margin: 11px 13px 0; }.guide-tile strong { font-size: 15px; line-height: 1.2; }.guide-tile small { margin-top: 3px; margin-bottom: 12px; color: #8e8e93; }

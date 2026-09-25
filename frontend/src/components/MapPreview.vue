@@ -121,10 +121,18 @@ function escapeHtml(value = '') {
 }
 
 function focusPlace() {
-  if (!mapInstance || !props.focusedPlace) return
+  if (!mapInstance) return
+  if (!props.focusedPlace) {
+    if (!points().length) overlays.clearLayers()
+    return
+  }
   const latitude = Number(props.focusedPlace.latitude)
   const longitude = Number(props.focusedPlace.longitude)
   if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+    overlays.clearLayers()
+    L.circleMarker([latitude, longitude], {
+      radius: 8, color: '#fff', weight: 3, fillColor: '#0071e3', fillOpacity: 1
+    }).addTo(overlays)
     const zoom = Math.max(12, mapInstance.getZoom())
     const isMobile = window.innerWidth <= 900
     const leftOffset = isMobile || !props.drawerOpen ? 0 : (props.sidebarExpanded ? 305 : 243)

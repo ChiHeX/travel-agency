@@ -13,12 +13,10 @@ const guide = ref(null)
 const loading = ref(true)
 const error = ref('')
 const coverFailed = ref(false)
-const selectedId = ref(null)
 
 async function load() {
   loading.value = true
   error.value = ''
-  selectedId.value = null
   setMapPlaces([])
   setMapFocus(null)
   try {
@@ -33,10 +31,9 @@ async function load() {
   }
 }
 
-function focus(place) {
-  if (place.latitude == null || place.longitude == null) return
-  selectedId.value = place.attractionId
-  setMapFocus({ latitude: place.latitude, longitude: place.longitude })
+function openPlace(place) {
+  router.push({ name: 'attraction-detail', params: { id: place.attractionId },
+    query: { guideId: route.params.id } })
 }
 
 async function share() {
@@ -81,15 +78,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="place-list">
           <button v-for="place in guide.places" :key="place.attractionId" type="button"
-                  class="place-row" :class="{ selected: selectedId === place.attractionId }"
-                  @click="focus(place)">
+                  class="place-row" @click="openPlace(place)">
             <span class="place-number">{{ place.sortOrder }}</span>
             <span class="place-copy">
               <strong>{{ place.name }}</strong>
               <small>{{ place.address || place.city }}</small>
               <span v-if="place.note">{{ place.note }}</span>
             </span>
-            <AppIcon name="pin" size="17" />
+            <AppIcon name="chevron-right" size="17" />
           </button>
         </div>
         <RouterLink :to="{ name: 'city-guides', params: { city: guide.city } }" class="more-guides">

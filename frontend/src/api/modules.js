@@ -64,7 +64,8 @@ export const accountApi = {
 export const contentApi = {
   articles: (params) => request.get('/articles', { params }),
   article: (articleId) => request.get(`/articles/${articleId}`),
-  attractions: (params) => request.get('/attractions', { params })
+  attractions: (params) => request.get('/attractions', { params }),
+  attraction: (attractionId) => request.get(`/attractions/${attractionId}`)
 }
 
 export const placeGuideApi = {

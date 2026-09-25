@@ -218,6 +218,23 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AttractionPageEnvelope' }
 
+  /attractions/{attractionId}:
+    parameters:
+      - { $ref: '#/components/parameters/AttractionId' }
+    get:
+      tags: [Content]
+      operationId: getPublicAttraction
+      summary: 查询公开地点详情及该地点关联线路的全部未来开放团期
+      description: 仅通过行程项的 attractionId 关联已发布线路；团期限定为未过期且状态为 OPEN，已满团期仍返回并以 availableSeats=0 表示。
+      security: []
+      responses:
+        '200':
+          description: 地点与团期详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /articles:
     get:
       tags: [Content]
@@ -2724,6 +2741,28 @@ components:
         status: { $ref: '#/components/schemas/AccountStatus' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
+    AttractionTrip:
+      type: object
+      additionalProperties: false
+      required: [id, routeId, routeName, departureCity, startDate, endDate, adultPrice, availableSeats]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: string }
+        departureCity: { type: string }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        availableSeats: { type: integer, minimum: 0 }
+    AttractionDetail:
+      type: object
+      additionalProperties: false
+      required: [attraction, departures]
+      properties:
+        attraction: { $ref: '#/components/schemas/Attraction' }
+        departures:
+          type: array
+          items: { $ref: '#/components/schemas/AttractionTrip' }
     AttractionUpsertRequest:
       type: object
       additionalProperties: false
@@ -3022,6 +3061,12 @@ components:
         - type: object
           properties:
             data: { $ref: '#/components/schemas/Attraction' }
+    AttractionDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AttractionDetail' }
     AttractionPageEnvelope:
       allOf:
         - { $ref: '#/components/schemas/SuccessEnvelope' }

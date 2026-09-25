@@ -66,7 +66,13 @@ public class AdminRouteController {
     // 线路管理
     // ------------------------------------------------------------------
 
-    /** 分页查询全部线路，对齐契约 GET /admin/routes（keyword + status 筛选）。 */
+    /**
+     * 分页查询全部线路，对齐契约 GET /admin/routes（keyword + status 筛选）。
+     *
+     * <p>{@code keyword} 的契约上限由 {@link KeywordRules} 统一提供；同组的 {@code status} 不在这里
+     * 加校验注解：契约枚举已由 {@code AdminRouteService.page} 拒绝并返回同一种 422 形状，
+     * 控制器再叠一套只会让同一个参数出现两种错误口径。</p>
+     */
     @GetMapping("/routes")
     public ApiResponse<PageResponse<RouteSummaryView>> routes(
             @RequestParam(defaultValue = "1") long page,

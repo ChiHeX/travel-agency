@@ -3,9 +3,10 @@ package com.travelagency.web.controller;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
+import com.travelagency.domain.dto.AdminDepartureView;
+import com.travelagency.domain.dto.DepartureCreateRequest;
 import com.travelagency.domain.dto.DepartureStatusUpdateRequest;
-import com.travelagency.domain.dto.DepartureUpsertRequest;
-import com.travelagency.domain.dto.DepartureView;
+import com.travelagency.domain.dto.DepartureUpdateRequest;
 import com.travelagency.domain.service.DepartureService;
 import jakarta.validation.Valid;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -62,7 +63,7 @@ public class AdminDepartureController {
      * 这里不重复加注解，避免同一个参数出现两种错误口径。</p>
      */
     @GetMapping("/departures")
-    public ApiResponse<PageResponse<DepartureView>> departures(
+    public ApiResponse<PageResponse<AdminDepartureView>> departures(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) Long routeId,
@@ -71,37 +72,42 @@ public class AdminDepartureController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateFrom,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateTo) {
         return ApiResponse.ok(
-                departureService.page(routeId, guideId, status, startDateFrom, startDateTo, page, size));
+                departureService.pageAdmin(routeId, guideId, status, startDateFrom, startDateTo, page, size));
     }
 
     /** 创建团期，对齐契约 POST /admin/departures（201 + Location + DepartureEnvelope）。 */
     @PostMapping("/departures")
-    public ResponseEntity<ApiResponse<DepartureView>> createDeparture(
-            @Valid @RequestBody DepartureUpsertRequest request) {
-        DepartureView departure = departureService.create(request, CurrentUser.required().userId());
+    public ResponseEntity<ApiResponse<AdminDepartureView>> createDeparture(
+            @Valid @RequestBody DepartureCreateRequest request) {
+        AdminDepartureView departure = departureService.create(request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/departures/" + departure.id()))
                 .body(ApiResponse.ok(departure));
     }
 
     /** 获取团期管理详情，对齐契约 GET /admin/departures/{departureId}。 */
     @GetMapping("/departures/{departureId}")
-    public ApiResponse<DepartureView> departureDetail(@PathVariable Long departureId) {
+    public ApiResponse<AdminDepartureView> departureDetail(@PathVariable Long departureId) {
         return ApiResponse.ok(departureService.detail(departureId));
     }
 
-    /** 修改团期，对齐契约 PUT /admin/departures/{departureId}。 */
+    /**
+     * 修改团期，对齐契约 PUT /admin/departures/{departureId}。
+     *
+     * <p>请求体用 {@link DepartureUpdateRequest}（比创建多一个必填的 {@code version}），
+     * 提交的版本与库内不一致时返回 {@code 409 DEPARTURE_VERSION_CONFLICT}。</p>
+     */
     @PutMapping("/departures/{departureId}")
-    public ApiResponse<DepartureView> updateDeparture(
-            @PathVariable Long departureId, @Valid @RequestBody DepartureUpsertRequest request) {
-        DepartureView departure = departureService.update(departureId, request, CurrentUser.required().userId());
+    public ApiResponse<AdminDepartureView> updateDeparture(
+            @PathVariable Long departureId, @Valid @RequestBody DepartureUpdateRequest request) {
+        AdminDepartureView departure = departureService.update(departureId, request, CurrentUser.required().userId());
         return ApiResponse.ok(departure);
     }
 
     /** 修改团期运营状态，对齐契约 PATCH /admin/departures/{departureId}/status（返回更新后的团期）。 */
     @PatchMapping("/departures/{departureId}/status")
-    public ApiResponse<DepartureView> updateDepartureStatus(
+    public ApiResponse<AdminDepartureView> updateDepartureStatus(
             @PathVariable Long departureId, @Valid @RequestBody DepartureStatusUpdateRequest request) {
-        DepartureView departure =
+        AdminDepartureView departure =
                 departureService.changeStatus(departureId, request.status(), CurrentUser.required().userId());
         return ApiResponse.ok(departure);
     }

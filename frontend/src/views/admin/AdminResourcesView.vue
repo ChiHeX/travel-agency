@@ -14,11 +14,12 @@ const loading = ref(false)
 /** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
 const pending = ref(null)
 
-/** 团期新增/编辑弹窗状态，以及表单需要的线路与导游候选项（全部来自后端真实数据）。 */
+/**
+ * 团期新增/编辑弹窗状态。线路与导游候选项由弹窗自己分页加载
+ * （契约 Size 上限 100，放在这里只取第一页会让后续记录选不到）。
+ */
 const departureDialogVisible = ref(false)
 const editingDeparture = ref(null)
-const routeOptions = ref([])
-const guideOptions = ref([])
 
 const loaders = {
   attractions: adminApi.attractions,
@@ -69,23 +70,10 @@ async function load() {
   }
 }
 
-/**
- * 打开团期新增/编辑弹窗。线路与导游候选项来自后端真实数据，不让运营手填主键；
- * 选项拉取失败时保留上一次结果，不影响列表与编辑回填。
- */
-async function openDepartureDialog(row) {
+/** 打开团期新增/编辑弹窗；候选项由弹窗自行分页加载。 */
+function openDepartureDialog(row) {
   editingDeparture.value = row || null
   departureDialogVisible.value = true
-  try {
-    const [routePage, guidePage] = await Promise.all([
-      adminApi.routes({ page: 1, size: 100 }),
-      adminApi.guides({ page: 1, size: 100 })
-    ])
-    routeOptions.value = routePage?.items || []
-    guideOptions.value = guidePage?.items || []
-  } catch {
-    // 候选项加载失败不阻断弹窗：编辑时线路/导游已由该行回填。
-  }
 }
 
 /**
@@ -297,8 +285,6 @@ onMounted(load)
       v-if="resource === 'departures'"
       v-model="departureDialogVisible"
       :departure="editingDeparture"
-      :routes="routeOptions"
-      :guides="guideOptions"
       @saved="load"
     />
   </div>

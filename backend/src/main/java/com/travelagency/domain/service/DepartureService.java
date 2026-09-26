@@ -4,9 +4,11 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.domain.dto.DepartureUpsertRequest;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
@@ -19,6 +21,7 @@ import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -34,12 +37,26 @@ public class DepartureService {
     private final TravelOrderMapper orderMapper;
     private final TravelRouteMapper routeMapper;
     private final GuideMapper guideMapper;
+    private final OperationLogRecorder operationLog;
 
-    /** 契约 DepartureStatus 的全部取值，供后台直接改状态时校验。 */
+    /** 契约 DepartureStatus 的全部取值，供后台直接改状态与列表筛选时校验。 */
     private static final List<String> ALL_STATUSES = List.of(
             DepartureStatus.DRAFT, DepartureStatus.OPEN, DepartureStatus.FULL,
             DepartureStatus.CLOSED, DepartureStatus.TRAVELLING, DepartureStatus.FINISHED,
             DepartureStatus.CANCELLED);
+
+    /** 状态枚举非法时统一的说明文案，避免列表筛选与状态变更给出两种口径。 */
+    private static final String STATUS_MESSAGE =
+            "团期状态只能是 DRAFT、OPEN、FULL、CLOSED、TRAVELLING、FINISHED 或 CANCELLED";
+
+    /**
+     * 终态：不再接受任何后续流转。
+     *
+     * <p>允许终态回退会让一条已结束或已取消的团期重新变成 {@code OPEN} 继续售卖，
+     * 而它的 {@code confirmedPeople} 仍留着历史人数，剩余名额与对外展示都会失真。</p>
+     */
+    private static final List<String> TERMINAL_STATUSES =
+            List.of(DepartureStatus.FINISHED, DepartureStatus.CANCELLED);
 
     /**
      * 允许导游"开始行程"的前置状态：已开售 / 已满 / 已截止，但都还没出发。
@@ -54,16 +71,21 @@ public class DepartureService {
             DepartureStatus.OPEN, DepartureStatus.FULL, DepartureStatus.CLOSED);
 
     public DepartureService(DepartureMapper departureMapper, TravelOrderMapper orderMapper,
-                            TravelRouteMapper routeMapper, GuideMapper guideMapper) {
+                            TravelRouteMapper routeMapper, GuideMapper guideMapper,
+                            OperationLogRecorder operationLog) {
         this.departureMapper = departureMapper;
         this.orderMapper = orderMapper;
         this.routeMapper = routeMapper;
         this.guideMapper = guideMapper;
+        this.operationLog = operationLog;
     }
 
     /**
      * 后台团期分页查询，对齐契约 GET /admin/departures：
      * 返回分页信封而非裸数组，items 为契约 Departure 视图（含 availableSeats / routeName / guideName）。
+     *
+     * <p>{@code status} 必须是契约 {@code DepartureStatus} 之一，传非法值返回 422，
+     * 避免静默返回空列表让调用方误判成"没有符合条件的团期"。</p>
      */
     public PageResponse<DepartureView> page(Long routeId, Long guideId, String status,
                                             LocalDate startDateFrom, LocalDate startDateTo, int page, int size) {
@@ -75,7 +97,11 @@ public class DepartureService {
             query.eq("guide_id", guideId);
         }
         if (status != null && !status.isBlank()) {
-            query.eq("status", status);
+            String value = status.trim();
+            if (!ALL_STATUSES.contains(value)) {
+                throw new BusinessException(422, "VALIDATION_ERROR", STATUS_MESSAGE);
+            }
+            query.eq("status", value);
         }
         if (startDateFrom != null) {
             query.ge("start_date", startDateFrom);
@@ -137,53 +163,329 @@ public class DepartureService {
                 .toList();
     }
 
+    // ------------------------------------------------------------------
+    // 后台团期管理（契约 Admin Departures）
+    // ------------------------------------------------------------------
+
+    /**
+     * 创建团期，对齐契约 POST /admin/departures（201 + Location + DepartureEnvelope）。
+     *
+     * <p>服务端决定的字段一律不接受客户端输入：新建团期固定为 {@link DepartureStatus#DRAFT}
+     * （{@code OrderService#create} 只接受 OPEN 团期下单，因此 DRAFT 团期必然零订单，
+     * 必须先经 {@code PATCH /admin/departures/{departureId}/status} 上架才能售卖），
+     * {@code reservedPeople} / {@code confirmedPeople} 从 0 起算，{@code version} 归零。</p>
+     */
     @Transactional
-    public Departure save(Departure departure) {
-        if (departure.startDate == null || departure.endDate == null || departure.endDate.isBefore(departure.startDate)) {
-            throw new BusinessException("团期日期不合法");
-        }
-        if (departure.maxPeople == null || departure.maxPeople <= 0) {
-            throw new BusinessException("最大人数必须大于 0");
-        }
-        if (departure.adultPrice == null || departure.adultPrice.signum() < 0
-                || departure.childPrice == null || departure.childPrice.signum() < 0) {
-            throw new BusinessException("团期价格不能为负数");
-        }
-        if (departure.status == null || departure.status.isBlank()) {
-            departure.status = DepartureStatus.DRAFT;
-        }
-        if (departure.reservedPeople == null) {
-            departure.reservedPeople = 0;
-        }
-        if (departure.confirmedPeople == null) {
-            departure.confirmedPeople = 0;
-        }
+    public DepartureView create(DepartureUpsertRequest request, Long operatorId) {
+        validateEditableFields(request);
+        requireRoute(request.routeId());
+        requireGuide(request.guideId());
+        Departure departure = new Departure();
+        applyEditableFields(departure, request);
+        departure.status = DepartureStatus.DRAFT;
+        departure.reservedPeople = 0;
+        departure.confirmedPeople = 0;
+        departure.version = 0;
         checkGuideConflict(departure);
-        if (departure.id == null) {
-            departure.version = 0;
-            departureMapper.insert(departure);
-        } else {
-            departureMapper.updateById(departure);
-        }
-        return departure;
+        departureMapper.insert(departure);
+        operationLog.record(operatorId, "团期", "CREATE", "DEPARTURE", departure.id,
+                "线路 " + request.routeId() + " 新建团期：" + request.startDate() + " 至 " + request.endDate());
+        // 回查以带回 created_at / updated_at 等数据库默认值，并保证响应与契约一致。
+        return detail(departure.id);
     }
 
     /**
-     * 后台直接改写团期状态，对齐契约 PATCH /admin/departures/{departureId}/status。
+     * 修改团期，对齐契约 PUT /admin/departures/{departureId}。
      *
-     * <p>后台允许把团期改成任意合法状态（如人工下架、取消），因此这里只校验状态取值，
-     * 不做状态迁移合法性约束；导游端的 {@link #start(Long)} / {@link #complete(Long)}
-     * 才带状态机校验。</p>
+     * <p>只覆盖契约允许的可编辑字段。{@code status}、{@code reservedPeople}、
+     * {@code confirmedPeople}、{@code version} 不受本次修改影响，因此用显式字段 UPDATE
+     * 而不是把实体整体写回：名额计数由下单 / 支付 / 退款链路维护，一旦被这里的整体写回覆盖，
+     * 已报名人数会凭空消失（可用名额虚增，进而超卖）。</p>
+     *
+     * <p><b>两条业务闸门都放进 UPDATE 的 WHERE，并按影响行数判定结果</b>，而不是
+     * "先读、判断、再无条件下写"：</p>
+     * <ol>
+     *   <li><b>名额闸门</b> {@code reserved_people + confirmed_people <= 新上限}。
+     *       读取已占名额与写入新上限之间存在窗口，期间并发下单会占走名额；
+     *       只做应用层比较会写出「已占人数 &gt; 最大人数」的团期，
+     *       而 {@code availableSeats} 会把负数钳成 0，把超卖藏在接口背后。
+     *       WHERE 条件与 UPDATE 同一条语句，行锁保证判定与写入原子生效；</li>
+     *   <li><b>改挂闸门</b>（仅在 {@code routeId} 变化时）：先锁团期行，再在锁内用当前读确认"没有订单"，
+     *       并持锁完成更新。{@code travel_order} 同时保存 {@code route_id} 与 {@code departure_id}，
+     *       订单创建时从团期读出线路；"先查有没有订单、再改线路"无法与并发下单串行化。
+     *       只加 {@code status = DRAFT} 的写入条件也不够：状态可以从 DRAFT 变成 OPEN、产生订单、
+     *       再改回 DRAFT，而写入那一刻它确实又是 DRAFT。见 {@link #requireRebindable}。</li>
+     * </ol>
+     *
+     * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #writeConflict}）。
+     * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
+     * 会把"条件更新其实没生效"误判成成功。</p>
      */
     @Transactional
-    public void changeStatus(Long departureId, String status) {
-        requireDeparture(departureId);
-        if (!ALL_STATUSES.contains(status)) {
-            throw new BusinessException("团期状态不合法");
+    public DepartureView update(Long departureId, DepartureUpsertRequest request, Long operatorId) {
+        Departure existing = requireDeparture(departureId);
+        validateEditableFields(request);
+        requireRoute(request.routeId());
+        requireGuide(request.guideId());
+        boolean rebinding = !Objects.equals(existing.routeId, request.routeId());
+        if (rebinding) {
+            // 锁顺序固定为「导游 → 团期」：requireGuide 已先取到导游行锁，这里再锁团期行，
+            // 与 create 的加锁顺序一致，不会交叉死锁。
+            existing = requireDepartureForUpdate(departureId);
+            requireRebindable(departureId, existing);
         }
-        // 后台没有前置状态限制，因此只按 id 定位；写入与订单级联同处一个事务。
+        // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由上面的 WHERE 闸门兜住。
+        int occupied = DepartureView.occupiedSeats(existing);
+        if (request.maxPeople() < occupied) {
+            throw new BusinessException(422, "VALIDATION_ERROR", capacityMessage(occupied));
+        }
+        // 冲突检测用待写入的取值，且排除自身（candidate.id），否则每次保存都会与自己撞上。
+        Departure candidate = new Departure();
+        candidate.id = departureId;
+        applyEditableFields(candidate, request);
+        checkGuideConflict(candidate);
+        UpdateWrapper<Departure> update = new UpdateWrapper<Departure>()
+                .eq("id", departureId)
+                .set("route_id", request.routeId())
+                .set("start_date", request.startDate())
+                .set("end_date", request.endDate())
+                .set("adult_price", request.adultPrice())
+                .set("child_price", request.childPrice())
+                .set("max_people", request.maxPeople())
+                .set("guide_id", request.guideId())
+                // 名额闸门：{0} 由 MyBatis-Plus 绑定为占位参数，不做字符串拼接。
+                .apply("reserved_people + confirmed_people <= {0}", request.maxPeople());
+        if (rebinding) {
+            update.eq("status", DepartureStatus.DRAFT);
+        }
+        if (departureMapper.update(null, update) == 0) {
+            BusinessException conflict = writeConflict(departureId, request);
+            if (conflict != null) {
+                throw conflict;
+            }
+            // 目标状态已达成：0 行来自驱动的 useAffectedRows 语义，而不是闸门失效，按幂等成功处理。
+        }
+        operationLog.record(operatorId, "团期", "UPDATE", "DEPARTURE", departureId,
+                "修改团期：" + request.startDate() + " 至 " + request.endDate());
+        return detail(departureId);
+    }
+
+    /**
+     * 改挂线路的前置校验，必须在**已持有该团期行排他锁**的前提下调用。
+     *
+     * <p>两道条件：团期没有订单，且仍是 {@link DepartureStatus#DRAFT}。两者都必须用当前读，
+     * 顺序也必须是"先锁行、再检查"：</p>
+     *
+     * <ul>
+     *   <li><b>先锁行</b>：状态变更（{@link #changeStatus}）与下单（{@code OrderService#create}
+     *       的名额条件更新）都必须先拿到同一把团期行锁，因此锁住之后不可能再有新订单落库，
+     *       这里读到的"没有订单"在整个改挂事务期间都成立；</li>
+     *   <li><b>当前读</b>：普通查询读的是本事务的一致性快照，看不到"快照建立之后才提交"的订单。
+     *       把订单检查换成普通 {@code selectCount}，下面的攻击路径就能绕过去 ——
+     *       另一个事务把团期改成 OPEN、创建订单、再改回 DRAFT，三步提交之后
+     *       快照里既没有订单、状态也仍是 DRAFT，于是仅靠 {@code status = DRAFT} 的写入条件
+     *       拦不住改挂，订单记录的线路与团期当前线路从此不一致。</li>
+     * </ul>
+     */
+    private void requireRebindable(Long departureId, Departure existing) {
+        if (!departureMapper.lockOrderIdsByDeparture(departureId).isEmpty()) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "该团期已产生订单，不能改挂到其它线路");
+        }
+        if (!DepartureStatus.DRAFT.equals(existing.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "只有草稿状态的团期可以改挂线路，请先把团期状态改回 DRAFT");
+        }
+    }
+
+    /**
+     * 条件 UPDATE 影响 0 行时的结果判定，返回 {@code null} 表示"目标状态其实已经达成"。
+     *
+     * <p>判定必须基于 {@link DepartureMapper#selectByIdForUpdate} 这个<b>当前读</b>：
+     * REPEATABLE READ 下普通 {@code SELECT} 走一致性快照，本事务前面已经读过该行，
+     * 这里会读回旧数据，把并发的名额变化看成"没有变化"，从而给出错误的原因、甚至误判成功。</p>
+     *
+     * <p>为什么还保留"成功"分支：0 行的含义取决于驱动的 {@code useAffectedRows}。
+     * 本项目默认取 matched 行数（值没变也返回 1），此时 0 行必然是闸门失效；
+     * 但若有人打开 {@code useAffectedRows=true}，"字段值完全没有变化"也会返回 0，
+     * 那不是冲突。与其把正确性押在一个 JDBC 参数上，这里用当前读逐字段确认目标状态是否已达成：
+     * 达成则幂等成功，否则按具体原因返回 409。判定依据是可靠的最新已提交数据，不依赖驱动配置。</p>
+     */
+    private BusinessException writeConflict(Long departureId, DepartureUpsertRequest request) {
+        Departure latest = departureMapper.selectByIdForUpdate(departureId);
+        if (latest == null) {
+            return new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        int occupied = DepartureView.occupiedSeats(latest);
+        if (request.maxPeople() < occupied) {
+            return new BusinessException(409, "DEPARTURE_CAPACITY_CONFLICT", capacityMessage(occupied));
+        }
+        if (matchesTargetState(latest, request)) {
+            // 目标状态已达成，这次 UPDATE 无事可做：按幂等成功处理。
+            return null;
+        }
+        if (!Objects.equals(latest.routeId, request.routeId())
+                && !DepartureStatus.DRAFT.equals(latest.status)) {
+            return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "团期已开放报名，不能改挂到其它线路；请先下架为草稿后重试");
+        }
+        return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                "团期在本次修改期间被并发改动，请重试");
+    }
+
+    /** 当前行是否已经等于本次请求要写入的取值，且满足名额闸门。 */
+    private static boolean matchesTargetState(Departure latest, DepartureUpsertRequest request) {
+        return Objects.equals(latest.routeId, request.routeId())
+                && Objects.equals(latest.startDate, request.startDate())
+                && Objects.equals(latest.endDate, request.endDate())
+                && sameMoney(latest.adultPrice, request.adultPrice())
+                && sameMoney(latest.childPrice, request.childPrice())
+                && Objects.equals(latest.maxPeople, request.maxPeople())
+                && Objects.equals(latest.guideId, request.guideId())
+                && DepartureView.occupiedSeats(latest) <= request.maxPeople();
+    }
+
+    /** 金额只比较数值：99.5 与 99.50 是同一个价格，不能因为小数位不同就判成"被改动过"。 */
+    private static boolean sameMoney(BigDecimal left, BigDecimal right) {
+        if (left == null || right == null) {
+            return left == right;
+        }
+        return left.compareTo(right) == 0;
+    }
+
+    private static String capacityMessage(int occupied) {
+        return "最大人数不能小于已占用的 " + occupied + " 人，如需缩减请先处理相关订单";
+    }
+
+    /**
+     * 后台改写团期状态，对齐契约 PATCH /admin/departures/{departureId}/status
+     * （200 + 更新后的团期）。
+     *
+     * <p>运营状态允许在 DRAFT / OPEN / FULL / CLOSED / TRAVELLING 之间自由调整
+     * （人工上下架、改满员、重新开报名等），但两条服务端规则必须成立：</p>
+     * <ol>
+     *   <li><b>终态不可回退</b>：FINISHED 与 CANCELLED 不能再改成其它状态。
+     *       否则一条已结束或已取消的团期可以重新变成 OPEN 继续售卖，
+     *       而它的 {@code confirmedPeople} 还留着历史人数，剩余名额与对外展示都会失真；</li>
+     *   <li><b>已经出发的团期不能设为 OPEN</b>：{@code OrderService.create} 只校验状态是 OPEN，
+     *       若允许把出发日期已过的团期打开报名，就等于把一班已经出发的团重新挂出去卖。</li>
+     * </ol>
+     *
+     * <p>判定与写入都在同一把行锁内完成：先用 {@code SELECT ... FOR UPDATE} 当前读锁定该行
+     * 并拿到最新状态，再校验、写状态、级联订单。此前是"普通读 → 无条件写"，
+     * 并发下两个后台操作会各自基于旧状态通过校验，后写的一方覆盖前一方。</p>
+     */
+    @Transactional
+    public DepartureView changeStatus(Long departureId, String status, Long operatorId) {
+        if (status == null || !ALL_STATUSES.contains(status)) {
+            throw new BusinessException(422, "VALIDATION_ERROR", STATUS_MESSAGE);
+        }
+        // 当前读 + 行锁：拿到最新已提交状态，并阻断并发的状态变更直到本事务结束。
+        Departure departure = departureMapper.selectByIdForUpdate(departureId);
+        if (departure == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        requireStatusTransitionAllowed(departure, status);
         writeStatus(departureId, status, null);
         cascadeOrderStatus(departureId, status);
+        // 状态没变就不写日志：重复点"关闭报名"不该在操作日志里刷出一串无意义记录。
+        if (!Objects.equals(departure.status, status)) {
+            operationLog.record(operatorId, "团期", "STATUS", "DEPARTURE", departureId,
+                    "团期状态由 " + departure.status + " 变更为 " + status);
+        }
+        return detail(departureId);
+    }
+
+    /**
+     * 字段语义校验兜底。
+     *
+     * <p>请求在 Controller 已通过 Bean Validation；这里再查一遍是为了防止绕过请求校验的调用方
+     * （直接调用 Service 的代码或测试）写入数据库无法表达的取值，并保证同一类错误
+     * 无论从哪条路径进来都是 422 + {@code VALIDATION_ERROR}。</p>
+     */
+    private static void validateEditableFields(DepartureUpsertRequest request) {
+        if (request.startDate() == null || request.endDate() == null
+                || request.startDate().isAfter(request.endDate())) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "返程日期不能早于出发日期");
+        }
+        if (request.maxPeople() == null || request.maxPeople() < 1) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "最大人数必须大于 0");
+        }
+        if (request.adultPrice() == null || request.adultPrice().signum() < 0
+                || request.childPrice() == null || request.childPrice().signum() < 0) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "团期价格不能为负数");
+        }
+    }
+
+    /** 契约 {@code DepartureUpsertRequest} 允许客户端提交的字段；状态与名额计数不在此列。 */
+    private static void applyEditableFields(Departure departure, DepartureUpsertRequest request) {
+        departure.routeId = request.routeId();
+        departure.startDate = request.startDate();
+        departure.endDate = request.endDate();
+        departure.adultPrice = request.adultPrice();
+        departure.childPrice = request.childPrice();
+        departure.maxPeople = request.maxPeople();
+        departure.guideId = request.guideId();
+    }
+
+    /** 引用了不存在的线路属于字段语义不成立，按契约返回 422（而不是外键报错后的 500）。 */
+    private void requireRoute(Long routeId) {
+        if (routeId == null || routeMapper.selectById(routeId) == null) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "指定的线路不存在");
+        }
+    }
+
+    /**
+     * 后台状态变更的服务端规则（详见 {@link #changeStatus}）。
+     * 重复提交同一状态是幂等的，直接放行。
+     */
+    private void requireStatusTransitionAllowed(Departure departure, String status) {
+        if (Objects.equals(departure.status, status)) {
+            return;
+        }
+        if (TERMINAL_STATUSES.contains(departure.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    DepartureStatus.FINISHED.equals(departure.status)
+                            ? "团期已完成，不能再改回其它状态"
+                            : "团期已取消，不能再改回其它状态");
+        }
+        if (DepartureStatus.OPEN.equals(status) && departure.startDate != null
+                && departure.startDate.isBefore(databaseToday())) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "团期已于 " + departure.startDate + " 出发，不能再开放报名");
+        }
+    }
+
+    /** 以库内日期为准：JVM 与库会话时区不一致时（CI 常见 UTC），用 LocalDate.now() 会错开一天。 */
+    private LocalDate databaseToday() {
+        return orderMapper.databaseToday();
+    }
+
+    /**
+     * 指定的导游必须存在；存在时对该行加排他锁。
+     *
+     * <p>锁的作用是串行化同一导游的并发写：{@link #checkGuideConflict} 是范围重叠判断，
+     * 无法用唯一键表达，必须"先查再写"。先锁住导游行，再在 {@code departure} 上做当前读判断，
+     * 才能保证两个并发请求不会各自以为没有冲突。锁顺序固定为「导游 → 团期」。</p>
+     */
+    private void requireGuide(Long guideId) {
+        if (guideId != null && guideMapper.selectByIdForUpdate(guideId) == null) {
+            throw new BusinessException(422, "VALIDATION_ERROR", "指定的导游不存在");
+        }
+    }
+
+    /**
+     * 加锁并回读该团期（当前读）。返回 {@code null} 表示行已不存在。
+     *
+     * <p>用于改挂线路：先拿到行锁，再在锁内做"没有订单"的当前读判定，
+     * 保证判定成立的条件不会在判定与写入之间失效。</p>
+     */
+    private Departure requireDepartureForUpdate(Long departureId) {
+        Departure departure = departureMapper.selectByIdForUpdate(departureId);
+        if (departure == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        return departure;
     }
 
     /**
@@ -314,20 +616,25 @@ public class DepartureService {
         return ids.stream().filter(Objects::nonNull).distinct().toList();
     }
 
+    /**
+     * 同一导游在同一时间范围内不能带两个团，对齐契约 POST/PUT /admin/departures 声明的 409。
+     *
+     * <p>返回 409 而不是 400：请求本身合法，冲突来自资源当前状态（该导游已有重叠团期），
+     * 运营改派导游或调整日期后即可重试。</p>
+     *
+     * <p>调用前必须已经通过 {@link #requireGuide} 锁住导游行。判断本身走
+     * {@link DepartureMapper#lockOverlappingDepartureIds} 的<b>当前读</b>：普通查询读的是本事务
+     * 的一致性快照，会在"快照建立之后才提交"的重叠团期上面失明，两个并发请求因此各自插入成功。</p>
+     */
     private void checkGuideConflict(Departure departure) {
         if (departure.guideId == null) {
             return;
         }
-        QueryWrapper<Departure> query = new QueryWrapper<Departure>()
-                .eq("guide_id", departure.guideId)
-                .notIn("status", DepartureStatus.CANCELLED, DepartureStatus.FINISHED)
-                .le("start_date", departure.endDate)
-                .ge("end_date", departure.startDate);
-        if (departure.id != null) {
-            query.ne("id", departure.id);
-        }
-        if (departureMapper.selectCount(query) > 0) {
-            throw new BusinessException("该导游在此时间范围内已有其他团期");
+        List<Long> conflicts = departureMapper.lockOverlappingDepartureIds(
+                departure.guideId, departure.startDate, departure.endDate, departure.id);
+        if (!conflicts.isEmpty()) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "该导游在此时间范围内已有其他团期");
         }
     }
 }

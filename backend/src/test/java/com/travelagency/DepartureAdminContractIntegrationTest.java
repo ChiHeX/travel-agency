@@ -42,9 +42,15 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -316,6 +322,139 @@ class DepartureAdminContractIntegrationTest {
         Departure after = departures.selectById(id);
         assertEquals(30, after.maxPeople.intValue(), "失败的更新不得改动 max_people");
         assertEquals(20, after.reservedPeople.intValue(), "失败的更新不得改动 reserved_people");
+    }
+
+    // ------------------------------------------------------------------
+    // 状态守卫
+    // ------------------------------------------------------------------
+
+    /**
+     * 原样重复保存必须是幂等的。
+     *
+     * <p>这条同时覆盖两种驱动语义：默认（返回 matched 行数）时 UPDATE 命中 1 行直接成功；
+     * 打开 {@code useAffectedRows=true} 时字段值没变化会返回 0 行，此时靠当前读确认
+     * "目标状态已达成"后按成功处理 —— 正确性不押在 JDBC 参数上。</p>
+     */
+    @Test
+    @DisplayName("修改：原样重复保存是幂等的（两种 useAffectedRows 语义下都成功）")
+    void updateAcceptsUnchangedPayload() throws Exception {
+        Long id = createDeparture(routeId, 30, "OPEN");
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(departureBody(routeId, 30, null)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maxPeople").value(30));
+
+        assertEquals(30, departures.selectById(id).maxPeople.intValue());
+    }
+
+    @Test
+    @DisplayName("状态：终态不能回退（已完成 / 已取消）")
+    void terminalStatusCannotBeReverted() throws Exception {
+        Long id = createDeparture(routeId, 30, "OPEN");
+
+        mvc.perform(patch("/api/admin/departures/" + id + "/status").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"FINISHED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("FINISHED"));
+
+        mvc.perform(patch("/api/admin/departures/" + id + "/status").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"OPEN\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+
+        assertEquals("FINISHED", departures.selectById(id).status, "终态不得被回退");
+    }
+
+    @Test
+    @DisplayName("状态：已经出发的团期不能开放报名")
+    void pastDatedDepartureCannotBeOpened() throws Exception {
+        LocalDate start = LocalDate.now().minusDays(3);
+        String body = "{\"routeId\":\"" + routeId + "\",\"startDate\":\"" + start + "\",\"endDate\":\""
+                + start.plusDays(2) + "\",\"adultPrice\":\"2999.00\",\"childPrice\":\"1999.00\","
+                + "\"maxPeople\":30}";
+        String response = mvc.perform(post("/api/admin/departures").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        Long id = Long.valueOf(json.readTree(response).get("data").get("id").asString());
+
+        mvc.perform(patch("/api/admin/departures/" + id + "/status").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"OPEN\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+
+        assertEquals("DRAFT", departures.selectById(id).status, "已出发的团期不得被打开报名");
+    }
+
+    // ------------------------------------------------------------------
+    // 并发：同一导游的时间冲突
+    // ------------------------------------------------------------------
+
+    /**
+     * 同一导游、同一时间段并发创建：只允许一个成功。
+     *
+     * <p>"同一导游同一时间范围不能带两个团"是范围重叠判断，无法用唯一键表达，只能先查再写。
+     * 若不锁导游行、或用普通查询做判定，并发请求会各自查到"没有冲突"再各自插入。
+     * 这里用真实并发验证：先锁导游行串行化，再用 {@code FOR UPDATE} 当前读判定重叠。</p>
+     */
+    @Test
+    @DisplayName("并发：同一导游同一时间段只能创建出一个团期")
+    void concurrentCreateForSameGuideKeepsExactlyOneDeparture() throws Exception {
+        int threads = 4;
+        LocalDate start = LocalDate.now().plusDays(40);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch go = new CountDownLatch(1);
+        List<Future<BusinessException>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    ready.countDown();
+                    awaitLatch(go);
+                    try {
+                        departureService.create(new DepartureUpsertRequest(routeId, start, start.plusDays(3),
+                                new BigDecimal("2999.00"), new BigDecimal("1999.00"), 20, guideId), staffUserId);
+                        return null;
+                    } catch (BusinessException failure) {
+                        return failure;
+                    }
+                }));
+            }
+            assertTrue(ready.await(10, TimeUnit.SECONDS), "并发线程未能全部就绪");
+            go.countDown();
+
+            int succeeded = 0;
+            List<BusinessException> conflicts = new ArrayList<>();
+            for (Future<BusinessException> future : futures) {
+                BusinessException failure = future.get(60, TimeUnit.SECONDS);
+                if (failure == null) {
+                    succeeded++;
+                } else {
+                    conflicts.add(failure);
+                }
+            }
+            assertEquals(1, succeeded, "同一导游的重叠团期只允许一个创建成功");
+            assertEquals(threads - 1, conflicts.size(), "其余请求都应在导游冲突处被拒绝");
+            for (BusinessException conflict : conflicts) {
+                assertEquals(409, conflict.getStatus());
+                assertEquals("DEPARTURE_STATE_CONFLICT", conflict.getCode());
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1L, departures.selectCount(new QueryWrapper<Departure>()
+                        .eq("guide_id", guideId).eq("start_date", start)).longValue(),
+                "库里也只能留下一行");
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException cause) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(cause);
+        }
     }
 
     // ------------------------------------------------------------------

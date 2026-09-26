@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -40,6 +41,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -153,7 +155,7 @@ class DepartureAdminServiceTest {
     @DisplayName("创建：引用不存在的导游返回 422，且不写库")
     void createRejectsUnknownGuide() {
         stubRoute(ROUTE_ID);
-        when(guideMapper.selectById(GUIDE_ID)).thenReturn(null);
+        when(guideMapper.selectByIdForUpdate(GUIDE_ID)).thenReturn(null);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR));
@@ -206,7 +208,7 @@ class DepartureAdminServiceTest {
     void createRejectsGuideOverlap() {
         stubRoute(ROUTE_ID);
         stubGuide(GUIDE_ID);
-        when(departureMapper.selectCount(any())).thenReturn(1L);
+        stubGuideConflict();
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR));
@@ -214,6 +216,32 @@ class DepartureAdminServiceTest {
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
         verify(departureMapper, never()).insert(any(Departure.class));
+    }
+
+    /**
+     * 导游时间冲突是范围重叠判断，MySQL 无法用唯一键表达，只能"先查再写"。
+     * 因此必须先锁住导游行、再用<b>当前读</b>查重叠团期：
+     * 少了锁，两个并发请求会各自查到"没有冲突"再各自插入，把同一位导游排进两个重叠团期；
+     * 用普通查询则会读到本事务的旧快照，在快照建立之后才提交的重叠团期上面失明。
+     */
+    @Test
+    @DisplayName("创建：先锁导游行，再用当前读查重叠团期")
+    void createLocksGuideRowBeforeCheckingOverlap() {
+        stubRoute(ROUTE_ID);
+        stubGuide(GUIDE_ID);
+        when(departureMapper.insert(any(Departure.class))).thenAnswer(invocation -> {
+            invocation.<Departure>getArgument(0).id = DEPARTURE_ID;
+            return 1;
+        });
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, GUIDE_ID));
+
+        service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR);
+
+        InOrder order = inOrder(guideMapper, departureMapper);
+        order.verify(guideMapper).selectByIdForUpdate(GUIDE_ID);
+        order.verify(departureMapper).lockOverlappingDepartureIds(
+                eq(GUIDE_ID), any(), any(), isNull());
     }
 
     // ------------------------------------------------------------------
@@ -421,29 +449,62 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 影响行数为 0 一律失败，**没有"其实是成功"的分支**。
+     * 影响行数为 0 时按当前读判定结果：**当前读与请求不一致就必须失败**。
      *
-     * <p>这里刻意让当前读返回一行"看起来完全满足条件"的数据：这正是 REPEATABLE READ 下
-     * 用普通 {@code selectById} 回读时会出现的假象（旧快照里名额没被占）。
-     * 条件更新已经确认没生效，就不能凭这次读取放行 —— 否则方法会继续写操作日志并返回成功，
-     * 而库里的团期根本没被修改。fail-closed 才是正确方向。</p>
+     * <p>这条守住的是原来的核心缺陷：普通 {@code selectById} 回读在 REPEATABLE READ 下会看到
+     * 旧快照（并发占位前的人数），把"条件更新没生效"读成"目标状态已达成"，
+     * 于是方法继续写日志并返回成功，而库里的团期根本没被改。</p>
      */
     @Test
-    @DisplayName("修改：影响行数为 0 时一律失败，即使当前读看起来满足条件")
-    void updateFailsClosedWhenZeroRowsCannotBeExplained() {
+    @DisplayName("修改：影响行数为 0 且当前读与请求不一致时返回 409")
+    void updateFailsWhenCurrentReadDiffersFromTheRequest() {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        // 当前读显示该行并不是请求要写入的样子（上限仍是 30，请求要改成 40）。
         when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
+                () -> service.update(DEPARTURE_ID, request(ROUTE_ID, null, 40), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
+    }
+
+    /**
+     * 0 行的另一种含义：驱动 {@code useAffectedRows=true} 时，"字段值完全没有变化"也返回 0。
+     *
+     * <p>这不是冲突。用当前读逐字段确认目标状态确实已经达成后按幂等成功处理 ——
+     * 这样正确性不押在 JDBC 参数上：默认取 matched 行数时该分支根本不会走到，
+     * 打开 {@code useAffectedRows} 时也不会把一次无变化的重复保存误报成冲突。</p>
+     */
+    @Test
+    @DisplayName("修改：0 行且当前读确认目标状态已达成时按幂等成功处理")
+    void updateTreatsNoOpAsSuccessWhenCurrentReadMatchesTheRequest() {
+        Departure unchanged = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(unchanged);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(unchanged);
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
+    }
+
+    /** 金额只比数值：99.50 与 99.5 是同一个价格，不能因此判成"被改动过"。 */
+    @Test
+    @DisplayName("修改：金额小数位不同但数值相同时仍算目标状态已达成")
+    void updateTreatsTrailingZeroMoneyAsSameAmount() {
+        Departure unchanged = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        unchanged.adultPrice = new BigDecimal("2999.0");
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(unchanged);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(unchanged);
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
     }
 
     /** 影响行数为 0 且行已不存在时按 404 处理，不把并发删除当成成功。 */
@@ -483,7 +544,7 @@ class DepartureAdminServiceTest {
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         stubRoute(ROUTE_ID);
         stubGuide(GUIDE_ID);
-        when(departureMapper.selectCount(any())).thenReturn(1L);
+        stubGuideConflict();
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.update(DEPARTURE_ID, request(ROUTE_ID, GUIDE_ID, 30), ACTOR));
@@ -513,23 +574,20 @@ class DepartureAdminServiceTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("状态：取值不在契约枚举内返回 422，且不写库")
+    @DisplayName("状态：取值不在契约枚举内返回 422，且不访问数据库")
     void changeStatusRejectsValueOutsideContractEnum() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
-
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.changeStatus(DEPARTURE_ID, "NOT_A_STATUS", ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
-        verify(departureMapper, never()).update(any(), any());
+        verifyNoInteractions(departureMapper);
     }
 
     @Test
     @DisplayName("状态：团期不存在返回 404")
     void changeStatusRejectsUnknownDeparture() {
-        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(null);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(null);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR));
@@ -539,12 +597,15 @@ class DepartureAdminServiceTest {
     }
 
     @Test
-    @DisplayName("状态：返回更新后的团期视图（此前实现返回 data:null）")
+    @DisplayName("状态：在行锁内判定，返回更新后的团期视图（此前实现返回 data:null）")
     void changeStatusReturnsUpdatedView() {
-        // 第一次读用于定位与校验，第二次读是写入后的回查，两者返回不同状态才说明视图确实来自回查。
+        // 锁内当前读用于判定与写入，写入后的回查（detail）才是视图来源；两者返回不同状态才说明视图确实来自回查。
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        // 开放报名的守卫会与库内日期比较，这里把库内日期固定为今天，避免依赖运行时的真实日期。
+        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -552,6 +613,7 @@ class DepartureAdminServiceTest {
 
         assertNotNull(view, "契约要求返回更新后的团期，不能是 null");
         assertEquals("OPEN", view.status(), "视图必须来自写入后的回查结果");
+        verify(departureMapper).selectByIdForUpdate(DEPARTURE_ID);
         verify(operationLog).record(eq(ACTOR), eq("团期"), eq("STATUS"), eq("DEPARTURE"),
                 any(), anyString());
     }
@@ -559,8 +621,10 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("状态：改为行程中时级联把已确认订单置为在途")
     void changeStatusToTravellingCascadesOrders() {
-        when(departureMapper.selectById(DEPARTURE_ID))
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "TRAVELLING", 30, 0, 0, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
         when(orderMapper.update(isNull(), any())).thenReturn(2);
@@ -573,6 +637,8 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("状态：状态未变化时不重复记录操作日志")
     void changeStatusToSameValueSkipsLog() {
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         stubRoute(ROUTE_ID);
@@ -581,6 +647,81 @@ class DepartureAdminServiceTest {
         service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR);
 
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
+    }
+
+    /**
+     * 终态不可回退：已结束或已取消的团期不能再改成其它状态。
+     *
+     * <p>否则一条已完成的团期可以重新变成 OPEN 继续售卖，而 {@code confirmedPeople}
+     * 还留着历史人数，剩余名额与对外展示都会失真。</p>
+     */
+    @Test
+    @DisplayName("状态：终态（已完成 / 已取消）不能改回其它状态（409）")
+    void changeStatusRejectsRevertingFromTerminalState() {
+        for (String terminal : List.of("FINISHED", "CANCELLED")) {
+            when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                    .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, terminal, 30, 8, 12, null));
+
+            BusinessException ex = assertThrows(BusinessException.class,
+                    () -> service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR),
+                    terminal + " 不应能改回 OPEN");
+
+            assertEquals(409, ex.getStatus());
+            assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+        }
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /** 重复提交同一终态是幂等的，不该报冲突。 */
+    @Test
+    @DisplayName("状态：重复提交同一终态是幂等的")
+    void changeStatusAllowsIdempotentSameTerminalState() {
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "FINISHED", 30, 0, 0, null));
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "FINISHED", 30, 0, 0, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        assertNotNull(service.changeStatus(DEPARTURE_ID, "FINISHED", ACTOR));
+    }
+
+    /**
+     * 已经出发的团期不能再开放报名。
+     *
+     * <p>{@code OrderService.create} 只校验状态是 OPEN，因此若允许把出发日期已过的团期打开报名，
+     * 就等于把一班已经出发的团重新挂出去卖。</p>
+     */
+    @Test
+    @DisplayName("状态：已过出发日期的团期不能设为 OPEN（409）")
+    void changeStatusRejectsOpeningAlreadyDepartedDeparture() {
+        Departure departed = departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null);
+        departed.startDate = LocalDate.now().minusDays(3);
+        departed.endDate = LocalDate.now().plusDays(2);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(departed);
+        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /** 尚未出发的团期正常开放报名，日期闸门不能误伤。 */
+    @Test
+    @DisplayName("状态：未出发的团期可以设为 OPEN")
+    void changeStatusAllowsOpeningUpcomingDeparture() {
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        assertNotNull(service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR));
     }
 
     // ------------------------------------------------------------------
@@ -680,7 +821,15 @@ class DepartureAdminServiceTest {
         Guide guide = new Guide();
         guide.id = guideId;
         guide.name = "李导";
+        // 校验存在性走加锁的当前读；视图组装里的 guideName 仍走普通读，两者都要桩。
+        when(guideMapper.selectByIdForUpdate(guideId)).thenReturn(guide);
         when(guideMapper.selectById(guideId)).thenReturn(guide);
+    }
+
+    /** 让导游时间重叠检查（当前读）报告"已有重叠团期"。 */
+    private void stubGuideConflict() {
+        when(departureMapper.lockOverlappingDepartureIds(any(), any(), any(), any()))
+                .thenReturn(new ArrayList<>(List.of(99L)));
     }
 
     private static DepartureUpsertRequest request(Long routeId, Long guideId, int maxPeople) {

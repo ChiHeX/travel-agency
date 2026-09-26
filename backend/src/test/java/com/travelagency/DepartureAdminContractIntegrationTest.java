@@ -457,9 +457,101 @@ class DepartureAdminContractIntegrationTest {
         }
     }
 
+    /**
+     * 评审指出的改挂竞态：改挂期间团期被「上架 → 下单 → 退回草稿」。
+     *
+     * <p>只给写入条件加 {@code status = DRAFT} 拦不住它 —— 三步提交之后状态确实又是 DRAFT。
+     * 而"先查有没有订单"如果用的是普通查询，读的是本事务的一致性快照，同样看不到这三步：
+     * 快照里既没有订单、状态也仍是 DRAFT，于是改挂照样成功，
+     * 订单记录的线路与团期当前线路从此不一致。</p>
+     *
+     * <p>本用例按真实交错顺序构造：事务内先读一次建立快照 → 另一个连接完整走完
+     * 上架 / 下单 / 退回草稿并提交 → 再在同一个事务里改挂。
+     * 修复后 {@code update} 会先锁团期行、再用 {@code FOR UPDATE} 当前读订单，
+     * 因此必须返回 409，且线路保持不变。</p>
+     */
+    @Test
+    @DisplayName("并发：改挂期间「上架 → 下单 → 退回草稿」的团期必须拒绝改挂")
+    void rebindFailsWhenOrderLandsBetweenReadAndWrite() throws Exception {
+        Long id = createDeparture(routeId, 30, "DRAFT");
+
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        BusinessException[] captured = new BusinessException[1];
+
+        try {
+            tx.execute(status -> {
+                // ① 事务内先读一次，建立一致性读快照（service.update 内部的第一步同理）。
+                assertEquals("DRAFT", departures.selectById(id).status);
+
+                // ② 另一个连接走完「上架 → 下单（并占名额）→ 退回草稿」，三步全部提交。
+                runOnSeparateConnection(
+                        "UPDATE departure SET status = 'OPEN', reserved_people = 1 WHERE id = " + id,
+                        "INSERT INTO travel_order (order_no, user_id, route_id, departure_id, contact_name,"
+                                + " contact_phone, adult_count, child_count, adult_unit_price,"
+                                + " child_unit_price, total_amount, status)"
+                                + " VALUES ('RACE-" + suffix() + "', " + staffUserId + ", " + routeId + ", "
+                                + id + ", '并发回归', '13800000000', 1, 0, 2999.00, 1999.00, 2999.00,"
+                                + " 'PAID_WAIT_CONFIRM')",
+                        "UPDATE departure SET status = 'DRAFT' WHERE id = " + id);
+
+                // ③ 同一事务内改挂线路：此刻状态看起来仍是 DRAFT，但团期已经产生过订单。
+                try {
+                    departureService.update(id, upsertRequest(otherRouteId, 30), staffUserId);
+                } catch (BusinessException expected) {
+                    captured[0] = expected;
+                }
+                return null;
+            });
+        } catch (UnexpectedRollbackException expected) {
+            // 内层失败把共享事务标记为 rollback-only，属于预期。
+        }
+
+        assertNotNull(captured[0], "团期在改挂期间产生过订单，必须拒绝改挂");
+        assertEquals(409, captured[0].getStatus());
+        assertEquals("DEPARTURE_STATE_CONFLICT", captured[0].getCode());
+
+        // 核心不变量：订单记录的线路必须与团期当前线路一致。
+        assertOrderRouteMatchesDepartureRoute(id, routeId);
+    }
+
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
+
+    /** 在独立连接上顺序执行若干条写入并提交。 */
+    private void runOnSeparateConnection(String... statements) {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            for (String sql : statements) {
+                statement.executeUpdate(sql);
+            }
+        } catch (Exception cause) {
+            throw new IllegalStateException("并发写入失败", cause);
+        }
+    }
+
+    /**
+     * 用独立连接读已提交状态，断言订单记录的线路与团期当前线路一致。
+     *
+     * <p>这正是改挂竞态会破坏的不变量：{@code travel_order} 同时保存 {@code route_id}
+     * 与 {@code departure_id}，改挂后两者会指向不同线路。</p>
+     */
+    private void assertOrderRouteMatchesDepartureRoute(Long departureId, Long expectedRouteId) {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement();
+             var result = statement.executeQuery(
+                     "SELECT d.route_id AS departure_route, o.route_id AS order_route "
+                             + "FROM departure d JOIN travel_order o ON o.departure_id = d.id "
+                             + "WHERE d.id = " + departureId)) {
+            assertTrue(result.next(), "该团期应当存在订单");
+            assertEquals(expectedRouteId.longValue(), result.getLong("departure_route"),
+                    "团期应当仍在原线路");
+            assertEquals(result.getLong("departure_route"), result.getLong("order_route"),
+                    "订单记录的线路必须与团期当前线路一致");
+        } catch (Exception cause) {
+            throw new IllegalStateException("读取线路一致性失败", cause);
+        }
+    }
 
     /**
      * 在<b>独立连接</b>上占位并提交，模拟并发下单。

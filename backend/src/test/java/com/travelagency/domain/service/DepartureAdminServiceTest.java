@@ -311,7 +311,10 @@ class DepartureAdminServiceTest {
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
-        when(orderMapper.selectCount(any())).thenReturn(3L);
+        // 改挂走"先锁团期行、再当前读订单"：订单存在时判定必须看当前读的结果。
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        stubExistingOrders();
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR));
@@ -326,9 +329,10 @@ class DepartureAdminServiceTest {
     void updateAllowsRouteRebindWithoutOrders() {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
-        when(orderMapper.selectCount(any())).thenReturn(0L);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
         assertNotNull(service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR));
@@ -347,9 +351,10 @@ class DepartureAdminServiceTest {
     void updateRejectsRouteRebindWhenNotDraft() {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
-        when(orderMapper.selectCount(any())).thenReturn(0L);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR));
@@ -381,15 +386,16 @@ class DepartureAdminServiceTest {
                 "名额闸门必须在同一条 UPDATE 的 WHERE 中，实际为：" + where);
     }
 
-    /** 改挂时 WHERE 还要带 status = DRAFT，并发上架才能让这条 UPDATE 匹配 0 行。 */
+    /** 改挂时 WHERE 还要带 status = DRAFT，作为行锁之外的额外写入条件。 */
     @Test
     @DisplayName("修改：改挂线路时 UPDATE 追加 status = DRAFT 条件")
     void updatePutsDraftGuardIntoTheStatementWhenRebinding() {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
-        when(orderMapper.selectCount(any())).thenReturn(0L);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
         service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR);
@@ -398,6 +404,32 @@ class DepartureAdminServiceTest {
         verify(departureMapper).update(isNull(), captor.capture());
         String where = ((UpdateWrapper<Departure>) captor.getValue()).getSqlSegment();
         assertTrue(where.contains("status"), "改挂时的 WHERE 必须包含 status 闸门，实际为：" + where);
+    }
+
+    /**
+     * 改挂必须先锁团期行，再用<b>当前读</b>查订单 —— 顺序和读法都不能换。
+     *
+     * <p>只加 {@code status = DRAFT} 的写入条件拦不住「上架 → 下单 → 退回草稿」：
+     * 三步之后状态确实又是 DRAFT。用普通查询查订单同样拦不住，因为普通查询读的是
+     * 本事务的旧快照，看不到这三步提交的结果。</p>
+     */
+    @Test
+    @DisplayName("修改：改挂前先锁团期行，再用当前读查订单")
+    void updateLocksDepartureRowBeforeCurrentReadOfOrders() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR);
+
+        InOrder order = inOrder(departureMapper);
+        order.verify(departureMapper).selectByIdForUpdate(DEPARTURE_ID);
+        order.verify(departureMapper).lockOrderIdsByDeparture(DEPARTURE_ID);
+        order.verify(departureMapper).update(isNull(), any());
     }
 
     /**
@@ -830,6 +862,12 @@ class DepartureAdminServiceTest {
     private void stubGuideConflict() {
         when(departureMapper.lockOverlappingDepartureIds(any(), any(), any(), any()))
                 .thenReturn(new ArrayList<>(List.of(99L)));
+    }
+
+    /** 让改挂前的订单当前读报告"该团期已有订单"。 */
+    private void stubExistingOrders() {
+        when(departureMapper.lockOrderIdsByDeparture(DEPARTURE_ID))
+                .thenReturn(new ArrayList<>(List.of(1L)));
     }
 
     private static DepartureUpsertRequest request(Long routeId, Long guideId, int maxPeople) {

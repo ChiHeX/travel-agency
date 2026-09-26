@@ -210,15 +210,14 @@ public class DepartureService {
      *       只做应用层比较会写出「已占人数 &gt; 最大人数」的团期，
      *       而 {@code availableSeats} 会把负数钳成 0，把超卖藏在接口背后。
      *       WHERE 条件与 UPDATE 同一条语句，行锁保证判定与写入原子生效；</li>
-     *   <li><b>改挂闸门</b> {@code status = DRAFT}（仅在 {@code routeId} 变化时加）。
-     *       {@code travel_order} 同时保存 {@code route_id} 与 {@code departure_id}，
-     *       订单创建时从团期读出线路；"先查有没有订单、再改线路"无法与并发下单串行化 ——
-     *       检查通过后、写入前新插入的订单仍会留下旧线路 id。下单只接受 {@code OPEN} 团期，
-     *       因此把可改挂范围限定在尚未开放报名的草稿团期，窗口就不存在了。</li>
+     *   <li><b>改挂闸门</b>（仅在 {@code routeId} 变化时）：先锁团期行，再在锁内用当前读确认"没有订单"，
+     *       并持锁完成更新。{@code travel_order} 同时保存 {@code route_id} 与 {@code departure_id}，
+     *       订单创建时从团期读出线路；"先查有没有订单、再改线路"无法与并发下单串行化。
+     *       只加 {@code status = DRAFT} 的写入条件也不够：状态可以从 DRAFT 变成 OPEN、产生订单、
+     *       再改回 DRAFT，而写入那一刻它确实又是 DRAFT。见 {@link #requireRebindable}。</li>
      * </ol>
      *
-     * <p>影响行数为 0 一律按失败处理（{@link #writeConflict}）：原因用
-     * {@code SELECT ... FOR UPDATE} 当前读核实后再给出 409 / 404。
+     * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #writeConflict}）。
      * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
      * 会把"条件更新其实没生效"误判成成功。</p>
      */
@@ -230,6 +229,9 @@ public class DepartureService {
         requireGuide(request.guideId());
         boolean rebinding = !Objects.equals(existing.routeId, request.routeId());
         if (rebinding) {
+            // 锁顺序固定为「导游 → 团期」：requireGuide 已先取到导游行锁，这里再锁团期行，
+            // 与 create 的加锁顺序一致，不会交叉死锁。
+            existing = requireDepartureForUpdate(departureId);
             requireRebindable(departureId, existing);
         }
         // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由上面的 WHERE 闸门兜住。
@@ -269,15 +271,24 @@ public class DepartureService {
     }
 
     /**
-     * 改挂线路的前置校验。
+     * 改挂线路的前置校验，必须在**已持有该团期行排他锁**的前提下调用。
      *
-     * <p>两道条件：团期没有订单，且仍是 {@link DepartureStatus#DRAFT}。
-     * 前者覆盖"曾经上架、产生订单后又退回草稿"的情形，后者让并发下单不可能与本操作交错 ——
-     * 下单只接受 OPEN 团期。真正的一致性由 UPDATE 里的 {@code status = DRAFT} 条件保证，
-     * 这里只是为了在正常情况下给出可定位的错误码与文案。</p>
+     * <p>两道条件：团期没有订单，且仍是 {@link DepartureStatus#DRAFT}。两者都必须用当前读，
+     * 顺序也必须是"先锁行、再检查"：</p>
+     *
+     * <ul>
+     *   <li><b>先锁行</b>：状态变更（{@link #changeStatus}）与下单（{@code OrderService#create}
+     *       的名额条件更新）都必须先拿到同一把团期行锁，因此锁住之后不可能再有新订单落库，
+     *       这里读到的"没有订单"在整个改挂事务期间都成立；</li>
+     *   <li><b>当前读</b>：普通查询读的是本事务的一致性快照，看不到"快照建立之后才提交"的订单。
+     *       把订单检查换成普通 {@code selectCount}，下面的攻击路径就能绕过去 ——
+     *       另一个事务把团期改成 OPEN、创建订单、再改回 DRAFT，三步提交之后
+     *       快照里既没有订单、状态也仍是 DRAFT，于是仅靠 {@code status = DRAFT} 的写入条件
+     *       拦不住改挂，订单记录的线路与团期当前线路从此不一致。</li>
+     * </ul>
      */
     private void requireRebindable(Long departureId, Departure existing) {
-        if (orderCount(departureId) > 0) {
+        if (!departureMapper.lockOrderIdsByDeparture(departureId).isEmpty()) {
             throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
                     "该团期已产生订单，不能改挂到其它线路");
         }
@@ -463,8 +474,18 @@ public class DepartureService {
         }
     }
 
-    private long orderCount(Long departureId) {
-        return orderMapper.selectCount(new QueryWrapper<TravelOrder>().eq("departure_id", departureId));
+    /**
+     * 加锁并回读该团期（当前读）。返回 {@code null} 表示行已不存在。
+     *
+     * <p>用于改挂线路：先拿到行锁，再在锁内做"没有订单"的当前读判定，
+     * 保证判定成立的条件不会在判定与写入之间失效。</p>
+     */
+    private Departure requireDepartureForUpdate(Long departureId) {
+        Departure departure = departureMapper.selectByIdForUpdate(departureId);
+        if (departure == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        return departure;
     }
 
     /**

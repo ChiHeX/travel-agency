@@ -1,9 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { orderApi } from '@/api/modules'
-import PanelIconButton from '@/components/PanelIconButton.vue'
+import CancelOrderButton from '@/components/CancelOrderButton.vue'
 import {
   createIdempotencyKey,
   genderLabels,
@@ -98,17 +98,12 @@ async function submitReview() {
 
 async function cancelOrder() {
   try {
-    await ElMessageBox.confirm('取消后将释放本次占用的团期名额，是否继续？', '取消待支付订单', {
-      type: 'warning',
-      confirmButtonText: '确认取消',
-      cancelButtonText: '保留订单'
-    })
     cancelling.value = true
     await orderApi.cancel(currentRoute.params.orderNo)
     ElMessage.success('订单已取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') actionError.value = error.message || '取消失败，请重试'
+    actionError.value = error.message || '取消失败，请重试'
   } finally {
     cancelling.value = false
   }
@@ -126,20 +121,19 @@ onMounted(load)
 
 <template>
   <div class="order-detail-page">
-    <div class="container narrow-container page-section">
+    <div class="order-content">
       <div v-if="loading" class="admin-panel">
         <el-skeleton :rows="9" animated />
       </div>
 
       <template v-else-if="detail">
-        <PanelIconButton class="back-orders-btn" action="back" label="返回上一页" :fallback-to="{ name: 'account-orders' }" />
 
         <!-- Order Hero Card -->
         <div class="order-hero-card">
           <div class="order-hero-top">
             <div>
-              <span class="eyebrow">ORDER DETAILS</span>
-              <h1>{{ detail.route?.name || `跟团线路 #${detail.order.routeId}` }}</h1>
+              <p class="order-caption">订单详情</p>
+              <h1>{{ detail.order.routeName || detail.route?.name || `跟团线路 #${detail.order.routeId}` }}</h1>
               <div class="order-id-meta">
                 <span>订单号：{{ detail.order.orderNo }}</span>
                 <span>·</span>
@@ -175,9 +169,9 @@ onMounted(load)
         </div>
 
         <!-- Progress Timeline Card -->
-        <div class="detail-card">
+        <div class="detail-card progress-card">
           <div class="card-head">
-            <h3>履约时间线</h3>
+            <h3>行程进度</h3>
             <span class="sub-label">支付状态：{{ paymentStatusLabels[detail.order.paymentStatus] || detail.order.paymentStatus }}</span>
           </div>
 
@@ -213,10 +207,10 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="detail-card">
+        <div class="detail-card payment-card">
           <div class="card-head">
             <h3>价格与支付记录</h3>
-            <span class="sub-label">下单价格快照</span>
+            <span class="sub-label">下单时价格</span>
           </div>
           <div class="payment-grid">
             <div><span>成人单价</span><strong>¥{{ detail.order.adultUnitPrice }}</strong></div>
@@ -234,10 +228,10 @@ onMounted(load)
         </div>
 
         <!-- Traveler Snapshot Card -->
-        <div class="detail-card">
+        <div class="detail-card travelers-card">
           <div class="card-head">
-            <h3>出行人实名资料（快照保存）</h3>
-            <span class="sub-label">历史订单不受后续修改影响 · 证件号已脱敏保护</span>
+            <h3>出行人信息</h3>
+            <span class="sub-label">证件号码已隐藏部分内容</span>
           </div>
 
           <table class="data-table responsive-cards">
@@ -295,15 +289,12 @@ onMounted(load)
         </div>
         <div class="bottom-actions-row">
           <p v-if="actionError && !reviewOpen && !refundOpen" class="form-error" role="alert">{{ actionError }}</p>
-          <button
+          <CancelOrderButton
             v-if="detail.order.status === 'WAIT_PAY'"
-            type="button"
-            class="secondary-button danger-button"
-            :disabled="cancelling"
-            @click="cancelOrder"
-          >
-            {{ cancelling ? '取消中...' : '取消订单' }}
-          </button>
+            size="large"
+            :pending="cancelling"
+            @confirm="cancelOrder"
+          />
           <button
             v-if="canRefund"
             type="button"
@@ -373,252 +364,44 @@ onMounted(load)
 </template>
 
 <style scoped>
-.order-detail-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
-.back-orders-btn {
-  margin-bottom: 16px;
-}
-
-.order-hero-card {
-  background: white;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-xl);
-  padding: 28px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 24px;
-}
-
-.order-hero-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.order-hero-top h1 {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--text-primary);
-  margin: 4px 0 6px;
-}
-
-.order-id-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-tertiary);
-}
-
-.status-pill-lg {
-  padding: 6px 14px;
-  font-size: 13px;
-}
-
-.summary-tiles-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
-
-.tile {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-md);
-  padding: 14px;
-}
-
-.tile-label {
-  display: block;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-}
-
-.tile strong {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.tile small {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.tile.highlight .price-val {
-  color: var(--price-orange);
-  font-size: 18px;
-  font-weight: 800;
-}
-
-.detail-card {
-  background: white;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 24px;
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.card-head h3 {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.sub-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.payment-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.payment-grid > div {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-}
-
-.payment-grid span,
-.order-remark span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.payment-grid strong {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-}
-
-.order-remark {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0 0;
-  padding: 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.refund-list { display: grid; gap: 10px; }
-.refund-item { padding: 14px; border: 1px solid var(--border-line); border-radius: var(--radius-md); background: var(--bg-subtle); }
-.refund-head { display: flex; align-items: center; justify-content: space-between; }
-.refund-head > strong { color: var(--price-orange); font-size: 18px; }
-.refund-item dl { display: grid; gap: 7px; margin: 12px 0 0; }
-.refund-item dl div { display: grid; grid-template-columns: 80px 1fr; gap: 10px; }
-.refund-item dt { color: var(--text-tertiary); font-size: 11px; }
-.refund-item dd { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
-.detail-error { display: grid; justify-items: center; gap: 9px; }
-.detail-error span { color: var(--text-secondary); font-size: 12px; }
-
-/* Timeline Stepper */
-.timeline-stepper {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 10px;
-}
-
-.step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  z-index: 2;
-}
-
-.step-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--bg-subtle);
-  border: 2px solid var(--border-line);
-  color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-}
-
-.step.completed .step-icon {
-  background: var(--brand-blue);
-  border-color: var(--brand-blue);
-  color: white;
-  box-shadow: 0 0 0 3px var(--brand-blue-tint);
-}
-
-.step-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-}
-
-.step.completed .step-text {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.step-line {
-  flex: 1;
-  height: 2px;
-  background: var(--border-line);
-  margin: 0 10px 24px;
-}
-
-.step-line.active {
-  background: var(--brand-blue);
-}
-
-.bottom-actions-row {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-@media (max-width: 768px) {
-  .summary-tiles-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .payment-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .timeline-stepper {
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-  .step-line {
-    display: none;
-  }
-}
-
-@media (max-width: 520px) {
-  .summary-tiles-grid,
-  .payment-grid { grid-template-columns: 1fr; }
-  .data-table { min-width: 0; }
+.order-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.order-hero-card, .progress-card, .payment-card, .travelers-card, .bottom-actions-row, .detail-error, .admin-panel { grid-column: 1 / -1; }
+.order-hero-card { padding: 0 0 12px; }
+.order-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
+.order-caption { margin-bottom: 12px; color: var(--text-secondary); font-size: 14px; }
+.order-hero-top h1 { font-size: 30px; font-weight: 650; line-height: 1.4; letter-spacing: -.03em; }
+.order-id-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.status-pill-lg { flex-shrink: 0; margin-top: 6px; padding: 8px 16px; font-size: 13px; }
+.summary-tiles-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; padding: 28px; background: var(--bg-secondary); border-radius: 20px; }
+.tile { min-width: 0; }.tile-label { display: block; margin-bottom: 10px; color: var(--text-secondary); font-size: 13px; }
+.tile strong { font-size: 15px; font-weight: 550; overflow-wrap: anywhere; }.tile small { display: block; margin-top: 6px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.tile.highlight .price-val { font-size: 24px; font-weight: 600; }
+.detail-card { min-width: 0; padding: 28px; border: 1px solid var(--border-divider); border-radius: 20px; background: var(--app-bg); }
+.card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 24px; }
+.detail-card h3 { font-size: 18px; font-weight: 600; }.sub-label { color: var(--text-secondary); font-size: 12px; }
+.payment-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+.payment-grid > div { display: grid; align-content: start; gap: 8px; }.payment-grid span, .order-remark span { color: var(--text-secondary); font-size: 13px; }
+.payment-grid strong { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.order-remark { display: grid; gap: 8px; margin-top: 24px; padding: 16px; border-radius: 12px; background: var(--bg-secondary); line-height: 1.6; overflow-wrap: anywhere; }
+.timeline-stepper { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
+.step { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.step-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--bg-secondary); color: var(--text-secondary); font-size: 13px; }
+.step.completed .step-icon { background: var(--theme-blue); color: white; }.step-text { color: var(--text-secondary); font-size: 13px; }.step.completed .step-text { color: var(--text-primary); }
+.step-line { flex: 1; height: 2px; background: var(--border-divider); margin: 0 12px 28px; }.step-line.active { background: var(--theme-blue); }
+.data-table { width: 100%; }.data-table th { background: var(--bg-secondary); font-weight: 500; }.data-table td { overflow-wrap: anywhere; }
+.refund-list { display: grid; gap: 20px; }.refund-item + .refund-item { padding-top: 20px; border-top: 1px solid var(--border-divider); }
+.refund-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.refund-head > strong { font-size: 20px; font-weight: 550; }
+.refund-item dl { display: grid; gap: 12px; margin-top: 18px; }.refund-item dl div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 16px; font-size: 13px; }.refund-item dt { color: var(--text-secondary); }.refund-item dd { margin: 0; overflow-wrap: anywhere; line-height: 1.6; }
+.review-copy { margin: 16px 0; line-height: 1.7; overflow-wrap: anywhere; }.text-button { display: block; margin-top: 18px; color: var(--text-link); }
+.bottom-actions-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px 0; }.bottom-actions-row .form-error { flex-basis: 100%; }
+.bottom-actions-row button { min-height: 44px; padding: 0 24px; }.danger-button { color: var(--status-red); }
+.detail-error { display: grid; justify-items: center; gap: 16px; padding: 48px 20px; }.detail-error span { color: var(--text-secondary); }
+@media (max-width: 900px) { .payment-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .order-content { grid-template-columns: 1fr; }.summary-tiles-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.order-hero-top h1 { font-size: 26px; } }
+@media (max-width: 600px) {
+  .order-hero-top { flex-direction: column; gap: 16px; }.summary-tiles-grid { padding: 20px; gap: 24px 16px; }.detail-card { padding: 20px; }.order-hero-top h1 { font-size: 24px; }
+  .timeline-stepper { gap: 12px; flex-wrap: wrap; justify-content: flex-start; }.step { min-width: 76px; }.step-line { display: none; }
+  .responsive-cards, .responsive-cards tbody { display: block; width: 100%; }.responsive-cards thead { display: none; }.responsive-cards tr { display: block; padding: 12px 0; }.responsive-cards tr + tr { border-top: 1px solid var(--border-divider); }
+  .responsive-cards td { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border: 0; text-align: right; }.responsive-cards td::before { content: attr(data-label); flex: 0 0 76px; text-align: left; color: var(--text-secondary); }
+  .bottom-actions-row button { flex: 1; }
 }
 </style>

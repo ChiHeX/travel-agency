@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, orderApi, routeApi } from '@/api/modules'
 import { createIdempotencyKey, idTypeLabels } from '@/utils/order'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import { returnToPrevious } from '@/utils/navigation'
+import { useBookingStore } from '@/stores/booking'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -15,9 +16,8 @@ const loading = ref(true)
 const submitting = ref(false)
 const loadError = ref('')
 const submitError = ref('')
-let createOrderKey = createIdempotencyKey()
-
-const form = reactive({
+const booking = useBookingStore()
+const draft = booking.open(String(currentRoute.query.draft || ''), String(currentRoute.query.routeId || ''), {
   departureId: String(currentRoute.query.departureId || ''),
   adultCount: 1,
   childCount: 0,
@@ -27,6 +27,8 @@ const form = reactive({
   remark: '',
   travelers: []
 })
+const form = draft.form
+const unchangedOrder = computed(() => draft.order && draft.submittedForm === JSON.stringify(form))
 
 const participantCount = computed(() => Number(form.adultCount || 0) + Number(form.childCount || 0))
 const departure = computed(() =>
@@ -34,10 +36,10 @@ const departure = computed(() =>
 )
 const availableSeats = computed(() => Number(departure.value?.availableSeats ?? 0))
 const canSubmit = computed(() =>
-  departure.value?.status === 'OPEN' &&
+  Boolean(unchangedOrder.value) || (departure.value?.status === 'OPEN' &&
   participantCount.value > 0 &&
   participantCount.value <= 100 &&
-  availableSeats.value >= participantCount.value
+  availableSeats.value + (draft.order ? draft.order.adultCount + draft.order.childCount : 0) >= participantCount.value)
 )
 const totalAmount = computed(() => {
   const total =
@@ -120,9 +122,13 @@ function returnToRoute() {
 async function submit() {
   if (submitting.value) return
   submitError.value = ''
+  if (unchangedOrder.value) {
+    await goToPayment()
+    return
+  }
   if (![form.adultCount, form.childCount].every((value) => Number.isInteger(value) && value >= 0) || participantCount.value > 100) return ElMessage.warning('出行人数须为非负整数，总人数不超过 100 人')
   if (!departure.value) return ElMessage.warning('团期信息加载失败，请返回线路详情重新选择')
-  if (departure.value.status !== 'OPEN' || availableSeats.value < participantCount.value) {
+  if (!canSubmit.value) {
     return ElMessage.warning('当前团期状态或剩余名额已不满足报名人数，请返回重新选择')
   }
   if (!form.contactName.trim() || !/^1[3-9]\d{9}$/.test(form.contactPhone)) {
@@ -147,6 +153,15 @@ async function submit() {
   }
   submitting.value = true
   try {
+    if (draft.order) {
+      await ElMessageBox.confirm('报名信息已修改，需要取消原待支付订单并重新下单。重新下单时将再次核验价格和名额。', '确认修改报名信息', {
+        confirmButtonText: '取消原订单并重新下单', cancelButtonText: '保留原订单', type: 'warning'
+      })
+      await orderApi.cancel(draft.order.orderNo)
+      draft.order = null
+      draft.submittedForm = ''
+      draft.createOrderKey = createIdempotencyKey()
+    }
     const order = await orderApi.create({
       departureId: String(form.departureId),
       contactName: form.contactName.trim(),
@@ -167,14 +182,22 @@ async function submit() {
         emergencyName: traveler.emergencyName.trim(),
         emergencyPhone: traveler.emergencyPhone.trim()
       }))
-    }, createOrderKey)
-    createOrderKey = createIdempotencyKey()
+    }, draft.createOrderKey)
+    draft.order = order
+    draft.submittedForm = JSON.stringify(form)
     ElMessage.success('订单已创建，请尽快完成支付')
-    router.replace({ name: 'order-payment', params: { orderNo: order.orderNo } })
-  } catch (cause) { submitError.value = cause.message || '订单提交失败，请重试'
+    await goToPayment()
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') submitError.value = cause.message || '订单提交失败，请重试'
   } finally {
     submitting.value = false
   }
+}
+
+async function goToPayment() {
+  // Keep the filled booking entry in history so Back restores this exact draft.
+  await router.replace({ name: 'order-create', query: { ...currentRoute.query, draft: draft.id } })
+  await router.push({ name: 'order-payment', params: { orderNo: draft.order.orderNo } })
 }
 </script>
 
@@ -377,7 +400,7 @@ async function submit() {
                 :disabled="submitting || !canSubmit"
                 @click="submit"
               >
-                {{ submitting ? '正在创建订单...' : canSubmit ? '提交订单' : '当前团期不可报名' }}
+                {{ submitting ? '正在提交...' : unchangedOrder ? '继续付款' : canSubmit ? '提交订单' : '当前团期不可报名' }}
               </button>
             </div>
           </aside>

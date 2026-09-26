@@ -1,8 +1,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { orderApi } from '@/api/modules'
+import CancelOrderButton from '@/components/CancelOrderButton.vue'
 import { orderStatusLabels, paymentStatusLabels } from '@/utils/order'
 
 const router = useRouter()
@@ -52,17 +53,12 @@ async function load() {
 
 async function cancel(order) {
   try {
-    await ElMessageBox.confirm('确认取消这个待支付订单吗？已支付订单需要申请退款。', '取消订单', {
-      type: 'warning',
-      confirmButtonText: '确认取消',
-      cancelButtonText: '再想想'
-    })
     cancellingOrderNo.value = order.orderNo
     await orderApi.cancel(order.orderNo)
     ElMessage.success('订单已成功取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') errorMessage.value = error.message || '取消失败，请重试'
+    errorMessage.value = error.message || '取消失败，请重试'
   } finally {
     cancellingOrderNo.value = ''
   }
@@ -182,15 +178,12 @@ onMounted(load)
                 >
                   去支付
                 </button>
-                <button
+                <CancelOrderButton
                   v-if="order.status === 'WAIT_PAY'"
-                  type="button"
-                  class="danger-button action-btn"
-                  :disabled="cancellingOrderNo === order.orderNo"
-                  @click="cancel(order)"
-                >
-                  {{ cancellingOrderNo === order.orderNo ? '取消中...' : '取消订单' }}
-                </button>
+                  size="small"
+                  :pending="cancellingOrderNo === order.orderNo"
+                  @confirm="cancel(order)"
+                />
               </div>
             </div>
           </article>

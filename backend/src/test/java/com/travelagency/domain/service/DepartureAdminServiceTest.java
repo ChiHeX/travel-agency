@@ -374,15 +374,19 @@ class DepartureAdminServiceTest {
 
     /**
      * 读取时显示名额充足、写入时已被并发下单占满：UPDATE 匹配 0 行，
-     * 必须回读并判定为 409，而不是当成成功更新（否则会写出已占人数 &gt; 最大人数的团期）。
+     * 必须判定为 409，而不是当成成功更新（否则会写出已占人数 &gt; 最大人数的团期）。
+     *
+     * <p>原因必须用当前读 {@code selectByIdForUpdate} 核实 —— REPEATABLE READ 下
+     * 普通 {@code selectById} 会读回本事务的旧快照，把并发变化看成"没变化"。</p>
      */
     @Test
     @DisplayName("修改：并发下单占位导致名额闸门失效时返回 409，而不是默默写入")
     void updateReportsCapacityConflictWhenGateFailsInsideTheUpdate() {
+        // 第一次读：30 人上限、0 人占用，前置校验通过。
         when(departureMapper.selectById(DEPARTURE_ID))
-                // 第一次读：30 人上限、0 人占用，前置校验通过。
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null))
-                // 回读：并发下单后已占 20 人，而本次要把上限改成 10。
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        // 当前读：并发下单后已占 20 人，而本次要把上限改成 10。
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
@@ -392,6 +396,7 @@ class DepartureAdminServiceTest {
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_CAPACITY_CONFLICT", ex.getCode());
+        verify(departureMapper).selectByIdForUpdate(DEPARTURE_ID);
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
@@ -400,7 +405,8 @@ class DepartureAdminServiceTest {
     @DisplayName("修改：改挂期间团期被并发上架时返回 409")
     void updateReportsConflictWhenConcurrentPublishBlocksRebind() {
         when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
@@ -415,18 +421,29 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 影响行数为 0 也可能只是"字段本来就没有变化"（驱动 useAffectedRows=true 时的语义）。
-     * 回读确认目标状态已达成时不应报错，否则重复保存同一份表单会莫名失败。
+     * 影响行数为 0 一律失败，**没有"其实是成功"的分支**。
+     *
+     * <p>这里刻意让当前读返回一行"看起来完全满足条件"的数据：这正是 REPEATABLE READ 下
+     * 用普通 {@code selectById} 回读时会出现的假象（旧快照里名额没被占）。
+     * 条件更新已经确认没生效，就不能凭这次读取放行 —— 否则方法会继续写操作日志并返回成功，
+     * 而库里的团期根本没被修改。fail-closed 才是正确方向。</p>
      */
     @Test
-    @DisplayName("修改：影响行数为 0 但目标状态已达成时按成功处理")
-    void updateTreatsZeroRowsAsSuccessWhenGoalStateReached() {
+    @DisplayName("修改：影响行数为 0 时一律失败，即使当前读看起来满足条件")
+    void updateFailsClosedWhenZeroRowsCannotBeExplained() {
         when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
 
-        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 12), ACTOR));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+        verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
     /** 影响行数为 0 且行已不存在时按 404 处理，不把并发删除当成成功。 */
@@ -434,8 +451,8 @@ class DepartureAdminServiceTest {
     @DisplayName("修改：影响行数为 0 且团期已被删除时返回 404")
     void updateReportsNotFoundWhenRowDisappeared() {
         when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null))
-                .thenReturn(null);
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(null);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
 

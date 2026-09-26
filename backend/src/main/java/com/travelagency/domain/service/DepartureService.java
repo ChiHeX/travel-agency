@@ -207,9 +207,10 @@ public class DepartureService {
      *       因此把可改挂范围限定在尚未开放报名的草稿团期，窗口就不存在了。</li>
      * </ol>
      *
-     * <p>影响行数为 0 时回读最新行给出可定位的 409（见 {@link #resolveWriteConflict}）；
-     * 若回读确认目标状态已达成，则按成功处理，避免驱动在
-     * {@code useAffectedRows=true} 下把"字段无变化"报成 0 行时被误判为冲突。</p>
+     * <p>影响行数为 0 一律按失败处理（{@link #writeConflict}）：原因用
+     * {@code SELECT ... FOR UPDATE} 当前读核实后再给出 409 / 404。
+     * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
+     * 会把"条件更新其实没生效"误判成成功。</p>
      */
     @Transactional
     public DepartureView update(Long departureId, DepartureUpsertRequest request, Long operatorId) {
@@ -246,7 +247,7 @@ public class DepartureService {
             update.eq("status", DepartureStatus.DRAFT);
         }
         if (departureMapper.update(null, update) == 0) {
-            resolveWriteConflict(departureId, request, rebinding);
+            throw writeConflict(departureId, request, rebinding);
         }
         operationLog.record(operatorId, "团期", "UPDATE", "DEPARTURE", departureId,
                 "修改团期：" + request.startDate() + " 至 " + request.endDate());
@@ -273,28 +274,34 @@ public class DepartureService {
     }
 
     /**
-     * UPDATE 匹配 0 行时的原因判定。
+     * 条件 UPDATE 影响 0 行时的失败判定。
      *
-     * <p>WHERE 里只有主键与两个业务闸门，行还在却匹配不到，说明某个闸门在"读取—写入"之间失效了。
-     * 回读最新行给出具体原因；若回读发现目标状态其实已经达成，则不抛异常
-     * （驱动在 {@code useAffectedRows=true} 时会把"所有字段都没变化"报成 0 行）。</p>
+     * <p><b>0 行一律按失败处理，不存在"其实是成功"的分支。</b>
+     * WHERE 里只有主键与两个业务闸门；本项目的 JDBC 连接没有设置 {@code useAffectedRows}，
+     * Connector/J 默认返回的是 <i>matched</i> 行数，因此只要行还在、闸门都满足，
+     * 即使所有字段值都没变化也会返回 1 —— 影响 0 行只可能是某个闸门失效了。
+     * （即便将来有人打开 {@code useAffectedRows=true}，"字段无变化"会表现为 409，
+     * 属于 fail-closed：宁可让调用方重试，也不能把没写进去的修改报成成功。）</p>
+     *
+     * <p>原因判定必须用 {@link DepartureMapper#selectByIdForUpdate} 这个<b>当前读</b>：
+     * REPEATABLE READ 下普通 {@code SELECT} 走一致性快照，本事务前面已经读过该行，
+     * 这里会读回旧数据，把并发的名额变化看成"没有变化"，从而给出错误的原因甚至误判成功。</p>
      */
-    private void resolveWriteConflict(Long departureId, DepartureUpsertRequest request, boolean rebinding) {
-        Departure latest = departureMapper.selectById(departureId);
+    private BusinessException writeConflict(Long departureId, DepartureUpsertRequest request, boolean rebinding) {
+        Departure latest = departureMapper.selectByIdForUpdate(departureId);
         if (latest == null) {
-            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+            return new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
         }
         int occupied = DepartureView.occupiedSeats(latest);
         if (request.maxPeople() < occupied) {
-            throw new BusinessException(409, "DEPARTURE_CAPACITY_CONFLICT", capacityMessage(occupied));
+            return new BusinessException(409, "DEPARTURE_CAPACITY_CONFLICT", capacityMessage(occupied));
         }
         if (rebinding && !DepartureStatus.DRAFT.equals(latest.status)) {
-            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
-                    "团期已被并发上架，不能改挂线路；请先下架为草稿后重试");
+            return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "团期已开放报名，不能改挂到其它线路；请先下架为草稿后重试");
         }
-        if (rebinding && !Objects.equals(latest.routeId, request.routeId())) {
-            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT", "团期在本次修改期间被并发改动，请重试");
-        }
+        return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                "团期在本次修改期间被并发改动，请重试");
     }
 
     private static String capacityMessage(int occupied) {

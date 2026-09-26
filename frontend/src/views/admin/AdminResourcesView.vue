@@ -46,6 +46,27 @@ const departureStatusClass = (status) =>
     : status === 'CANCELLED' || status === 'CLOSED' ? 'danger'
       : status === 'FINISHED' ? 'success' : 'warning'
 
+/** 终态：与后端一致，不能再改回其它状态。 */
+const TERMINAL_DEPARTURE_STATUSES = ['FINISHED', 'CANCELLED']
+
+function localToday() {
+  const now = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+/**
+ * 某个状态是否是这条团期当前可以切到的目标，与后端的服务端规则保持一致：
+ * 终态不可回退；已经出发的团期不能再开放报名（下单只校验状态是 OPEN）。
+ * 当前状态本身始终可选，否则下拉会显示成一个被禁用的项。
+ */
+function isDepartureStatusAllowed(row, status) {
+  if (status === row.status) return true
+  if (TERMINAL_DEPARTURE_STATUSES.includes(row.status)) return false
+  if (status === 'OPEN' && row.startDate && row.startDate < localToday()) return false
+  return true
+}
+
 /**
  * 退款状态文案。`PROCESSING` 特别重要：它不是「审核中」，而是**出款已发出、结果还没确认**
  * （钱可能已经退出去），后端会把它持久化，并且在确认之前禁止拒绝。
@@ -219,8 +240,13 @@ onMounted(load)
                   :value="row.status"
                   @change="changeDepartureStatus(row, $event.target.value)"
                 >
-                  <option v-for="status in DEPARTURE_STATUSES" :key="status" :value="status">
-                    {{ DEPARTURE_STATUS_LABEL[status] }}
+                  <option
+                    v-for="status in DEPARTURE_STATUSES"
+                    :key="status"
+                    :value="status"
+                    :disabled="!isDepartureStatusAllowed(row, status)"
+                  >
+                    {{ DEPARTURE_STATUS_LABEL[status] }}{{ isDepartureStatusAllowed(row, status) ? '' : '（不可选）' }}
                   </option>
                 </select>
                 <span class="divider">|</span>

@@ -25,6 +25,13 @@ const emit = defineEmits(['update:modelValue', 'saved'])
 /** 契约 Size 的取值上限（后端同样按 100 截断）。 */
 const OPTION_PAGE_SIZE = 100
 
+/** 已占用名额 = 已预留（待支付 / 待确认）+ 已确认，与后端 DepartureView.occupiedSeats 同口径。 */
+const occupiedSeats = computed(() => {
+  const source = props.departure
+  if (!source) return 0
+  return (Number(source.reservedPeople) || 0) + (Number(source.confirmedPeople) || 0)
+})
+
 const submitting = ref(false)
 const submitError = ref('')
 
@@ -193,6 +200,10 @@ function validate() {
 
   const maxPeople = Number(form.maxPeople)
   if (!Number.isInteger(maxPeople) || maxPeople < 1) return '最大人数应为大于 0 的整数'
+  // 与后端同一规则：上限不能小于已占用名额。后端也会拦（422），这里提前说明避免白跑一次请求。
+  if (maxPeople < occupiedSeats.value) {
+    return `最大人数不能小于已占用的 ${occupiedSeats.value} 人（已预留 + 已确认），如需缩减请先处理相关订单`
+  }
   return ''
 }
 
@@ -291,6 +302,9 @@ async function save() {
       <div class="form-field">
         <label>最大人数 <span class="req">*</span></label>
         <input v-model.number="form.maxPeople" type="number" min="1" />
+        <p v-if="occupiedSeats > 0" class="option-hint">
+          已占用 {{ occupiedSeats }} 人（已预留 + 已确认），上限不能低于该值
+        </p>
       </div>
 
       <div class="form-field">
@@ -315,7 +329,8 @@ async function save() {
 
       <p class="form-hint wide">
         新建团期为“草稿”状态，需要在列表中改为“报名中”才会对用户开放报名。
-        同一导游在同一时间范围内不允许带两个团（后端返回 409）；只有草稿状态的团期可以改挂线路。
+        同一导游在同一时间范围内不允许带两个团（后端返回 409）；只有草稿状态的团期可以改挂线路；
+        已完成 / 已取消的团期不能再改回其它状态，已经出发的团期也不能再开放报名。
       </p>
     </div>
 

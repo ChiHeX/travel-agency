@@ -96,6 +96,9 @@ class OrderServiceCreateTest {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
                 idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+        // 下单前会先和「库内当天日期」比较（已出发的团期不能报名），这里固定成真实当天；
+        // 本类用到的团期都在未来（2027-03），因此不会触发该守卫。
+        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
     }
 
     // ---------------------------------------------------------------- helpers

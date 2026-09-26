@@ -35,6 +35,12 @@ const occupiedSeats = computed(() => {
 const submitting = ref(false)
 const submitError = ref('')
 
+/** 乐观锁冲突状态：提示文案、服务端最新数据、用户选择"覆盖"时要用的版本号。 */
+const conflictMessage = ref('')
+const conflictLatest = ref(null)
+const conflictLoading = ref(false)
+const versionOverride = ref(null)
+
 const routes = ref([])
 const routeTotal = ref(0)
 const routePageNo = ref(0)
@@ -77,6 +83,9 @@ function reset() {
     guideId: source.guideId ? String(source.guideId) : ''
   })
   submitError.value = ''
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  versionOverride.value = null
 }
 
 /** 按 id 去重合并，避免"加载更多"把同一页重复追加进来。 */
@@ -214,7 +223,7 @@ async function save() {
   if (invalid) return ElMessage.warning(invalid)
 
   // 主键按契约 Id 提交字符串；金额提交固定两位小数的字符串。
-  const payload = {
+  const editable = {
     routeId: String(form.routeId),
     startDate: form.startDate,
     endDate: form.endDate,
@@ -223,23 +232,76 @@ async function save() {
     maxPeople: Number(form.maxPeople),
     guideId: form.guideId ? String(form.guideId) : null
   }
+  // 创建请求（DepartureCreateRequest）不含 version；修改请求（DepartureUpdateRequest）必填，
+  // 用「读取时拿到的版本」提交，与库内不一致即视为基于过期数据提交。
+  const editing = Boolean(props.departure?.id)
+  const payload = editing
+    ? { ...editable, version: versionOverride.value ?? props.departure.version }
+    : editable
 
   submitting.value = true
   try {
-    const saved = props.departure?.id
+    const saved = editing
       ? await adminApi.updateDeparture(props.departure.id, payload)
       : await adminApi.createDeparture(payload)
-    ElMessage.success(props.departure?.id
-      ? '团期已更新'
-      : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
+    ElMessage.success(editing ? '团期已更新' : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
+    conflictLatest.value = null
+    versionOverride.value = null
     emit('saved', saved)
     close()
   } catch (cause) {
-    // 409（名额 / 状态 / 导游冲突）与 422（字段语义）由后端给出可读 message，展示在原地，不重复弹窗。
-    submitError.value = cause.message || '保存失败，请稍后重试'
+    if (editing && cause.status === 409 && cause.code === 'DEPARTURE_VERSION_CONFLICT') {
+      // 乐观锁冲突：保留用户已填写的内容，把服务端最新数据取回来并排展示，
+      // 由用户决定"改用最新数据"还是"保留我的修改并覆盖"，不擅自丢弃任何一方。
+      submitError.value = ''
+      conflictMessage.value = cause.message || '团期已被他人修改'
+      await loadLatestForConflict()
+    } else {
+      // 其余 409（名额 / 状态 / 导游）与 422（字段语义）由后端给出可读 message，就地展示。
+      submitError.value = cause.message || '保存失败，请稍后重试'
+    }
   } finally {
     submitting.value = false
   }
+}
+
+/** 拉取服务端最新团期，用于冲突面板的对比展示。 */
+async function loadLatestForConflict() {
+  conflictLoading.value = true
+  try {
+    conflictLatest.value = await adminApi.departure(props.departure.id)
+  } catch {
+    // 取不到最新数据时仍保留提示与用户输入，用户可关闭后重开表单再试。
+    conflictLatest.value = null
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+/** 采用服务端最新数据：用最新值覆盖表单，并清掉冲突状态。 */
+function adoptLatest() {
+  if (!conflictLatest.value) return
+  Object.assign(form, {
+    routeId: conflictLatest.value.routeId ? String(conflictLatest.value.routeId) : '',
+    startDate: conflictLatest.value.startDate || '',
+    endDate: conflictLatest.value.endDate || '',
+    adultPrice: money(conflictLatest.value.adultPrice),
+    childPrice: money(conflictLatest.value.childPrice),
+    maxPeople: conflictLatest.value.maxPeople || 20,
+    guideId: conflictLatest.value.guideId ? String(conflictLatest.value.guideId) : ''
+  })
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  versionOverride.value = null
+}
+
+/** 保留我的修改并覆盖：用最新版本号重试一次，这次的覆盖是用户明确选择的结果。 */
+async function overwriteLatest() {
+  if (!conflictLatest.value) return
+  versionOverride.value = conflictLatest.value.version
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  await save()
 }
 </script>
 
@@ -256,6 +318,45 @@ async function save() {
   >
     <div class="dialog-form-grid">
       <p v-if="submitError" class="form-error wide" role="alert">{{ submitError }}</p>
+
+      <!-- 乐观锁冲突：用户填写的内容原样保留，同时把服务端最新数据并排摆出来，由用户决定 -->
+      <div v-if="conflictMessage" class="conflict-panel wide" role="alert">
+        <p class="conflict-title">{{ conflictMessage }}</p>
+        <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
+        <el-skeleton v-if="conflictLoading" :rows="3" animated />
+        <dl v-else-if="conflictLatest" class="conflict-grid">
+          <div>
+            <dt>日期</dt>
+            <dd>
+              <span class="conflict-server">服务器：{{ conflictLatest.startDate }} ~ {{ conflictLatest.endDate }}</span>
+              <span class="conflict-mine">你填写：{{ form.startDate }} ~ {{ form.endDate }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>价格（成人 / 儿童）</dt>
+            <dd>
+              <span class="conflict-server">服务器：¥{{ conflictLatest.adultPrice }} / ¥{{ conflictLatest.childPrice }}</span>
+              <span class="conflict-mine">你填写：¥{{ money(form.adultPrice) }} / ¥{{ money(form.childPrice) }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>最大人数</dt>
+            <dd>
+              <span class="conflict-server">服务器：{{ conflictLatest.maxPeople }} 人</span>
+              <span class="conflict-mine">你填写：{{ form.maxPeople }} 人</span>
+            </dd>
+          </div>
+        </dl>
+        <p v-else class="conflict-note">暂时取不到服务器最新数据，可关闭后重新打开表单再试。</p>
+        <div class="conflict-actions">
+          <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">
+            载入服务器最新数据（放弃我的修改）
+          </button>
+          <button type="button" class="primary-button" :disabled="!conflictLatest || submitting" @click="overwriteLatest">
+            保留我的修改并覆盖
+          </button>
+        </div>
+      </div>
 
       <div class="form-field wide">
         <label>所属线路 <span class="req">*</span></label>
@@ -385,6 +486,60 @@ async function save() {
 .option-more:disabled {
   color: var(--text-tertiary);
   cursor: default;
+}
+
+.conflict-panel {
+  border: 1px solid var(--status-orange, #f59e0b);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg-warning-subtle, #fffbeb);
+}
+
+.conflict-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--status-orange-strong, #b45309);
+}
+
+.conflict-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.conflict-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.conflict-grid dt {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-grid dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.conflict-server {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.conflict-mine {
+  color: var(--text-secondary);
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 @media (max-width: 640px) {

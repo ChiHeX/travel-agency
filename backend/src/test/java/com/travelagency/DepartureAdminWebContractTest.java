@@ -98,10 +98,23 @@ class DepartureAdminWebContractTest {
                                 "\"maxPeople\": 30, \"reservedPeople\": 0, \"confirmedPeople\": 0")))
                 .andExpect(status().isBadRequest());
 
+        // 修改请求：version 现在是契约字段（乐观锁），不再是"契约外字段"，
+        // 因此这里改用一个仍然不在契约内的服务端字段来验证严格模式。
         mvc().perform(put("/api/admin/departures/1").with(user("staff").roles("STAFF"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(VALID_BODY.replace("\"maxPeople\": 30", "\"maxPeople\": 30, \"version\": 99")))
+                        .content(VALID_BODY.replace("\"maxPeople\": 30",
+                                "\"maxPeople\": 30, \"version\": 1, \"reservedPeople\": 7")))
                 .andExpect(status().isBadRequest());
+    }
+
+    /** 修改请求必须带乐观锁版本号：缺失属于字段语义错误（422），不能静默按 0 处理。 */
+    @Test
+    void updateRequiresTheOptimisticLockVersion() throws Exception {
+        mvc().perform(put("/api/admin/departures/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[0].field").value("version"));
     }
 
     /** 字段语义错误必须在访问数据库之前返回 422，并给出可定位的 errors 列表。 */

@@ -192,13 +192,24 @@ public class DepartureService {
      * 而不是把实体整体写回：名额计数由下单 / 支付 / 退款链路维护，一旦被这里的整体写回覆盖，
      * 已报名人数会凭空消失（可用名额虚增，进而超卖）。</p>
      *
-     * <p>另外两条由服务端强制的规则：</p>
+     * <p><b>两条业务闸门都放进 UPDATE 的 WHERE，并按影响行数判定结果</b>，而不是
+     * "先读、判断、再无条件下写"：</p>
      * <ol>
-     *   <li>最大人数不得小于已占用名额（422）。{@code availableSeats} 会把负数钳到 0，
-     *       不拦的话实际超卖会藏在接口背后，只剩一个"名额为 0"的表面结果；</li>
-     *   <li>已产生订单的团期不允许改挂到其它线路（409）。{@code travel_order} 同时保存
-     *       {@code route_id} 与 {@code departure_id}，改绑会让历史订单与其团期指向不同线路。</li>
+     *   <li><b>名额闸门</b> {@code reserved_people + confirmed_people <= 新上限}。
+     *       读取已占名额与写入新上限之间存在窗口，期间并发下单会占走名额；
+     *       只做应用层比较会写出「已占人数 &gt; 最大人数」的团期，
+     *       而 {@code availableSeats} 会把负数钳成 0，把超卖藏在接口背后。
+     *       WHERE 条件与 UPDATE 同一条语句，行锁保证判定与写入原子生效；</li>
+     *   <li><b>改挂闸门</b> {@code status = DRAFT}（仅在 {@code routeId} 变化时加）。
+     *       {@code travel_order} 同时保存 {@code route_id} 与 {@code departure_id}，
+     *       订单创建时从团期读出线路；"先查有没有订单、再改线路"无法与并发下单串行化 ——
+     *       检查通过后、写入前新插入的订单仍会留下旧线路 id。下单只接受 {@code OPEN} 团期，
+     *       因此把可改挂范围限定在尚未开放报名的草稿团期，窗口就不存在了。</li>
      * </ol>
+     *
+     * <p>影响行数为 0 时回读最新行给出可定位的 409（见 {@link #resolveWriteConflict}）；
+     * 若回读确认目标状态已达成，则按成功处理，避免驱动在
+     * {@code useAffectedRows=true} 下把"字段无变化"报成 0 行时被误判为冲突。</p>
      */
     @Transactional
     public DepartureView update(Long departureId, DepartureUpsertRequest request, Long operatorId) {
@@ -206,21 +217,21 @@ public class DepartureService {
         validateEditableFields(request);
         requireRoute(request.routeId());
         requireGuide(request.guideId());
+        boolean rebinding = !Objects.equals(existing.routeId, request.routeId());
+        if (rebinding) {
+            requireRebindable(departureId, existing);
+        }
+        // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由上面的 WHERE 闸门兜住。
         int occupied = DepartureView.occupiedSeats(existing);
         if (request.maxPeople() < occupied) {
-            throw new BusinessException(422, "VALIDATION_ERROR",
-                    "最大人数不能小于已占用的 " + occupied + " 人，如需缩减请先处理相关订单");
-        }
-        if (!Objects.equals(existing.routeId, request.routeId()) && orderCount(departureId) > 0) {
-            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
-                    "该团期已产生订单，不能改挂到其它线路");
+            throw new BusinessException(422, "VALIDATION_ERROR", capacityMessage(occupied));
         }
         // 冲突检测用待写入的取值，且排除自身（candidate.id），否则每次保存都会与自己撞上。
         Departure candidate = new Departure();
         candidate.id = departureId;
         applyEditableFields(candidate, request);
         checkGuideConflict(candidate);
-        departureMapper.update(null, new UpdateWrapper<Departure>()
+        UpdateWrapper<Departure> update = new UpdateWrapper<Departure>()
                 .eq("id", departureId)
                 .set("route_id", request.routeId())
                 .set("start_date", request.startDate())
@@ -228,10 +239,66 @@ public class DepartureService {
                 .set("adult_price", request.adultPrice())
                 .set("child_price", request.childPrice())
                 .set("max_people", request.maxPeople())
-                .set("guide_id", request.guideId()));
+                .set("guide_id", request.guideId())
+                // 名额闸门：{0} 由 MyBatis-Plus 绑定为占位参数，不做字符串拼接。
+                .apply("reserved_people + confirmed_people <= {0}", request.maxPeople());
+        if (rebinding) {
+            update.eq("status", DepartureStatus.DRAFT);
+        }
+        if (departureMapper.update(null, update) == 0) {
+            resolveWriteConflict(departureId, request, rebinding);
+        }
         operationLog.record(operatorId, "团期", "UPDATE", "DEPARTURE", departureId,
                 "修改团期：" + request.startDate() + " 至 " + request.endDate());
         return detail(departureId);
+    }
+
+    /**
+     * 改挂线路的前置校验。
+     *
+     * <p>两道条件：团期没有订单，且仍是 {@link DepartureStatus#DRAFT}。
+     * 前者覆盖"曾经上架、产生订单后又退回草稿"的情形，后者让并发下单不可能与本操作交错 ——
+     * 下单只接受 OPEN 团期。真正的一致性由 UPDATE 里的 {@code status = DRAFT} 条件保证，
+     * 这里只是为了在正常情况下给出可定位的错误码与文案。</p>
+     */
+    private void requireRebindable(Long departureId, Departure existing) {
+        if (orderCount(departureId) > 0) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "该团期已产生订单，不能改挂到其它线路");
+        }
+        if (!DepartureStatus.DRAFT.equals(existing.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "只有草稿状态的团期可以改挂线路，请先把团期状态改回 DRAFT");
+        }
+    }
+
+    /**
+     * UPDATE 匹配 0 行时的原因判定。
+     *
+     * <p>WHERE 里只有主键与两个业务闸门，行还在却匹配不到，说明某个闸门在"读取—写入"之间失效了。
+     * 回读最新行给出具体原因；若回读发现目标状态其实已经达成，则不抛异常
+     * （驱动在 {@code useAffectedRows=true} 时会把"所有字段都没变化"报成 0 行）。</p>
+     */
+    private void resolveWriteConflict(Long departureId, DepartureUpsertRequest request, boolean rebinding) {
+        Departure latest = departureMapper.selectById(departureId);
+        if (latest == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
+        }
+        int occupied = DepartureView.occupiedSeats(latest);
+        if (request.maxPeople() < occupied) {
+            throw new BusinessException(409, "DEPARTURE_CAPACITY_CONFLICT", capacityMessage(occupied));
+        }
+        if (rebinding && !DepartureStatus.DRAFT.equals(latest.status)) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
+                    "团期已被并发上架，不能改挂线路；请先下架为草稿后重试");
+        }
+        if (rebinding && !Objects.equals(latest.routeId, request.routeId())) {
+            throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT", "团期在本次修改期间被并发改动，请重试");
+        }
+    }
+
+    private static String capacityMessage(int occupied) {
+        return "最大人数不能小于已占用的 " + occupied + " 人，如需缩减请先处理相关订单";
     }
 
     /**

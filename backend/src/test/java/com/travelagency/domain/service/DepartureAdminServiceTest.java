@@ -294,10 +294,10 @@ class DepartureAdminServiceTest {
     }
 
     @Test
-    @DisplayName("修改：没有订单时可以改挂线路")
+    @DisplayName("修改：草稿且无订单时可以改挂线路")
     void updateAllowsRouteRebindWithoutOrders() {
         when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
         when(orderMapper.selectCount(any())).thenReturn(0L);
@@ -307,6 +307,143 @@ class DepartureAdminServiceTest {
 
         verify(operationLog).record(eq(ACTOR), eq("团期"), eq("UPDATE"), eq("DEPARTURE"),
                 any(), anyString());
+    }
+
+    /**
+     * 改挂线路必须限定在尚未开放报名的团期：下单只接受 OPEN，草稿团期不可能产生订单，
+     * 于是"查出有没有订单 → 再改线路"这个窗口就不存在了
+     * （否则并发下单会把改挂前的旧线路 id 存进订单）。
+     */
+    @Test
+    @DisplayName("修改：已开放报名（非草稿）即使没有订单也不能改挂线路（409）")
+    void updateRejectsRouteRebindWhenNotDraft() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+        when(orderMapper.selectCount(any())).thenReturn(0L);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    // ------------------------------------------------------------------
+    // 并发闸门：判定必须与写入在同一条 UPDATE 里
+    // ------------------------------------------------------------------
+
+    /** 名额闸门必须出现在 UPDATE 的 WHERE 里，而不是只存在于应用层的 if。 */
+    @Test
+    @DisplayName("修改：名额闸门写进 UPDATE 的 WHERE 子句")
+    void updatePutsCapacityGateIntoTheStatement() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.update(DEPARTURE_ID, request(ROUTE_ID, null, 40), ACTOR);
+
+        ArgumentCaptor<Wrapper<Departure>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(departureMapper).update(isNull(), captor.capture());
+        String where = ((UpdateWrapper<Departure>) captor.getValue()).getSqlSegment();
+        assertTrue(where.contains("reserved_people") && where.contains("confirmed_people"),
+                "名额闸门必须在同一条 UPDATE 的 WHERE 中，实际为：" + where);
+    }
+
+    /** 改挂时 WHERE 还要带 status = DRAFT，并发上架才能让这条 UPDATE 匹配 0 行。 */
+    @Test
+    @DisplayName("修改：改挂线路时 UPDATE 追加 status = DRAFT 条件")
+    void updatePutsDraftGuardIntoTheStatementWhenRebinding() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+        when(orderMapper.selectCount(any())).thenReturn(0L);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR);
+
+        ArgumentCaptor<Wrapper<Departure>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(departureMapper).update(isNull(), captor.capture());
+        String where = ((UpdateWrapper<Departure>) captor.getValue()).getSqlSegment();
+        assertTrue(where.contains("status"), "改挂时的 WHERE 必须包含 status 闸门，实际为：" + where);
+    }
+
+    /**
+     * 读取时显示名额充足、写入时已被并发下单占满：UPDATE 匹配 0 行，
+     * 必须回读并判定为 409，而不是当成成功更新（否则会写出已占人数 &gt; 最大人数的团期）。
+     */
+    @Test
+    @DisplayName("修改：并发下单占位导致名额闸门失效时返回 409，而不是默默写入")
+    void updateReportsCapacityConflictWhenGateFailsInsideTheUpdate() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                // 第一次读：30 人上限、0 人占用，前置校验通过。
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null))
+                // 回读：并发下单后已占 20 人，而本次要把上限改成 10。
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, request(ROUTE_ID, null, 10), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_CAPACITY_CONFLICT", ex.getCode());
+        verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
+    }
+
+    /** 并发把团期上架后，改挂线路的 UPDATE 会匹配 0 行，必须判定为 409 而不是成功。 */
+    @Test
+    @DisplayName("修改：改挂期间团期被并发上架时返回 409")
+    void updateReportsConflictWhenConcurrentPublishBlocksRebind() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+        when(orderMapper.selectCount(any())).thenReturn(0L);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, request(otherRouteId, null, 30), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+    }
+
+    /**
+     * 影响行数为 0 也可能只是"字段本来就没有变化"（驱动 useAffectedRows=true 时的语义）。
+     * 回读确认目标状态已达成时不应报错，否则重复保存同一份表单会莫名失败。
+     */
+    @Test
+    @DisplayName("修改：影响行数为 0 但目标状态已达成时按成功处理")
+    void updateTreatsZeroRowsAsSuccessWhenGoalStateReached() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 12), ACTOR));
+    }
+
+    /** 影响行数为 0 且行已不存在时按 404 处理，不把并发删除当成成功。 */
+    @Test
+    @DisplayName("修改：影响行数为 0 且团期已被删除时返回 404")
+    void updateReportsNotFoundWhenRowDisappeared() {
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null))
+                .thenReturn(null);
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, request(ROUTE_ID, null, 40), ACTOR));
+
+        assertEquals(404, ex.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", ex.getCode());
     }
 
     @Test

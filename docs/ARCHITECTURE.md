@@ -5,6 +5,7 @@
 ```text
 frontend (Vue SPA)
   ├─ 用户端 PublicLayout
+  ├─ 独立付款与支付结果页 PaymentLayout（/payment/:orderNo，旧账户付款地址重定向并保留查询参数）
   ├─ 管理后台 AdminLayout
   └─ 导游工作台 AdminLayout + 路由角色守卫
           │ /api

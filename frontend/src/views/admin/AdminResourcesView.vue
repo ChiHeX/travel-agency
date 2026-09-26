@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -13,6 +14,12 @@ const loading = ref(false)
 /** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
 const pending = ref(null)
 
+/** 团期新增/编辑弹窗状态，以及表单需要的线路与导游候选项（全部来自后端真实数据）。 */
+const departureDialogVisible = ref(false)
+const editingDeparture = ref(null)
+const routeOptions = ref([])
+const guideOptions = ref([])
+
 const loaders = {
   attractions: adminApi.attractions,
   hotels: adminApi.hotels,
@@ -20,6 +27,23 @@ const loaders = {
   departures: adminApi.departures,
   refunds: adminApi.refunds
 }
+
+/** 契约 DepartureStatus 的全部取值，与后端枚举一一对应。 */
+const DEPARTURE_STATUS_LABEL = {
+  DRAFT: '草稿',
+  OPEN: '报名中',
+  FULL: '已满员',
+  CLOSED: '已截止',
+  TRAVELLING: '行程中',
+  FINISHED: '已完成',
+  CANCELLED: '已取消'
+}
+const DEPARTURE_STATUSES = Object.keys(DEPARTURE_STATUS_LABEL)
+
+const departureStatusClass = (status) =>
+  status === 'OPEN' ? 'success'
+    : status === 'CANCELLED' || status === 'CLOSED' ? 'danger'
+      : status === 'FINISHED' ? 'success' : 'warning'
 
 /**
  * 退款状态文案。`PROCESSING` 特别重要：它不是「审核中」，而是**出款已发出、结果还没确认**
@@ -45,11 +69,42 @@ async function load() {
   }
 }
 
-async function updateDeparture(row) {
-  const next = row.status === 'OPEN' ? 'CLOSED' : 'OPEN'
-  await adminApi.updateDepartureStatus(row.id, next)
+/**
+ * 打开团期新增/编辑弹窗。线路与导游候选项来自后端真实数据，不让运营手填主键；
+ * 选项拉取失败时保留上一次结果，不影响列表与编辑回填。
+ */
+async function openDepartureDialog(row) {
+  editingDeparture.value = row || null
+  departureDialogVisible.value = true
+  try {
+    const [routePage, guidePage] = await Promise.all([
+      adminApi.routes({ page: 1, size: 100 }),
+      adminApi.guides({ page: 1, size: 100 })
+    ])
+    routeOptions.value = routePage?.items || []
+    guideOptions.value = guidePage?.items || []
+  } catch {
+    // 候选项加载失败不阻断弹窗：编辑时线路/导游已由该行回填。
+  }
+}
+
+/**
+ * 修改团期运营状态，走契约 PATCH /admin/departures/{departureId}/status。
+ *
+ * 失败时把本地状态回滚为改动前的值，避免页面停留在一个并未落库的状态上；
+ * 错误提示由 axios 拦截器统一弹出（见 frontend/src/api/request.js），这里不重复提示。
+ */
+async function changeDepartureStatus(row, next) {
+  if (!next || next === row.status) return
+  const previous = row.status
   row.status = next
-  ElMessage.success('团期状态已更新')
+  try {
+    const updated = await adminApi.updateDepartureStatus(row.id, next)
+    if (updated) Object.assign(row, updated)
+    ElMessage.success('团期状态已更新')
+  } catch {
+    row.status = previous
+  }
 }
 
 /**
@@ -93,7 +148,14 @@ onMounted(load)
         <p>维护基础业务资源档案、可追溯资料与审核流。</p>
       </div>
       <button
-        v-if="resource !== 'refunds'"
+        v-if="resource === 'departures'"
+        class="primary-button"
+        @click="openDepartureDialog(null)"
+      >
+        + 新增团期
+      </button>
+      <button
+        v-else-if="resource !== 'refunds'"
         class="primary-button"
         @click="ElMessage.info('新增表单已对接对应后端 CRUD API')"
       >
@@ -109,11 +171,12 @@ onMounted(load)
       <table v-else-if="rows.length" class="data-table">
         <thead>
           <tr v-if="resource === 'departures'">
-            <th>线路编号</th>
+            <th>所属线路</th>
             <th>出发日期</th>
             <th>返程日期</th>
-            <th>成人价格</th>
-            <th>已确认 / 最大容纳</th>
+            <th>成人价 / 儿童价</th>
+            <th>已占用 / 名额上限</th>
+            <th>带团导游</th>
             <th>状态</th>
             <th style="text-align: right;">操作</th>
           </tr>
@@ -142,20 +205,38 @@ onMounted(load)
         <tbody>
           <template v-for="row in rows" :key="row.id">
             <tr v-if="resource === 'departures'">
-              <td><strong>线路 #{{ row.routeId }}</strong></td>
+              <td>
+                <strong>{{ row.routeName || `线路 #${row.routeId}` }}</strong>
+                <div class="muted-text">团期 #{{ row.id }}</div>
+              </td>
               <td>{{ row.startDate }}</td>
               <td>{{ row.endDate }}</td>
-              <td class="amount">¥{{ row.adultPrice }}</td>
-              <td>{{ row.confirmedPeople == null ? '—' : row.confirmedPeople }} / {{ row.maxPeople == null ? '—' : row.maxPeople }}<span v-if="row.confirmedPeople != null || row.maxPeople != null"> 人</span></td>
+              <td class="amount">
+                ¥{{ row.adultPrice }}
+                <div class="muted-text">儿童 ¥{{ row.childPrice }}</div>
+              </td>
               <td>
-                <span class="tag" :class="row.status === 'OPEN' ? 'success' : row.status === 'CLOSED' ? 'danger' : 'warning'">
-                  {{ row.status }}
+                {{ (row.reservedPeople || 0) + (row.confirmedPeople || 0) }} / {{ row.maxPeople }} 人
+                <div class="muted-text">余位 {{ row.availableSeats }} 人</div>
+              </td>
+              <td>{{ row.guideName || '未分配' }}</td>
+              <td>
+                <span class="tag" :class="departureStatusClass(row.status)">
+                  {{ DEPARTURE_STATUS_LABEL[row.status] || row.status }}
                 </span>
               </td>
               <td style="text-align: right;">
-                <button type="button" class="text-button" @click="updateDeparture(row)">
-                  {{ row.status === 'OPEN' ? '关闭报名' : '开放报名' }}
-                </button>
+                <select
+                  class="status-select"
+                  :value="row.status"
+                  @change="changeDepartureStatus(row, $event.target.value)"
+                >
+                  <option v-for="status in DEPARTURE_STATUSES" :key="status" :value="status">
+                    {{ DEPARTURE_STATUS_LABEL[status] }}
+                  </option>
+                </select>
+                <span class="divider">|</span>
+                <button type="button" class="text-button" @click="openDepartureDialog(row)">编辑</button>
               </td>
             </tr>
 
@@ -211,6 +292,15 @@ onMounted(load)
         暂无相关资料数据。
       </div>
     </div>
+
+    <DepartureFormDialog
+      v-if="resource === 'departures'"
+      v-model="departureDialogVisible"
+      :departure="editingDeparture"
+      :routes="routeOptions"
+      :guides="guideOptions"
+      @saved="load"
+    />
   </div>
 </template>
 
@@ -218,6 +308,15 @@ onMounted(load)
 .amount {
   color: var(--price-orange);
   font-weight: 800;
+}
+
+.status-select {
+  padding: 3px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  color: var(--text-primary);
 }
 
 .divider {

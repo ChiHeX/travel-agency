@@ -786,6 +786,57 @@ class TradingFlowContractIntegrationTest {
         assertEquals(0, reserved(), "被拒的下单不得占用名额");
     }
 
+    /**
+     * 已经出发的团期不能报名，即使它仍然是 {@code OPEN}、并且客户端直接提交团期 id。
+     *
+     * <p>公开线路列表已经按 {@code start_date >= CURRENT_DATE} 过滤，正常浏览发现不了过期团期；
+     * 但团期 id 是可以被直接提交的，所以"前端不展示"不构成防线。
+     * 这里直接向下单接口提交一个仍为 OPEN、出发日期已过去的团期 id。</p>
+     *
+     * <p>断言被拒之后不留任何痕迹：没有订单、没有支付单、名额一点没动
+     * （占名额的条件 UPDATE 里也带了 {@code start_date >= CURRENT_DATE}，
+     * 因此即便应用层预检被并发竞态绕过，也不会真的占走名额）。</p>
+     */
+    @Test
+    @DisplayName("已过出发日期的 OPEN 团期不能下单：直传 id 也被拒，且不留订单、支付单与名额变化")
+    void rejectsOrderingAnAlreadyDepartedDeparture() throws Exception {
+        // 状态保持"报名中"，只把日期挪到过去。
+        Departure departed = departure();
+        departed.startDate = LocalDate.now().minusDays(3);
+        departed.endDate = LocalDate.now().minusDays(1);
+        departures.updateById(departed);
+
+        mvc.perform(post("/api/orders").header("Authorization", buyerToken)
+                        .header("Idempotency-Key", newKey())
+                        .contentType(MediaType.APPLICATION_JSON).content(orderBody(1, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_DEPARTED"));
+
+        assertEquals(0, reserved(), "被拒的下单不得占用预留名额");
+        assertEquals(0, confirmed(), "被拒的下单不得改动确认名额");
+        assertEquals(0, orders.selectCount(
+                        new QueryWrapper<TravelOrder>().eq("departure_id", departureId)).intValue(),
+                "被拒的下单不得留下订单");
+        assertEquals(0, payments.selectCount(new QueryWrapper<Payment>()
+                        .inSql("order_id", "SELECT id FROM travel_order WHERE departure_id = " + departureId))
+                        .intValue(),
+                "被拒的下单不得留下支付单");
+    }
+
+    /** 当天出发的团期仍可下单：口径与公开列表一致（{@code start_date >= CURRENT_DATE}）。 */
+    @Test
+    @DisplayName("当天出发的 OPEN 团期仍可下单（口径与公开列表一致）")
+    void stillAcceptsOrderingADepartureLeavingToday() throws Exception {
+        Departure today = departure();
+        today.startDate = LocalDate.now();
+        today.endDate = LocalDate.now().plusDays(2);
+        departures.updateById(today);
+
+        book(orderBody(1, 0), newKey(), 201);
+
+        assertEquals(1, reserved(), "当天出发的团期应当可以正常下单");
+    }
+
     // ------------------------------------------------------------------
     // 断言辅助
     // ------------------------------------------------------------------

@@ -59,6 +59,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
@@ -187,6 +188,14 @@ public class OrderService {
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "团期已关闭或不存在");
         }
+        // 已经出发的团期不能报名。口径与公开线路列表一致（RouteService.publicDepartures
+        // 用 start_date >= CURRENT_DATE）：当天可下单，早于当天不可下单。
+        // 只在前端隐藏团期是不够的 —— 团期 id 可以被直接提交，而且这里还存在竞态：
+        // 校验通过之后、占名额之前跨过了出发日期。真正的保险是下面那条条件 UPDATE。
+        if (departure.startDate != null && departure.startDate.isBefore(databaseToday())) {
+            throw new BusinessException(409, "DEPARTURE_DEPARTED",
+                    "团期已于 " + departure.startDate + " 出发，无法报名");
+        }
         int reserved = valueOrZero(departure.reservedPeople);
         int confirmed = valueOrZero(departure.confirmedPeople);
         int max = valueOrZero(departure.maxPeople);
@@ -197,10 +206,17 @@ public class OrderService {
         UpdateWrapper<Departure> reserve = new UpdateWrapper<>();
         reserve.eq("id", departure.id)
                 .eq("status", DepartureStatus.OPEN)
+                // 日期条件必须和占名额写在同一条语句里：应用层预检与这条 UPDATE 之间存在窗口，
+                // 只有把判定下推到语句里才能保证"占名额"和"团期尚未出发"同时成立。
+                .apply("start_date >= CURRENT_DATE")
                 .apply("COALESCE(reserved_people, 0) + COALESCE(confirmed_people, 0) + {0} <= max_people", participantCount)
                 .setSql("reserved_people = COALESCE(reserved_people, 0) + " + participantCount);
         if (departureMapper.update(null, reserve) != 1) {
-            throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT", "名额刚刚被其他用户占用，请重新选择团期");
+            // 保持既有错误码不变：这条语句最常被名额条件拦下，调用方与前端都已按
+            // DEPARTURE_CAPACITY_INSUFFICIENT 分支。文案覆盖"名额被抢 / 已过出发日期 / 被关闭"，
+            // 因为在事务快照下无法可靠区分是哪一种（普通回读会读到旧快照），不臆断原因。
+            throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT",
+                    "团期名额或状态刚刚发生变化，请重新选择团期");
         }
 
         TravelOrder order = new TravelOrder();
@@ -485,6 +501,17 @@ public class OrderService {
      * 同一键的重放返回完全一致的 {@code expiresAt}；记录查不到（理论上只会在无幂等键时发生）
      * 则退化为当前时刻。</p>
      */
+    /**
+     * 库内当天日期。
+     *
+     * <p>用库内日期而不是 {@code LocalDate.now()}：JVM 与数据库会话时区不一致时（CI 常见 UTC），
+     * 两者会错开一天，而"团期是否已出发"要和公开列表的 {@code start_date >= CURRENT_DATE()}
+     * 保持同一口径。</p>
+     */
+    private LocalDate databaseToday() {
+        return orderMapper.databaseToday();
+    }
+
     private LocalDateTime paymentWindowStart(Long userId, String idempotencyKey, boolean idempotent) {
         if (!idempotent) {
             return LocalDateTime.now();

@@ -60,11 +60,11 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
           <div class="result-icon" :class="{ success: paid, failed, pending }">
             {{ paid ? '✓' : failed ? '×' : '···' }}
           </div>
-          <span class="eyebrow">SERVER VERIFIED STATUS</span>
           <h1>{{ paid ? '支付已确认' : failed ? '支付未完成' : '正在确认支付结果' }}</h1>
-          <p v-if="paid">服务端已确认支付宝沙箱回调，订单将进入旅行社确认流程。</p>
+          <p v-if="paid">已收到付款，请在订单详情中查看旅行社确认情况。</p>
           <p v-else-if="failed">当前支付未成功，您可以返回订单后重新发起沙箱支付。</p>
-          <p v-else>页面正在向服务端查询订单状态。支付宝页面的跳转结果不会被直接作为支付成功依据。</p>
+          <p v-else>付款结果可能稍有延迟，确认后会自动更新。你也可以稍后在订单中查看。</p>
+          <small class="sandbox-caption">支付宝沙箱测试订单</small>
 
           <dl class="result-details">
             <div><dt>订单号</dt><dd>{{ detail.order.orderNo }}</dd></div>
@@ -95,7 +95,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
 </template>
 
 <style scoped>
-.result-page { min-height: calc(100vh - 64px); background: var(--bg-canvas); }
+.result-page { background: var(--bg-canvas); }
 .result-container { max-width: 680px; }
 .result-card { display: grid; justify-items: center; padding: 38px; border: 1px solid var(--border-line); border-radius: var(--radius-xl); background: #fff; box-shadow: var(--shadow-sm); text-align: center; }
 .result-icon { display: grid; width: 58px; height: 58px; margin-bottom: 15px; place-items: center; border-radius: 50%; font-size: 25px; font-weight: 800; }
@@ -104,6 +104,8 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
 .result-icon.pending { background: var(--brand-blue-subtle); color: var(--brand-blue); }
 .result-card h1 { margin: 5px 0 8px; color: var(--text-primary); font-size: 25px; }
 .result-card > p { max-width: 520px; margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+.sandbox-caption { margin-top: 12px; color: #89877f; font-size: 12px; }
+.result-card .primary-button { background: #292925; border-color: #292925; }
 .result-details { width: 100%; margin: 24px 0; border-top: 1px solid var(--border-line); }
 .result-details div { display: grid; grid-template-columns: 110px 1fr; gap: 14px; padding: 11px 2px; border-bottom: 1px solid var(--border-line); text-align: left; }
 .result-details dt { color: var(--text-tertiary); font-size: 12px; }

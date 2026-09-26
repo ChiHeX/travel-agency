@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import PublicLayout from '@/layouts/PublicLayout.vue'
+import PaymentLayout from '@/layouts/PaymentLayout.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import HomeView from '@/views/public/HomeView.vue'
 import SearchView from '@/views/public/SearchView.vue'
@@ -42,6 +43,15 @@ import { getScrollEntryId, restoreScrollPosition, saveScrollPosition } from '@/u
 
 const routes = [
   {
+    path: '/payment/:orderNo',
+    component: PaymentLayout,
+    meta: { requiresAuth: true },
+    children: [
+      { path: '', name: 'order-payment', component: PaymentView },
+      { path: 'result', name: 'order-payment-result', component: PaymentResultView }
+    ]
+  },
+  {
     path: '/',
     component: PublicLayout,
     children: [
@@ -77,8 +87,8 @@ const routes = [
       { path: 'reviews', name: 'account-reviews', component: ReviewsView },
       { path: 'security', name: 'account-security', component: SecurityView },
       { path: 'orders', name: 'account-orders', component: OrdersView },
-      { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
-      { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
+      { path: 'orders/:orderNo/payment', redirect: (to) => ({ name: 'order-payment', params: to.params, query: to.query }) },
+      { path: 'orders/:orderNo/payment/result', redirect: (to) => ({ name: 'order-payment-result', params: to.params, query: to.query }) },
       { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
       { path: 'order/create', redirect: (to) => ({ name: 'order-create', query: to.query }) },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },

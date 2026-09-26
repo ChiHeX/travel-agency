@@ -1027,7 +1027,7 @@ paths:
           description: 团期分页结果
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DeparturePageEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDeparturePageEnvelope' }
     post:
       tags: [Admin Departures]
       operationId: createDeparture
@@ -1037,7 +1037,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+            schema: { $ref: '#/components/schemas/DepartureCreateRequest' }
       responses:
         '201':
           description: 团期创建成功
@@ -1045,7 +1045,7 @@ paths:
             Location: { $ref: '#/components/headers/Location' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
@@ -1062,7 +1062,7 @@ paths:
           description: 团期详情
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Admin Departures]
@@ -1073,15 +1073,22 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+            schema: { $ref: '#/components/schemas/DepartureUpdateRequest' }
       responses:
         '200':
           description: 修改后的团期
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: |
+            状态冲突：`DEPARTURE_VERSION_CONFLICT` 表示提交所基于的 `version` 已过期
+            （团期已被他人修改），调用方应重新读取后决定是否覆盖；
+            其他 409 表示名额、改挂或导游时间冲突。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/departures/{departureId}/status:
@@ -1102,7 +1109,7 @@ paths:
           description: 更新后的团期
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /admin/attractions:
@@ -2526,9 +2533,49 @@ components:
         status: { $ref: '#/components/schemas/DepartureStatus' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
-    DepartureUpsertRequest:
+    AdminDeparture:
       type: object
       additionalProperties: false
+      description: |
+        后台团期管理视图 = 契约 `Departure` 的全部字段 + 乐观锁版本号 `version`。
+        `version` 只对会执行 `PUT /admin/departures/{departureId}` 的后台编辑器有意义，
+        因此不出现在公开线路详情、导游端和订单详情共用的 `Departure` 里 ——
+        那些场景既不会提交修改，也没有可用的版本语义。
+      required: [id, routeId, startDate, endDate, adultPrice, childPrice, maxPeople, reservedPeople, confirmedPeople, availableSeats, status, version, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: [string, 'null'], example: 昆明·大理·丽江 6 日跟团游 }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1, example: 30 }
+        reservedPeople: { type: integer, minimum: 0, example: 4 }
+        confirmedPeople: { type: integer, minimum: 0, example: 8 }
+        availableSeats: { type: integer, minimum: 0, example: 18 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        guideName: { type: [string, 'null'], example: 李导 }
+        status: { $ref: '#/components/schemas/DepartureStatus' }
+        version:
+          type: integer
+          minimum: 0
+          description: |
+            乐观锁版本号，每次成功修改（`PUT /admin/departures/{departureId}`）递增 1。
+            修改请求必须回传读取时的版本；版本不一致说明团期已被他人修改，接口返回
+            `409 DEPARTURE_VERSION_CONFLICT`，调用方应重新读取后再决定是否覆盖。
+            名额并发仍由数据库条件更新保证，版本号不能替代它。
+          example: 3
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    DepartureCreateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        创建团期。**不含 `version`**：新建团期由服务端从 0 起算，客户端不参与版本决定。
       required: [routeId, startDate, endDate, adultPrice, childPrice, maxPeople]
       properties:
         routeId: { $ref: '#/components/schemas/Id' }
@@ -2541,6 +2588,30 @@ components:
           anyOf:
             - { $ref: '#/components/schemas/Id' }
             - { type: 'null' }
+    DepartureUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        修改团期。字段与 `DepartureCreateRequest` 相同，另需回传读取时的 `version`（乐观锁）。
+        `version` 不一致返回 `409 DEPARTURE_VERSION_CONFLICT`；名额校验仍由数据库条件更新执行，
+        版本号只负责发现"基于过期数据提交"，不替代名额校验。
+      required: [routeId, startDate, endDate, adultPrice, childPrice, maxPeople, version]
+      properties:
+        routeId: { $ref: '#/components/schemas/Id' }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        version:
+          type: integer
+          minimum: 0
+          description: 读取团期时拿到的 `version`；与库内当前值不一致即视为冲突。
+          example: 3
     DepartureStatusUpdateRequest:
       type: object
       additionalProperties: false
@@ -3700,6 +3771,15 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/Departure' }
+    AdminDeparturePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AdminDeparture' }
     OperationLogPage:
       allOf:
         - { $ref: '#/components/schemas/PageFields' }
@@ -3752,6 +3832,18 @@ components:
         - type: object
           properties:
             data: { $ref: '#/components/schemas/DeparturePage' }
+    AdminDepartureEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AdminDeparture' }
+    AdminDeparturePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AdminDeparturePage' }
     ItineraryDayEnvelope:
       allOf:
         - { $ref: '#/components/schemas/SuccessEnvelope' }

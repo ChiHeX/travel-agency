@@ -8,7 +8,9 @@ import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.exception.BusinessException;
-import com.travelagency.domain.dto.DepartureUpsertRequest;
+import com.travelagency.domain.dto.AdminDepartureView;
+import com.travelagency.domain.dto.DepartureCreateRequest;
+import com.travelagency.domain.dto.DepartureUpdateRequest;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
@@ -89,6 +91,33 @@ public class DepartureService {
      */
     public PageResponse<DepartureView> page(Long routeId, Long guideId, String status,
                                             LocalDate startDateFrom, LocalDate startDateTo, int page, int size) {
+        return toViewPage(selectPage(routeId, guideId, status, startDateFrom, startDateTo, page, size));
+    }
+
+    /**
+     * 后台团期分页查询，对齐契约 GET /admin/departures（{@code AdminDeparturePageEnvelope}）。
+     *
+     * <p>与导游端共用同一套条件与排序，只在视图上多带一个乐观锁版本号 ——
+     * 版本号只对会提交修改的后台编辑器有意义，因此不放进公开/导游/订单共用的
+     * {@link DepartureView}。</p>
+     */
+    public PageResponse<AdminDepartureView> pageAdmin(Long routeId, Long guideId, String status,
+                                                      LocalDate startDateFrom, LocalDate startDateTo,
+                                                      int page, int size) {
+        Page<Departure> result = selectPage(routeId, guideId, status, startDateFrom, startDateTo, page, size);
+        List<Departure> records = result.getRecords();
+        Map<Long, String> routeNames = routeNameMap(records);
+        Map<Long, String> guideNames = guideNameMap(records);
+        List<AdminDepartureView> items = records.stream()
+                .map(d -> AdminDepartureView.from(d, routeNames.get(d.routeId), guideNames.get(d.guideId)))
+                .toList();
+        return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
+                (int) result.getTotal(), (int) result.getPages());
+    }
+
+    /** 团期分页条件与排序，后台与导游端共用，避免两端出现不同的筛选口径。 */
+    private Page<Departure> selectPage(Long routeId, Long guideId, String status,
+                                      LocalDate startDateFrom, LocalDate startDateTo, int page, int size) {
         QueryWrapper<Departure> query = new QueryWrapper<>();
         if (routeId != null) {
             query.eq("route_id", routeId);
@@ -110,18 +139,17 @@ public class DepartureService {
             query.le("start_date", startDateTo);
         }
         query.orderByAsc("start_date");
-        Page<Departure> result = departureMapper.selectPage(
+        return departureMapper.selectPage(
                 new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)), query);
-        return toViewPage(result);
     }
 
-    /** 团期管理详情，对齐契约 GET /admin/departures/{departureId}。 */
-    public DepartureView detail(Long departureId) {
+    /** 团期管理详情，对齐契约 GET /admin/departures/{departureId}（AdminDepartureEnvelope）。 */
+    public AdminDepartureView detail(Long departureId) {
         Departure departure = departureMapper.selectById(departureId);
         if (departure == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
         }
-        return DepartureView.from(departure, routeName(departure.routeId), guideName(departure.guideId));
+        return AdminDepartureView.from(departure, routeName(departure.routeId), guideName(departure.guideId));
     }
 
     /** 把团期实体分页转成契约视图分页，批量补齐 routeName / guideName，避免 N+1。 */
@@ -176,7 +204,7 @@ public class DepartureService {
      * {@code reservedPeople} / {@code confirmedPeople} 从 0 起算，{@code version} 归零。</p>
      */
     @Transactional
-    public DepartureView create(DepartureUpsertRequest request, Long operatorId) {
+    public AdminDepartureView create(DepartureCreateRequest request, Long operatorId) {
         validateEditableFields(request);
         requireRoute(request.routeId());
         requireGuide(request.guideId());
@@ -215,58 +243,66 @@ public class DepartureService {
      *       订单创建时从团期读出线路；"先查有没有订单、再改线路"无法与并发下单串行化。
      *       只加 {@code status = DRAFT} 的写入条件也不够：状态可以从 DRAFT 变成 OPEN、产生订单、
      *       再改回 DRAFT，而写入那一刻它确实又是 DRAFT。见 {@link #requireRebindable}。</li>
+     *   <li><b>乐观锁闸门</b> {@code version = 提交的版本}。两位工作人员各自打开同一条团期、
+     *       先后保存时，后保存的人会无意覆盖前一位对日期 / 价格 / 导游的改动。
+     *       版本写在 WHERE 里，同时把 {@code version + 1} 写回，成功后版本前进一步。</li>
      * </ol>
      *
-     * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #writeConflict}）。
+     * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #updateConflict}）。
      * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
      * 会把"条件更新其实没生效"误判成成功。</p>
+     *
+     * <p>另外注意：{@code SET} 里始终包含 {@code version = version + 1}，所以只要 WHERE 命中，
+     * 这条语句一定改变了至少一个字段。于是"0 行"不再有歧义 ——
+     * 不必再依赖驱动的 {@code useAffectedRows} 语义去猜"是不是字段没变化"。</p>
      */
     @Transactional
-    public DepartureView update(Long departureId, DepartureUpsertRequest request, Long operatorId) {
+    public AdminDepartureView update(Long departureId, DepartureUpdateRequest request, Long operatorId) {
+        DepartureCreateRequest editable = request.editableFields();
         Departure existing = requireDeparture(departureId);
-        validateEditableFields(request);
-        requireRoute(request.routeId());
-        requireGuide(request.guideId());
-        boolean rebinding = !Objects.equals(existing.routeId, request.routeId());
+        validateEditableFields(editable);
+        requireRoute(editable.routeId());
+        requireGuide(editable.guideId());
+        boolean rebinding = !Objects.equals(existing.routeId, editable.routeId());
         if (rebinding) {
             // 锁顺序固定为「导游 → 团期」：requireGuide 已先取到导游行锁，这里再锁团期行，
             // 与 create 的加锁顺序一致，不会交叉死锁。
             existing = requireDepartureForUpdate(departureId);
             requireRebindable(departureId, existing);
         }
-        // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由上面的 WHERE 闸门兜住。
+        // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由 WHERE 闸门兜住。
         int occupied = DepartureView.occupiedSeats(existing);
-        if (request.maxPeople() < occupied) {
+        if (editable.maxPeople() < occupied) {
             throw new BusinessException(422, "VALIDATION_ERROR", capacityMessage(occupied));
         }
         // 冲突检测用待写入的取值，且排除自身（candidate.id），否则每次保存都会与自己撞上。
         Departure candidate = new Departure();
         candidate.id = departureId;
-        applyEditableFields(candidate, request);
+        applyEditableFields(candidate, editable);
         checkGuideConflict(candidate);
         UpdateWrapper<Departure> update = new UpdateWrapper<Departure>()
                 .eq("id", departureId)
-                .set("route_id", request.routeId())
-                .set("start_date", request.startDate())
-                .set("end_date", request.endDate())
-                .set("adult_price", request.adultPrice())
-                .set("child_price", request.childPrice())
-                .set("max_people", request.maxPeople())
-                .set("guide_id", request.guideId())
-                // 名额闸门：{0} 由 MyBatis-Plus 绑定为占位参数，不做字符串拼接。
-                .apply("reserved_people + confirmed_people <= {0}", request.maxPeople());
+                // 乐观锁：版本不一致说明有人先改过，这条语句会匹配 0 行。
+                .eq("version", request.version())
+                .set("route_id", editable.routeId())
+                .set("start_date", editable.startDate())
+                .set("end_date", editable.endDate())
+                .set("adult_price", editable.adultPrice())
+                .set("child_price", editable.childPrice())
+                .set("max_people", editable.maxPeople())
+                .set("guide_id", editable.guideId())
+                .set("version", request.version() + 1)
+                // 名额闸门独立保留：名额变化来自下单链路，与"编辑是否过期"是两件事。
+                // {0} 由 MyBatis-Plus 绑定为占位参数，不做字符串拼接。
+                .apply("reserved_people + confirmed_people <= {0}", editable.maxPeople());
         if (rebinding) {
             update.eq("status", DepartureStatus.DRAFT);
         }
         if (departureMapper.update(null, update) == 0) {
-            BusinessException conflict = writeConflict(departureId, request);
-            if (conflict != null) {
-                throw conflict;
-            }
-            // 目标状态已达成：0 行来自驱动的 useAffectedRows 语义，而不是闸门失效，按幂等成功处理。
+            throw updateConflict(departureId, request);
         }
         operationLog.record(operatorId, "团期", "UPDATE", "DEPARTURE", departureId,
-                "修改团期：" + request.startDate() + " 至 " + request.endDate());
+                "修改团期：" + editable.startDate() + " 至 " + editable.endDate());
         return detail(departureId);
     }
 
@@ -299,58 +335,40 @@ public class DepartureService {
     }
 
     /**
-     * 条件 UPDATE 影响 0 行时的结果判定，返回 {@code null} 表示"目标状态其实已经达成"。
+     * 条件 UPDATE 影响 0 行时的失败判定。
      *
-     * <p>判定必须基于 {@link DepartureMapper#selectByIdForUpdate} 这个<b>当前读</b>：
+     * <p>判定基于 {@link DepartureMapper#selectByIdForUpdate} 这个<b>当前读</b>：
      * REPEATABLE READ 下普通 {@code SELECT} 走一致性快照，本事务前面已经读过该行，
-     * 这里会读回旧数据，把并发的名额变化看成"没有变化"，从而给出错误的原因、甚至误判成功。</p>
+     * 这里会读回旧数据，把并发的改动看成"没有变化"，从而给出错误的原因、甚至误判成功。</p>
      *
-     * <p>为什么还保留"成功"分支：0 行的含义取决于驱动的 {@code useAffectedRows}。
-     * 本项目默认取 matched 行数（值没变也返回 1），此时 0 行必然是闸门失效；
-     * 但若有人打开 {@code useAffectedRows=true}，"字段值完全没有变化"也会返回 0，
-     * 那不是冲突。与其把正确性押在一个 JDBC 参数上，这里用当前读逐字段确认目标状态是否已达成：
-     * 达成则幂等成功，否则按具体原因返回 409。判定依据是可靠的最新已提交数据，不依赖驱动配置。</p>
+     * <p><b>顺序很重要：先判版本。</b>版本不一致就是"基于过期数据提交"，必须直接 409，
+     * 不能让后面的名额 / 改挂判定去解释它 —— 那两处只看字段取值，看不出"有人在中间改过"。</p>
+     *
+     * <p>也不需要"其实是成功"的分支：{@code SET} 里始终有 {@code version = version + 1}，
+     * WHERE 一旦命中就必然改变至少一个字段，所以影响 0 行只可能是某个闸门没通过。</p>
      */
-    private BusinessException writeConflict(Long departureId, DepartureUpsertRequest request) {
+    private BusinessException updateConflict(Long departureId, DepartureUpdateRequest request) {
         Departure latest = departureMapper.selectByIdForUpdate(departureId);
         if (latest == null) {
             return new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
         }
+        if (!Objects.equals(latest.version, request.version())) {
+            return new BusinessException(409, "DEPARTURE_VERSION_CONFLICT",
+                    "团期已被他人修改（当前版本 " + latest.version + "，你提交的是 "
+                            + request.version() + "），请查看最新数据后再决定是否覆盖");
+        }
+        DepartureCreateRequest editable = request.editableFields();
         int occupied = DepartureView.occupiedSeats(latest);
-        if (request.maxPeople() < occupied) {
+        if (editable.maxPeople() < occupied) {
             return new BusinessException(409, "DEPARTURE_CAPACITY_CONFLICT", capacityMessage(occupied));
         }
-        if (matchesTargetState(latest, request)) {
-            // 目标状态已达成，这次 UPDATE 无事可做：按幂等成功处理。
-            return null;
-        }
-        if (!Objects.equals(latest.routeId, request.routeId())
+        if (!Objects.equals(latest.routeId, editable.routeId())
                 && !DepartureStatus.DRAFT.equals(latest.status)) {
             return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
                     "团期已开放报名，不能改挂到其它线路；请先下架为草稿后重试");
         }
         return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
                 "团期在本次修改期间被并发改动，请重试");
-    }
-
-    /** 当前行是否已经等于本次请求要写入的取值，且满足名额闸门。 */
-    private static boolean matchesTargetState(Departure latest, DepartureUpsertRequest request) {
-        return Objects.equals(latest.routeId, request.routeId())
-                && Objects.equals(latest.startDate, request.startDate())
-                && Objects.equals(latest.endDate, request.endDate())
-                && sameMoney(latest.adultPrice, request.adultPrice())
-                && sameMoney(latest.childPrice, request.childPrice())
-                && Objects.equals(latest.maxPeople, request.maxPeople())
-                && Objects.equals(latest.guideId, request.guideId())
-                && DepartureView.occupiedSeats(latest) <= request.maxPeople();
-    }
-
-    /** 金额只比较数值：99.5 与 99.50 是同一个价格，不能因为小数位不同就判成"被改动过"。 */
-    private static boolean sameMoney(BigDecimal left, BigDecimal right) {
-        if (left == null || right == null) {
-            return left == right;
-        }
-        return left.compareTo(right) == 0;
     }
 
     private static String capacityMessage(int occupied) {
@@ -376,7 +394,7 @@ public class DepartureService {
      * 并发下两个后台操作会各自基于旧状态通过校验，后写的一方覆盖前一方。</p>
      */
     @Transactional
-    public DepartureView changeStatus(Long departureId, String status, Long operatorId) {
+    public AdminDepartureView changeStatus(Long departureId, String status, Long operatorId) {
         if (status == null || !ALL_STATUSES.contains(status)) {
             throw new BusinessException(422, "VALIDATION_ERROR", STATUS_MESSAGE);
         }
@@ -403,7 +421,7 @@ public class DepartureService {
      * （直接调用 Service 的代码或测试）写入数据库无法表达的取值，并保证同一类错误
      * 无论从哪条路径进来都是 422 + {@code VALIDATION_ERROR}。</p>
      */
-    private static void validateEditableFields(DepartureUpsertRequest request) {
+    private static void validateEditableFields(DepartureCreateRequest request) {
         if (request.startDate() == null || request.endDate() == null
                 || request.startDate().isAfter(request.endDate())) {
             throw new BusinessException(422, "VALIDATION_ERROR", "返程日期不能早于出发日期");
@@ -417,8 +435,8 @@ public class DepartureService {
         }
     }
 
-    /** 契约 {@code DepartureUpsertRequest} 允许客户端提交的字段；状态与名额计数不在此列。 */
-    private static void applyEditableFields(Departure departure, DepartureUpsertRequest request) {
+    /** 契约 {@code DepartureCreateRequest} / {@code DepartureUpdateRequest} 允许客户端提交的字段。 */
+    private static void applyEditableFields(Departure departure, DepartureCreateRequest request) {
         departure.routeId = request.routeId();
         departure.startDate = request.startDate();
         departure.endDate = request.endDate();

@@ -55,10 +55,17 @@ public record DepartureView(
 
     /** 剩余名额 = 最大人数 - 已预留 - 已确认，下限为 0。 */
     public static int availableSeats(Departure departure) {
-        int max = valueOrZero(departure.maxPeople);
-        int reserved = valueOrZero(departure.reservedPeople);
-        int confirmed = valueOrZero(departure.confirmedPeople);
-        return Math.max(max - reserved - confirmed, 0);
+        return Math.max(valueOrZero(departure.maxPeople) - occupiedSeats(departure), 0);
+    }
+
+    /**
+     * 已占用名额 = 已预留（待支付 / 待确认）+ 已确认。
+     *
+     * <p>与 {@link #availableSeats} 共用同一口径：后台缩减 {@code maxPeople} 时要用它校验
+     * "最大人数不得小于已占用名额"，否则可用名额会被钳到 0，把实际超卖藏在接口背后。</p>
+     */
+    public static int occupiedSeats(Departure departure) {
+        return valueOrZero(departure.reservedPeople) + valueOrZero(departure.confirmedPeople);
     }
 
     private static int valueOrZero(Integer value) {

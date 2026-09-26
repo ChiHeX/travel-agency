@@ -48,6 +48,7 @@ DEALLOCATE PREPARE stmt;
 | `003-add-kunming-demo-waypoint.sql` | 为已有的彩云之南演示线路补充昆明抵达示意点，避免地图只显示大理至丽江 |
 | `004-add-single-location-demo-route.sql` | 新增只有大理古城一个地图地点的演示线路和测试团期，用于检查单点地图展示 |
 | `005-add-order-created-at-index.sql` | 为 `travel_order.created_at` 补索引，支撑后台工作台的今日订单数与订单趋势查询 |
+| `006-add-order-traveler-type.sql` | 补齐存量库的出行人类型快照列，恢复历史儿童类型，修复下单时的 500 错误 |
 | `007-add-place-guides.sql` | 新增多地点指南及景点关联表 |
 
 中文 SQL 文件须以 UTF-8 保存并原样传给客户端。`test-data.sql` 显式使用 `SET NAMES utf8mb4`，避免客户端默认字符集将 UTF-8 字节误当成 latin1；它不能修复在文件传输之前已被错误转码的文本。

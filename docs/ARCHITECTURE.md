@@ -5,7 +5,7 @@
 ```text
 frontend (Vue SPA)
   ├─ 用户端 PublicLayout
-  ├─ 独立付款与支付结果页 PaymentLayout（/payment/:orderNo，旧账户付款地址重定向并保留查询参数）
+  ├─ 独立订单详情、付款与支付结果页 PaymentLayout（/orders/:orderNo、/payment/:orderNo；旧账户地址重定向并保留查询参数）
   ├─ 管理后台 AdminLayout
   └─ 导游工作台 AdminLayout + 路由角色守卫
           │ /api
@@ -49,6 +49,8 @@ REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态�
 ```
 
 订单创建时在事务内用条件 `UPDATE` 增加 `reserved_people`，支付待确认仍占用名额；取消/退款释放名额。工作人员确认时再次检查 `confirmed_people + 当前人数 <= max_people`，避免并发超卖。
+
+报名页到付款页使用保留历史记录的跳转。报名表单在当前登录会话的 Pinia 内存草稿中保留，返回时恢复联系人、人数、出行人和备注；完整证件信息不写入浏览器持久存储或 URL，刷新页面后内存草稿不保留。未修改资料时继续使用已创建的订单；修改后提交需用户确认取消原待支付订单，再重新创建并由后端校验价格和名额。退出登录或切换会话会清除草稿。
 
 ## 主要 API 分组
 

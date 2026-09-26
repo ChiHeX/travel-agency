@@ -51,7 +51,6 @@ onMounted(load)
   <div class="checkout">
     <header class="checkout-heading">
       <h1>确认并付款</h1>
-      <p>再核对一下行程，即可前往支付宝完成付款。</p>
     </header>
 
     <div v-if="loading" class="checkout-loading" aria-busy="true" aria-label="正在加载订单"><el-skeleton :rows="8" animated /></div>
@@ -62,6 +61,13 @@ onMounted(load)
 
     <div v-else-if="detail" class="checkout-grid">
       <div class="checkout-information">
+        <section class="method-section" aria-label="付款方式">
+          <label class="payment-method">
+            <input type="radio" name="payment-method" value="alipay" checked aria-label="支付宝沙箱" />
+            <span class="method-copy"><strong>支付宝</strong><small>将在支付宝页面完成付款</small></span>
+            <span class="sandbox-label">沙箱</span>
+          </label>
+        </section>
         <section class="trip-section" aria-labelledby="trip-heading">
           <h2 id="trip-heading">你的行程</h2>
           <h3>{{ detail.order.routeName || detail.route.name }}</h3>
@@ -82,14 +88,6 @@ onMounted(load)
           <p class="section-note">行程通知将通过以上联系方式与你联系。</p>
         </section>
 
-        <section aria-labelledby="method-heading">
-          <h2 id="method-heading">付款方式</h2>
-          <label class="payment-method">
-            <input type="radio" name="payment-method" value="alipay" checked aria-label="支付宝沙箱" />
-            <span class="method-copy"><strong>支付宝</strong><small>将在支付宝页面完成付款</small></span>
-            <span class="sandbox-label">沙箱</span>
-          </label>
-        </section>
       </div>
 
       <aside class="payment-summary" aria-labelledby="summary-heading">
@@ -102,8 +100,8 @@ onMounted(load)
         <div class="summary-total"><span>{{ canPay ? '本次应付' : '订单金额' }}</span><strong><small>¥</small>{{ detail.order.totalAmount }}</strong></div>
         <p class="payment-note">当前为支付宝沙箱测试支付，不涉及真实资金。</p>
         <template v-if="canPay">
+          <p class="after-payment-note">确认行程与联系人信息后，即可前往支付宝付款。付款完成后，等待旅行社确认报名。</p>
           <button type="button" class="pay-button" :disabled="paying" @click="startPayment">{{ paying ? '正在前往支付宝…' : '前往支付宝付款' }}</button>
-          <p class="after-payment-note">付款完成后，等待旅行社确认报名。</p>
           <RouterLink class="later-link" :to="{ name: 'order-detail', params: { orderNo: detail.order.orderNo } }">稍后付款，查看订单</RouterLink>
         </template>
         <div v-else class="finished-state" role="status">
@@ -116,38 +114,38 @@ onMounted(load)
 </template>
 
 <style scoped>
-.checkout-heading { margin-bottom: 38px; }
-.checkout-heading h1 { margin: 0 0 12px; font-size: 30px; font-weight: 650; letter-spacing: -.04em; }
-.checkout-heading p { margin: 0; color: #77766f; font-size: 14px; line-height: 1.7; }
-.checkout-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: start; gap: 72px; }
-.checkout-information { display: grid; gap: 40px; }
-h2 { margin: 0 0 20px; font-size: 16px; font-weight: 650; }
-.trip-section h3 { margin: 0 0 24px; font-size: 24px; font-weight: 550; letter-spacing: -.03em; line-height: 1.45; }
+.checkout-heading { margin-bottom: 40px; }
+.checkout-heading h1 { margin: 0; font-size: 28px; font-weight: 650; line-height: 1.4; letter-spacing: -.03em; }
+.checkout-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 58px; }
+.checkout-information { display: flex; flex-direction: column; gap: 48px; }
+h2 { margin: 0 0 20px; font-size: 17px; font-weight: 650; }
+.method-section { order: 0; }
+.trip-section { order: 2; }
+.payment-method { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 20px; min-height: 174px; padding: 24px; border: 1px solid var(--theme-blue); border-radius: 14px; background: var(--theme-blue-tint); cursor: pointer; }
+.payment-method input { width: 26px; height: 26px; margin: 0; accent-color: var(--theme-blue); }
+.method-copy { display: grid; gap: 8px; }.method-copy strong { font-size: 17px; font-weight: 550; }.method-copy small { font-size: 15px; color: var(--text-secondary); line-height: 1.5; }
+.sandbox-label { position: absolute; top: 24px; right: 24px; padding: 4px 10px; border-radius: 6px; background: var(--theme-blue-tint); color: var(--theme-blue); font-size: 12px; }
+.contact-grid { display: grid; gap: 20px; }
+.contact-field { min-width: 0; }.contact-field > span { font-size: 15px; color: var(--text-secondary); }
+.contact-field p { min-height: 40px; display: flex; align-items: center; margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--border-divider); border-radius: 9px; background: var(--app-bg); font-size: 15px; overflow-wrap: anywhere; }
+.section-note { margin: 14px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.trip-section h3 { margin: 0 0 20px; font-size: 18px; font-weight: 550; line-height: 1.5; }
 .trip-facts { display: grid; gap: 16px; margin: 0; }
 .trip-facts > div { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 16px; font-size: 14px; line-height: 1.5; }
-dt { color: #77766f; } dd { margin: 0; overflow-wrap: anywhere; }
-.trip-facts dd > span { color: #77766f; }
+dt { color: var(--text-secondary); } dd { margin: 0; overflow-wrap: anywhere; }
+.trip-facts dd > span { color: var(--text-secondary); }
 .order-number { font-variant-numeric: tabular-nums; font-size: 13px; }
-.contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.contact-field { min-width: 0; }.contact-field > span { font-size: 13px; color: #77766f; }
-.contact-field p { min-height: 44px; display: flex; align-items: center; margin: 8px 0 0; padding: 10px 14px; border: 1px solid #e5e3df; border-radius: 8px; background: #fff; font-size: 14px; overflow-wrap: anywhere; }
-.contact-email { grid-column: 1 / -1; }
-.section-note { margin: 12px 0 0; color: #89877f; font-size: 12px; line-height: 1.6; }
-.payment-method { display: flex; align-items: center; gap: 14px; padding: 21px; border: 1px solid #8ab9ec; border-radius: 12px; background: #f0f6fc; cursor: pointer; }
-.payment-method input { width: 18px; height: 18px; margin: 0; accent-color: #0071e3; flex-shrink: 0; }
-.method-copy { display: grid; flex: 1; gap: 6px; }.method-copy strong { font-size: 15px; font-weight: 600; }.method-copy small { font-size: 12px; color: #757b82; }
-.sandbox-label { padding: 3px 8px; border-radius: 5px; background: #dfebf7; color: #476989; font-size: 11px; }
-.payment-summary { position: sticky; top: 32px; padding: 36px; border: 1px solid #dfddd8; border-radius: 22px; background: #fff; box-shadow: 0 4px 18px rgba(30,30,25,.06), 0 1px 3px rgba(30,30,25,.04); }
-.payment-summary h2 { font-size: 23px; font-weight: 550; letter-spacing: -.03em; margin-bottom: 16px; }
-.summary-route { color: #77766f; font-size: 14px; line-height: 1.6; margin: 0 0 30px; }
-.price-lines { display: grid; gap: 16px; margin: 0 0 24px; }.price-lines > div { display: flex; justify-content: space-between; gap: 16px; font-size: 14px; }.price-lines dd { text-align: right; font-variant-numeric: tabular-nums; }.price-lines dd span { color: #89877f; font-size: 12px; }
-.summary-total { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid #eceae6; padding-top: 24px; margin-bottom: 28px; font-size: 14px; }.summary-total strong { font-size: 30px; font-weight: 550; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }.summary-total small { font-size: 20px; margin-right: 3px; }
-.payment-note { margin: 0 0 24px; padding: 14px 16px; border: 1px solid #e8e6e2; border-radius: 10px; color: #77766f; font-size: 12px; line-height: 1.7; background: #fcfbf9; }
-.pay-button { width: 100%; min-height: 46px; border: 1px solid #292925; border-radius: 9px; padding: 12px 18px; background: #292925; color: #fff; font: inherit; font-size: 14px; font-weight: 550; cursor: pointer; transition: background .15s; }.pay-button:hover { background: #44443c; }.pay-button:disabled { opacity: .5; cursor: wait; }.pay-button:focus-visible, .later-link:focus-visible { outline: 3px solid #8ab9ec; outline-offset: 3px; }
-.after-payment-note { margin: 12px 0 22px; color: #89877f; font-size: 12px; line-height: 1.6; text-align: center; }
-.later-link { display: block; color: #77766f; font-size: 13px; text-align: center; text-decoration: underline; text-underline-offset: 4px; }
-.finished-state p { color: #77766f; font-size: 14px; line-height: 1.7; margin: 0 0 20px; }
-.checkout-loading { max-width: 560px; padding-top: 24px; }.checkout-error { max-width: 460px; padding: 32px; border: 1px solid #e5e3df; border-radius: 16px; background: white; }.checkout-error p { color: #77766f; line-height: 1.7; margin-bottom: 24px; }
-@media (max-width: 960px) { .checkout-grid { gap: 36px; }.payment-summary { padding: 28px; } }
-@media (max-width: 700px) { .checkout-grid { grid-template-columns: 1fr; gap: 32px; }.checkout-heading { margin-bottom: 30px; }.checkout-heading h1 { font-size: 27px; }.checkout-information { gap: 32px; }.payment-summary { position: static; padding: 24px; border-radius: 16px; }.trip-section h3 { font-size: 21px; }.contact-grid { grid-template-columns: 1fr; gap: 14px; } }
+.payment-summary { position: sticky; top: 32px; padding: 40px; border: 1px solid var(--border-divider); border-radius: 30px; background: var(--app-bg); box-shadow: var(--shadow-card); }
+.payment-summary h2 { font-size: 30px; font-weight: 450; line-height: 1.4; letter-spacing: .02em; margin-bottom: 32px; }
+.summary-route { color: var(--text-secondary); font-size: 16px; line-height: 1.6; margin: 0 0 20px; overflow-wrap: anywhere; }
+.price-lines { display: grid; gap: 14px; margin: 0 0 22px; }.price-lines > div { display: flex; justify-content: space-between; gap: 16px; color: var(--text-secondary); font-size: 16px; line-height: 1.5; }.price-lines dd { text-align: right; font-variant-numeric: tabular-nums; }.price-lines dd span { font-size: 13px; }
+.summary-total { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; font-size: 16px; line-height: 1.5; }.summary-total strong { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }.summary-total small { font-size: inherit; margin-right: 3px; }
+.payment-note { margin: 0 0 28px; padding: 18px 20px; border: 1px solid var(--border-divider); border-radius: 16px; color: var(--text-secondary); font-size: 14px; line-height: 1.7; background: var(--bg-secondary); }
+.after-payment-note { margin: 0 0 26px; color: var(--text-secondary); font-size: 15px; line-height: 1.8; }
+.pay-button { width: 100%; min-height: 48px; border: 1px solid var(--theme-blue); border-radius: 12px; padding: 12px 18px; background: var(--theme-blue); color: #fff; font: inherit; font-size: 16px; font-weight: 550; cursor: pointer; transition: background .15s; }.pay-button:hover { background: var(--theme-blue-hover); }.pay-button:disabled { opacity: .5; cursor: wait; }.pay-button:focus-visible, .later-link:focus-visible { outline: 3px solid var(--theme-blue); outline-offset: 3px; }
+.later-link { display: block; margin-top: 24px; color: var(--text-secondary); font-size: 13px; text-align: center; text-decoration: underline; text-underline-offset: 4px; }
+.finished-state p { color: var(--text-secondary); font-size: 15px; line-height: 1.8; margin: 0 0 26px; }
+.checkout-loading { max-width: 560px; padding-top: 24px; }.checkout-error { max-width: 460px; padding: 32px; border: 1px solid var(--border-divider); border-radius: 16px; background: var(--app-bg); }.checkout-error p { color: var(--text-secondary); line-height: 1.7; margin-bottom: 24px; }
+@media (max-width: 1000px) { .checkout-grid { gap: 32px; }.payment-summary { padding: 28px; } }
+@media (max-width: 800px) { .checkout-grid { grid-template-columns: 1fr; gap: 36px; }.checkout-heading { margin-bottom: 30px; }.checkout-heading h1 { font-size: 26px; }.checkout-information { gap: 32px; }.payment-summary { position: static; padding: 28px 24px; border-radius: 24px; }.payment-summary h2 { font-size: 26px; }.payment-method { min-height: 160px; } }
 </style>

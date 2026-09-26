@@ -95,22 +95,21 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
 </template>
 
 <style scoped>
-.result-page { background: var(--bg-canvas); }
+.result-page { background: var(--app-bg); }
 .result-container { max-width: 680px; }
-.result-card { display: grid; justify-items: center; padding: 38px; border: 1px solid var(--border-line); border-radius: var(--radius-xl); background: #fff; box-shadow: var(--shadow-sm); text-align: center; }
+.result-card { display: grid; justify-items: center; padding: 38px; border: 1px solid var(--border-divider); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-card); text-align: center; }
 .result-icon { display: grid; width: 58px; height: 58px; margin-bottom: 15px; place-items: center; border-radius: 50%; font-size: 25px; font-weight: 800; }
-.result-icon.success { background: #eaf8ef; color: #228b4d; }
-.result-icon.failed { background: var(--status-red-bg); color: var(--danger-red); }
-.result-icon.pending { background: var(--brand-blue-subtle); color: var(--brand-blue); }
+.result-icon.success { background: var(--status-green-bg); color: var(--status-green); }
+.result-icon.failed { background: var(--status-red-bg); color: var(--status-red); }
+.result-icon.pending { background: var(--theme-blue-tint); color: var(--theme-blue); }
 .result-card h1 { margin: 5px 0 8px; color: var(--text-primary); font-size: 25px; }
 .result-card > p { max-width: 520px; margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
-.sandbox-caption { margin-top: 12px; color: #89877f; font-size: 12px; }
-.result-card .primary-button { background: #292925; border-color: #292925; }
-.result-details { width: 100%; margin: 24px 0; border-top: 1px solid var(--border-line); }
-.result-details div { display: grid; grid-template-columns: 110px 1fr; gap: 14px; padding: 11px 2px; border-bottom: 1px solid var(--border-line); text-align: left; }
+.sandbox-caption { margin-top: 12px; color: var(--text-secondary); font-size: 12px; }
+.result-details { width: 100%; margin: 24px 0; border-top: 1px solid var(--border-divider); }
+.result-details div { display: grid; grid-template-columns: 110px 1fr; gap: 14px; padding: 11px 2px; border-bottom: 1px solid var(--border-divider); text-align: left; }
 .result-details dt { color: var(--text-tertiary); font-size: 12px; }
 .result-details dd { margin: 0; color: var(--text-primary); font-size: 12px; font-weight: 600; word-break: break-all; }
-.query-error { margin-bottom: 12px; color: var(--danger-red); font-size: 12px; }
+.query-error { margin-bottom: 12px; color: var(--status-red); font-size: 12px; }
 .result-actions { display: flex; gap: 10px; }
 @media (max-width: 600px) { .result-card { padding: 24px 18px; } .result-details div { grid-template-columns: 90px 1fr; } .result-actions { width: 100%; flex-direction: column; } }
 </style>

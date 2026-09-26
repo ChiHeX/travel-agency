@@ -505,6 +505,13 @@ a {
 .review-copy { white-space: pre-wrap; overflow-wrap: anywhere; }
 .el-dialog { max-width: calc(100vw - 32px); }
 .el-message-box { max-width: calc(100vw - 32px); }
+.el-message-box.order-cancel-confirm { width: min(360px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border-divider); border-radius: 20px; box-shadow: var(--shadow-popover); }
+.order-cancel-confirm .el-message-box__title { font-size: 18px; font-weight: 600; }
+.order-cancel-confirm .el-message-box__content { padding: 18px 0 24px; line-height: 1.6; }
+.order-cancel-confirm .el-message-box__btns { gap: 10px; padding: 0; }
+.order-cancel-confirm .el-message-box__btns .el-button { min-height: 36px; margin: 0; padding: 0 16px; border-radius: var(--radius-full); cursor: pointer; }
+.order-cancel-confirm .el-message-box__btns .el-button--primary { border-color: var(--status-red); background: var(--status-red); }
+.order-cancel-confirm .el-message-box__btns .el-button--primary:hover { filter: brightness(.9); }
 @media (max-width: 640px) {
   .app-layout-shell .container { width: calc(100% - 28px); }
   .app-layout-shell .section-head,

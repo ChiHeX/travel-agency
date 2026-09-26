@@ -43,6 +43,12 @@ import { getScrollEntryId, restoreScrollPosition, saveScrollPosition } from '@/u
 
 const routes = [
   {
+    path: '/orders/:orderNo',
+    component: PaymentLayout,
+    meta: { requiresAuth: true },
+    children: [{ path: '', name: 'order-detail', component: OrderDetailView }]
+  },
+  {
     path: '/payment/:orderNo',
     component: PaymentLayout,
     meta: { requiresAuth: true },
@@ -89,7 +95,7 @@ const routes = [
       { path: 'orders', name: 'account-orders', component: OrdersView },
       { path: 'orders/:orderNo/payment', redirect: (to) => ({ name: 'order-payment', params: to.params, query: to.query }) },
       { path: 'orders/:orderNo/payment/result', redirect: (to) => ({ name: 'order-payment-result', params: to.params, query: to.query }) },
-      { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
+      { path: 'orders/:orderNo', redirect: (to) => ({ name: 'order-detail', params: to.params, query: to.query, hash: to.hash }) },
       { path: 'order/create', redirect: (to) => ({ name: 'order-create', query: to.query }) },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },
       { path: 'favorites', name: 'account-favorites', component: FavoritesView },

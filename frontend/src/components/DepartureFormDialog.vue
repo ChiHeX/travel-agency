@@ -35,11 +35,18 @@ const occupiedSeats = computed(() => {
 const submitting = ref(false)
 const submitError = ref('')
 
-/** 乐观锁冲突状态：提示文案、服务端最新数据、用户选择"覆盖"时要用的版本号。 */
+/**
+ * 乐观锁状态。
+ *
+ * <p>{@code baseVersion} 是<b>表单当前对应的团期版本</b>，提交修改时用它做乐观锁。
+ * 打开表单时取 {@code props.departure.version}；一旦通过冲突面板重新取回服务端数据
+ * （无论用户选择"载入最新数据"还是"保留我的修改并覆盖"），都必须把基准版本更新为那一份的
+ * 版本 —— 否则用户点了"载入服务器最新数据"之后再保存，提交的仍是旧版本，会再次撞上同一个冲突。</p>
+ */
 const conflictMessage = ref('')
 const conflictLatest = ref(null)
 const conflictLoading = ref(false)
-const versionOverride = ref(null)
+const baseVersion = ref(null)
 
 const routes = ref([])
 const routeTotal = ref(0)
@@ -85,7 +92,8 @@ function reset() {
   submitError.value = ''
   conflictMessage.value = ''
   conflictLatest.value = null
-  versionOverride.value = null
+  // 重置表单时一并把基准版本拉回当前这条团期的版本（新建时为 null，创建请求不带 version）。
+  baseVersion.value = source.version ?? null
 }
 
 /** 按 id 去重合并，避免"加载更多"把同一页重复追加进来。 */
@@ -233,10 +241,10 @@ async function save() {
     guideId: form.guideId ? String(form.guideId) : null
   }
   // 创建请求（DepartureCreateRequest）不含 version；修改请求（DepartureUpdateRequest）必填，
-  // 用「读取时拿到的版本」提交，与库内不一致即视为基于过期数据提交。
+  // 用「表单当前对应的版本」提交，与库内不一致即视为基于过期数据提交。
   const editing = Boolean(props.departure?.id)
   const payload = editing
-    ? { ...editable, version: versionOverride.value ?? props.departure.version }
+    ? { ...editable, version: baseVersion.value ?? props.departure.version }
     : editable
 
   submitting.value = true
@@ -246,7 +254,6 @@ async function save() {
       : await adminApi.createDeparture(payload)
     ElMessage.success(editing ? '团期已更新' : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
     conflictLatest.value = null
-    versionOverride.value = null
     emit('saved', saved)
     close()
   } catch (cause) {
@@ -278,7 +285,12 @@ async function loadLatestForConflict() {
   }
 }
 
-/** 采用服务端最新数据：用最新值覆盖表单，并清掉冲突状态。 */
+/**
+ * 采用服务端最新数据：用最新值覆盖表单，并把基准版本推进到那一份的版本。
+ *
+ * <p>基准版本必须一起更新：表单内容已经等于服务端最新数据，之后再保存应当基于这个版本，
+ * 而不是表单打开时那个已过期的版本。</p>
+ */
 function adoptLatest() {
   if (!conflictLatest.value) return
   Object.assign(form, {
@@ -290,15 +302,20 @@ function adoptLatest() {
     maxPeople: conflictLatest.value.maxPeople || 20,
     guideId: conflictLatest.value.guideId ? String(conflictLatest.value.guideId) : ''
   })
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
   conflictMessage.value = ''
   conflictLatest.value = null
-  versionOverride.value = null
 }
 
-/** 保留我的修改并覆盖：用最新版本号重试一次，这次的覆盖是用户明确选择的结果。 */
+/**
+ * 保留我的修改并覆盖：先取回最新版本作为基准，再重试一次。
+ *
+ * <p>这次的覆盖是用户明确选择的结果：服务端要求提交的版本等于库内当前版本，
+ * 因此必须用刚取回的版本重试，而不是继续用表单打开时的旧版本。</p>
+ */
 async function overwriteLatest() {
   if (!conflictLatest.value) return
-  versionOverride.value = conflictLatest.value.version
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
   conflictMessage.value = ''
   conflictLatest.value = null
   await save()

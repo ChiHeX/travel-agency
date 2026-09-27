@@ -261,7 +261,13 @@ public class DepartureService {
      *       （{@link #updateConflict}）。</li>
      * </ol>
      *
-     * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #updateConflict}）。
+     * <p><b>④⑤ 两步共用同一份数据：锁内的 {@code SELECT ... FOR UPDATE} 当前读</b>
+     * （{@link DepartureMapper#selectByIdForUpdate}）。只在最前面用普通读判一次版本是不够的：
+     * 版本可能在"普通读"与"加锁读"之间被改掉，那时改挂 / 名额规则会抢先报出别的错误，
+     * 把"表单已过期"这个根因盖掉。统一基准之后，方法里所有状态相关判定看到的是同一份
+     * 最新已提交数据，也就不存在"某一步跑在过期快照上"的可能。</p>
+     *
+     * <p>影响行数为 0 时同样用当前读核实原因（{@link #updateConflict}）。
      * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
      * 会把"条件更新其实没生效"误判成成功。</p>
      *
@@ -272,23 +278,26 @@ public class DepartureService {
     @Transactional
     public AdminDepartureView update(Long departureId, DepartureUpdateRequest request, Long operatorId) {
         DepartureCreateRequest editable = request.editableFields();
-        Departure existing = requireDeparture(departureId);
+        // ① 先确认存在：不存在时不必拿锁，也不必做后续校验。
+        requireDeparture(departureId);
         // ② 请求自身语义；③ 引用的线路 / 导游必须存在。
         validateEditableFields(editable);
         requireRoute(editable.routeId());
         requireGuide(editable.guideId());
-        // ④ 乐观锁早判：版本过期就先报，不让下面那些依赖当前状态的检查抢先抛错。
-        requireCurrentVersion(existing, request.version());
-        // ⑤ 依赖当前状态的业务规则。
-        boolean rebinding = !Objects.equals(existing.routeId, editable.routeId());
+        // ④ 从这一步起，**锁内的当前读是本方法唯一的判定基准**：版本、改挂、名额、导游冲突
+        //    全部基于同一份最新已提交数据，不存在"某一步跑在过期快照上"的情况。
+        //    只判一次快照版本是不够的 —— 版本可能在"普通读"与"加锁读"之间被改掉，
+        //    那样改挂规则会抢先报出别的错误，把"表单已过期"这个根因盖掉。
+        //    加锁顺序固定为「导游 → 团期」（requireGuide 已先取到导游行锁），与 create 一致，不会交叉死锁。
+        Departure current = requireDepartureForUpdate(departureId);
+        requireCurrentVersion(current, request.version());
+        // ⑤ 依赖当前状态的业务规则，一律基于 current。
+        boolean rebinding = !Objects.equals(current.routeId, editable.routeId());
         if (rebinding) {
-            // 锁顺序固定为「导游 → 团期」：requireGuide 已先取到导游行锁，这里再锁团期行，
-            // 与 create 的加锁顺序一致，不会交叉死锁。
-            existing = requireDepartureForUpdate(departureId);
-            requireRebindable(departureId, existing);
+            requireRebindable(departureId, current);
         }
-        // 读得到的明显违规先按字段语义返回 422；读取之后才出现的并发占位由 WHERE 闸门兜住。
-        int occupied = DepartureView.occupiedSeats(existing);
+        // 读得到的明显违规先按字段语义返回 422；此处之后才出现的并发占位由 WHERE 闸门兜住。
+        int occupied = DepartureView.occupiedSeats(current);
         if (editable.maxPeople() < occupied) {
             throw new BusinessException(422, "VALIDATION_ERROR", capacityMessage(occupied));
         }
@@ -399,13 +408,14 @@ public class DepartureService {
      *
      * <p>同理，改挂检查也会先报「团期已开放报名」之类的状态冲突，掩盖"表单已过期"这个事实。</p>
      *
-     * <p>这里用的是本事务第一次读到的版本（一致性快照）。若它已经不等于提交版本，
-     * 说明表单确实基于过期数据，判定成立；即便版本是在这一刻之后才被改的，
-     * UPDATE 的 WHERE 条件仍会兜住，由 {@link #updateConflict} 给出同一个结论。</p>
+     * <p>传入的必须是<b>锁内当前读</b>拿到的那一行（{@link DepartureMapper#selectByIdForUpdate}），
+     * 不是普通读的快照：版本可能在"普通读"与"加锁读"之间被改掉，只有用当前读判一次
+     * 才能保证后面那些状态相关规则不会跑在过期数据上。在这一刻之后才发生的版本变化，
+     * 仍由 UPDATE 的 WHERE 条件兜住，最终由 {@link #updateConflict} 给出同一个结论。</p>
      */
-    private void requireCurrentVersion(Departure existing, Integer submittedVersion) {
-        if (!Objects.equals(existing.version, submittedVersion)) {
-            throw versionConflict(existing.version, submittedVersion);
+    private void requireCurrentVersion(Departure current, Integer submittedVersion) {
+        if (!Objects.equals(current.version, submittedVersion)) {
+            throw versionConflict(current.version, submittedVersion);
         }
     }
 

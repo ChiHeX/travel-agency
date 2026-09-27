@@ -47,6 +47,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -259,10 +260,11 @@ class DepartureAdminServiceTest {
     @DisplayName("修改：只写契约允许的字段，绝不覆盖名额计数与状态；版本按乐观锁自增")
     void updateNeverTouchesServerOwnedColumns() {
         // 用一个不会与其它字段撞值的版本号，便于精确断言"写入的是 版本+1"；
-        // 库内版本必须与提交版本一致，否则会先被乐观锁早判拦下（那正是下面的用例覆盖的）。
+        // 库内版本必须与提交版本一致，否则会先被乐观锁判定拦下（那正是下面的用例覆盖的）。
         Departure existing = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
         existing.version = 7;
         when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(existing);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(existing);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -303,8 +305,9 @@ class DepartureAdminServiceTest {
     @DisplayName("修改：最大人数小于已占用名额返回 422，且不更新")
     void updateRejectsCapacityBelowOccupiedSeats() {
         // 已占用 4 + 8 = 12 人。
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -318,11 +321,13 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：最大人数恰好等于已占用名额时允许（边界）")
     void updateAllowsCapacityEqualToOccupiedSeats() {
-        // 第一次读用于定位与名额校验，第二次读是写入后的回查：替身不会真的改库，
-        // 所以这里显式返回"已按新容量落库"的那一行，断言才对应真实运行时的结果。
+        // 锁内当前读给出的是「判定基准」那一行；写入后的回查（detail）另走 selectById，
+        // 替身不会真的改库，所以那里显式返回"已按新容量落库"的那一行。
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 12, 4, 8, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -401,8 +406,9 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：名额闸门写进 UPDATE 的 WHERE 子句")
     void updatePutsCapacityGateIntoTheStatement() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -462,20 +468,25 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 读取时显示名额充足、写入时已被并发下单占满：UPDATE 匹配 0 行，
+     * 名额正好在「锁内判定」与「条件 UPDATE」之间被并发下单占满：UPDATE 匹配 0 行，
      * 必须判定为 409，而不是当成成功更新（否则会写出已占人数 &gt; 最大人数的团期）。
      *
-     * <p>原因必须用当前读 {@code selectByIdForUpdate} 核实 —— REPEATABLE READ 下
-     * 普通 {@code selectById} 会读回本事务的旧快照，把并发变化看成"没变化"。</p>
+     * <p>判定基准统一成锁内当前读之后，这个窗口已经缩到很小 —— 锁内读到的还是"名额够用"，
+     * 真正执行 UPDATE 时已被占满。所以这里给 {@code selectByIdForUpdate} 配两次返回：
+     * 第一次是判定基准，第二次是 0 行之后的回读。</p>
+     *
+     * <p>回读同样必须是当前读：REPEATABLE READ 下普通 {@code selectById} 会读回本事务的旧快照，
+     * 把并发变化看成"没变化"。</p>
      */
     @Test
-    @DisplayName("修改：并发下单占位导致名额闸门失效时返回 409，而不是默默写入")
+    @DisplayName("修改：并发下单占位导致条件更新匹配 0 行时返回 409，而不是默默写入")
     void updateReportsCapacityConflictWhenGateFailsInsideTheUpdate() {
-        // 第一次读：30 人上限、0 人占用，前置校验通过。
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
-        // 当前读：并发下单后已占 20 人，而本次要把上限改成 10。
         when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                // 判定基准：30 人上限、0 人占用，名额检查通过。
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null))
+                // 0 行之后回读：并发下单后已占 20 人，而本次要把上限改成 10。
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
@@ -485,7 +496,7 @@ class DepartureAdminServiceTest {
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_CAPACITY_CONFLICT", ex.getCode());
-        verify(departureMapper).selectByIdForUpdate(DEPARTURE_ID);
+        verify(departureMapper, times(2)).selectByIdForUpdate(DEPARTURE_ID);
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
@@ -523,6 +534,7 @@ class DepartureAdminServiceTest {
         Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
         stale.version = 5;
         when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
         stubRoute(ROUTE_ID);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -540,6 +552,7 @@ class DepartureAdminServiceTest {
         Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
         stale.version = 5;
         when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
         Long otherRouteId = 22L;
         stubRoute(otherRouteId);
 
@@ -547,8 +560,34 @@ class DepartureAdminServiceTest {
                 () -> service.update(DEPARTURE_ID, updateRequest(otherRouteId, null, 30, DEFAULT_VERSION), ACTOR));
 
         assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
-        // 早判直接返回：不会为了一次注定失败的提交去拿团期行锁，也不会执行条件更新。
-        verify(departureMapper, never()).selectByIdForUpdate(any());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /**
+     * 评审指出的竞态：版本在「首次读取」与「锁内当前读」之间被改掉。
+     *
+     * <p>方法里现在只有一次判定读取（锁内当前读），所以这里模拟的是那一份数据本身已经更新：
+     * 快照里是版本 0、团期仍是 DRAFT，锁内拿到的是版本 5、且团期已被上架。
+     * 若判定基准不统一（比如只信快照、或不复查版本），改挂闸门会先报
+     * {@code DEPARTURE_STATE_CONFLICT}「已开放报名，不能改挂」，把"表单已过期"盖掉。</p>
+     */
+    @Test
+    @DisplayName("修改：版本在两次读取之间被改掉时，报版本冲突而不是改挂状态冲突")
+    void versionChangedBeforeTheLockedReadStillWinsOverRebindRule() {
+        Departure snapshot = departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null);
+        Departure locked = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        locked.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(snapshot);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(locked);
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(otherRouteId, null, 30, DEFAULT_VERSION), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode(),
+                "锁内已经能看到更新的版本，就不该让改挂闸门先报状态冲突");
         verify(departureMapper, never()).update(any(), any());
     }
 
@@ -561,6 +600,7 @@ class DepartureAdminServiceTest {
         Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
         current.version = 5;
         when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -602,18 +642,19 @@ class DepartureAdminServiceTest {
      *
      * <p>对应真实场景 —— 两位工作人员各自打开同一条团期，前一位先保存（版本前进一步），
      * 后一位拿着旧版本提交，不能悄悄覆盖前一位对日期 / 价格 / 导游的改动。
-     * 这一条走的是早判：连条件更新都不该执行。</p>
+     * 这一条走的是锁内版本判定：连条件更新都不该执行。</p>
      *
-     * <p>版本在「读取之后、写入之前」才被改掉的并发情形由
+     * <p>版本在「锁内判定之后、写入之前」才被改掉的并发情形由
      * {@link #versionConflictTakesPrecedenceOverCapacity} 覆盖（那里走 0 行分支）。</p>
      */
     @Test
-    @DisplayName("修改：读到的版本已过期时立即返回 409 DEPARTURE_VERSION_CONFLICT，且不写库")
+    @DisplayName("修改：锁内读到的版本已过期时立即返回 409 DEPARTURE_VERSION_CONFLICT，且不写库")
     void updateRejectsStaleVersion() {
         // 库内版本已经是 5，客户端仍按 0 提交。
         Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
         stale.version = 5;
         when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
         stubRoute(ROUTE_ID);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -655,8 +696,9 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：版本闸门写进 WHERE，并在 SET 中自增")
     void updatePutsVersionGateIntoTheStatement() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -706,8 +748,9 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：同一导游时间重叠返回 409，且不更新")
     void updateRejectsGuideOverlap() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
         stubGuide(GUIDE_ID);
         stubGuideConflict();

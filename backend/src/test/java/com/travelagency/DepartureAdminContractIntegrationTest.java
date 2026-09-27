@@ -397,6 +397,53 @@ class DepartureAdminContractIntegrationTest {
         assertEquals(routeId, departures.selectById(id).routeId, "冲突时不能改动线路");
     }
 
+    /**
+     * 并发：版本在「首次读取」与「锁内当前读」之间被改掉，且团期同时被上架。
+     *
+     * <p>这是评审指出的竞态：改挂分支会重新加锁读取团期，如果不在那份数据上再判一次版本，
+     * 改挂闸门就会先报 {@code DEPARTURE_STATE_CONFLICT}「已开放报名，不能改挂」，
+     * 把"表单已过期"这个根因盖掉，前端也就进不了版本冲突处理流程。</p>
+     *
+     * <p>构造顺序：事务内先普通读一次（快照里版本 0、状态 DRAFT）→ 另一个连接把版本改成 5
+     * 并把状态改成 OPEN 后提交 → 同一事务内带着版本 0 改挂。</p>
+     */
+    @Test
+    @DisplayName("并发：改挂前版本被改掉且团期已被上架时必须报版本冲突，而不是改挂状态冲突")
+    void rebindReportsVersionConflictWhenVersionChangedBeforeTheLockedRead() throws Exception {
+        Long id = createDeparture(routeId, 30, "DRAFT");
+
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        BusinessException[] captured = new BusinessException[1];
+
+        try {
+            tx.execute(status -> {
+                // ① 事务内先普通读一次，建立一致性读快照。
+                assertEquals("DRAFT", departures.selectById(id).status);
+                assertEquals(0, currentVersion(id));
+
+                // ② 另一个连接：别人先改过一次（版本 0 → 5），并把团期上架，两步一起提交。
+                runOnSeparateConnection(
+                        "UPDATE departure SET version = 5, status = 'OPEN' WHERE id = " + id);
+
+                // ③ 同一事务内改挂线路：提交的仍是快照里的版本 0。
+                try {
+                    departureService.update(id, updateRequest(otherRouteId, 30, 0), staffUserId);
+                } catch (BusinessException expected) {
+                    captured[0] = expected;
+                }
+                return null;
+            });
+        } catch (UnexpectedRollbackException expected) {
+            // 内层失败把共享事务标记为 rollback-only，属于预期。
+        }
+
+        assertNotNull(captured[0], "必须抛业务异常");
+        assertEquals(409, captured[0].getStatus());
+        assertEquals("DEPARTURE_VERSION_CONFLICT", captured[0].getCode(),
+                "根因是表单已过期，不该被改挂闸门抢先报成状态冲突");
+        assertEquals(routeId, departures.selectById(id).routeId, "冲突提交不得改动线路");
+    }
+
     /** 版本号缺失或为负属于请求字段问题（422），不能落成"静默按 0 处理"。 */
     @Test
     @DisplayName("乐观锁：修改请求缺少 version 返回 422")
@@ -450,7 +497,7 @@ class DepartureAdminContractIntegrationTest {
      * 「目标状态已达成」。用 Mockito 把第二次读 stub 成新数据模拟不出这个行为。</p>
      */
     @Test
-    @DisplayName("并发：读取后被占位导致条件更新为 0 行时必须返回 409，且不改动任何字段")
+    @DisplayName("并发：读取后被占位时提交必须失败，且不改动任何字段")
     void updateFailsWhenSeatsAreTakenAfterTheRead() throws Exception {
         Long id = createDeparture(routeId, 30, "OPEN");
 
@@ -459,14 +506,14 @@ class DepartureAdminContractIntegrationTest {
 
         try {
             tx.execute(status -> {
-                // ① 事务内第一次读：这一步建立一致性读快照（service.update 内部的第一步同理）。
+                // ① 事务内第一次读：这一步建立一致性读快照。
                 Departure snapshot = departures.selectById(id);
                 assertEquals(0, snapshot.reservedPeople.intValue(), "并发占位之前快照里应当是 0 人");
 
                 // ② 另一个连接占位 20 人并立即提交（独立连接，不参与本事务）。
                 occupySeatsOnSeparateConnection(id, 20);
 
-                // ③ 前置校验用的是本次「已过时」的快照：10 < 0 不成立，因此会放行到条件 UPDATE。
+                // ③ 同一事务内把上限改成 10（低于已占的 20 人）。
                 try {
                     departureService.update(id, updateRequest(routeId, 10, currentVersion(id)), staffUserId);
                     // 走到这里说明把没生效的修改报成了成功 —— 正是要防的回归。
@@ -479,9 +526,13 @@ class DepartureAdminContractIntegrationTest {
             // 内层 @Transactional 抛错会把共享事务标记为 rollback-only，属于预期。
         }
 
-        assertNotNull(captured[0], "条件更新未生效时必须抛业务异常，不能返回成功");
-        assertEquals(409, captured[0].getStatus());
-        assertEquals("DEPARTURE_CAPACITY_CONFLICT", captured[0].getCode());
+        assertNotNull(captured[0], "无法生效的修改必须抛业务异常，不能返回成功");
+        // 判定基准统一成锁内当前读之后，并发占位在这次读取里就可见了，
+        // 因此由「读得到的违规」这一层拦下：422 字段语义，而不是 0 行分支的 409。
+        // 0 行分支仍然存在（窗口缩到「锁内读取」与「条件 UPDATE」之间），由单测覆盖；
+        // 这里关注的是更本质的两件事：不得报成功、不得改动任何字段。
+        assertEquals(422, captured[0].getStatus());
+        assertEquals("VALIDATION_ERROR", captured[0].getCode());
 
         // 并发占位的 20 人确实已经提交（用独立连接读已提交结果）。
         assertEquals(20, committedReservedPeople(id), "并发占位的 20 人应当已经落库");

@@ -181,4 +181,64 @@ describe('DepartureFormDialog 乐观锁', () => {
 
     expect(updateDeparture.mock.calls.at(-1)[1].version).toBe(VERSION_ON_OPEN)
   })
+
+  /**
+   * 修改请求会提交全部可编辑字段（含线路与导游），所以冲突面板必须把它们也摆出来。
+   * 只对比日期 / 价格 / 人数的话，别人改了线路或导游时，
+   * 用户会在看不到差异的情况下点下「保留我的修改并覆盖」。
+   */
+  it('别人改了线路与导游时，冲突面板必须把这两项纳入对比并标记差异', async () => {
+    const changedByOthers = {
+      ...departureOnServer,
+      routeId: '77',
+      routeName: '另一条线路',
+      guideId: '5',
+      guideName: '李导'
+    }
+    updateDeparture.mockRejectedValueOnce(versionConflict())
+    fetchDeparture.mockResolvedValue(changedByOthers)
+
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存团期').trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    // 两项都在面板里，且服务端与用户填写的值都摆了出来。
+    expect(text).toContain('所属线路')
+    expect(text).toContain('带团导游')
+    expect(text).toContain('另一条线路')
+    expect(text).toContain('线路 #10')
+    expect(text).toContain('李导')
+    expect(text).toContain('暂不分配')
+    // 差异被点名，用户点覆盖前就知道会盖掉什么。
+    expect(text).toContain('所属线路、带团导游')
+    expect(text).toContain('有差异')
+
+    // 用户填写的内容仍然保留：选「覆盖」时提交的是自己那份线路 / 导游，且基于服务端最新版本。
+    updateDeparture.mockResolvedValueOnce(changedByOthers)
+    await buttonByText(wrapper, '保留我的修改并覆盖').trigger('click')
+    await flushPromises()
+
+    const payload = updateDeparture.mock.calls.at(-1)[1]
+    expect(payload.routeId).toBe('10')
+    expect(payload.guideId).toBe(null)
+    expect(payload.version).toBe(VERSION_ON_SERVER)
+  })
+
+  it('只差人数时，差异清单不应把线路与导游也算进去', async () => {
+    updateDeparture.mockRejectedValueOnce(versionConflict())
+    fetchDeparture.mockResolvedValue({ ...departureOnOpen, maxPeople: 25, version: VERSION_ON_SERVER })
+
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存团期').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('最大人数')
+    expect(wrapper.text()).toContain('所属线路')
+    expect(wrapper.text()).not.toContain('所属线路、带团导游')
+  })
 })

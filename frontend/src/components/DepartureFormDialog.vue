@@ -48,6 +48,21 @@ const conflictLatest = ref(null)
 const conflictLoading = ref(false)
 const baseVersion = ref(null)
 
+/**
+ * 冲突对比覆盖**全部可编辑字段**。
+ *
+ * <p>修改请求（{@link DepartureUpdateRequest}）会提交线路、导游、日期、价格、人数等所有可编辑字段，
+ * 因此对比必须逐项列出它们 —— 只对比日期 / 价格 / 人数的话，
+ * 别人改了线路或导游时，用户会在看不到差异的情况下把它覆盖掉。</p>
+ */
+const EDITABLE_FIELD_LABELS = {
+  routeId: '所属线路',
+  guideId: '带团导游',
+  dates: '日期',
+  prices: '价格',
+  maxPeople: '最大人数'
+}
+
 const routes = ref([])
 const routeTotal = ref(0)
 const routePageNo = ref(0)
@@ -60,6 +75,42 @@ const guidesLoading = ref(false)
 
 const hasMoreRoutes = computed(() => routes.value.length < routeTotal.value)
 const hasMoreGuides = computed(() => guides.value.length < guideTotal.value)
+
+/**
+ * 服务端最新数据与用户当前填写不一致的可编辑字段。
+ *
+ * <p>逐项比较，包括线路与导游 —— 它们同样在修改请求里提交，漏掉就会造成
+ * "看不到差异却被覆盖"。</p>
+ */
+const conflictDifferences = computed(() => {
+  const latest = conflictLatest.value
+  if (!latest) return []
+  const keys = []
+  if (String(latest.routeId ?? '') !== String(form.routeId ?? '')) keys.push('routeId')
+  if (String(latest.guideId ?? '') !== String(form.guideId ?? '')) keys.push('guideId')
+  if ((latest.startDate || '') !== (form.startDate || '')
+      || (latest.endDate || '') !== (form.endDate || '')) keys.push('dates')
+  if (money(latest.adultPrice) !== money(form.adultPrice)
+      || money(latest.childPrice) !== money(form.childPrice)) keys.push('prices')
+  if (Number(latest.maxPeople) !== Number(form.maxPeople)) keys.push('maxPeople')
+  return keys
+})
+
+const differs = (key) => conflictDifferences.value.includes(key)
+
+/** 表单里选中的线路名；选项列表里找不到时退回显示 id，避免显示空白。 */
+function routeNameOf(routeId) {
+  if (!routeId) return '未选择'
+  const found = routes.value.find((item) => String(item.id) === String(routeId))
+  return found ? found.name : `线路 #${routeId}`
+}
+
+/** 表单里选中的导游名；未分配时明确写出来，而不是留空。 */
+function guideNameOf(guideId) {
+  if (!guideId) return '暂不分配'
+  const found = guides.value.find((item) => String(item.id) === String(guideId))
+  return found ? found.name : `导游 #${guideId}`
+}
 
 const form = reactive({
   routeId: '',
@@ -341,29 +392,54 @@ async function overwriteLatest() {
         <p class="conflict-title">{{ conflictMessage }}</p>
         <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
         <el-skeleton v-if="conflictLoading" :rows="3" animated />
-        <dl v-else-if="conflictLatest" class="conflict-grid">
-          <div>
-            <dt>日期</dt>
-            <dd>
-              <span class="conflict-server">服务器：{{ conflictLatest.startDate }} ~ {{ conflictLatest.endDate }}</span>
-              <span class="conflict-mine">你填写：{{ form.startDate }} ~ {{ form.endDate }}</span>
-            </dd>
-          </div>
-          <div>
-            <dt>价格（成人 / 儿童）</dt>
-            <dd>
-              <span class="conflict-server">服务器：¥{{ conflictLatest.adultPrice }} / ¥{{ conflictLatest.childPrice }}</span>
-              <span class="conflict-mine">你填写：¥{{ money(form.adultPrice) }} / ¥{{ money(form.childPrice) }}</span>
-            </dd>
-          </div>
-          <div>
-            <dt>最大人数</dt>
-            <dd>
-              <span class="conflict-server">服务器：{{ conflictLatest.maxPeople }} 人</span>
-              <span class="conflict-mine">你填写：{{ form.maxPeople }} 人</span>
-            </dd>
-          </div>
-        </dl>
+        <template v-else-if="conflictLatest">
+          <!-- 先点明会被覆盖的字段：修改请求会提交全部可编辑字段（含线路与导游），
+               只对比日期 / 价格 / 人数会让用户在看不到差异的情况下覆盖他人的改动。 -->
+          <p v-if="conflictDifferences.length" class="conflict-note conflict-diff">
+            以下字段服务器与你填写的不一致，
+            <strong>{{ conflictDifferences.map((key) => EDITABLE_FIELD_LABELS[key]).join('、') }}</strong>；
+            选择「保留我的修改并覆盖」会用你填写的值覆盖它们。
+          </p>
+          <p v-else class="conflict-note conflict-diff">你填写的各项与服务器当前值一致。</p>
+
+          <dl class="conflict-grid">
+            <div :class="{ 'conflict-row-differs': differs('routeId') }">
+              <dt>所属线路{{ differs('routeId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.routeName || `线路 #${conflictLatest.routeId}` }}</span>
+                <span class="conflict-mine">你填写：{{ routeNameOf(form.routeId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('guideId') }">
+              <dt>带团导游{{ differs('guideId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.guideName || '未分配' }}</span>
+                <span class="conflict-mine">你填写：{{ guideNameOf(form.guideId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('dates') }">
+              <dt>日期{{ differs('dates') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.startDate }} ~ {{ conflictLatest.endDate }}</span>
+                <span class="conflict-mine">你填写：{{ form.startDate }} ~ {{ form.endDate }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('prices') }">
+              <dt>价格（成人 / 儿童）{{ differs('prices') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：¥{{ conflictLatest.adultPrice }} / ¥{{ conflictLatest.childPrice }}</span>
+                <span class="conflict-mine">你填写：¥{{ money(form.adultPrice) }} / ¥{{ money(form.childPrice) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('maxPeople') }">
+              <dt>最大人数{{ differs('maxPeople') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.maxPeople }} 人</span>
+                <span class="conflict-mine">你填写：{{ form.maxPeople }} 人</span>
+              </dd>
+            </div>
+          </dl>
+        </template>
         <p v-else class="conflict-note">暂时取不到服务器最新数据，可关闭后重新打开表单再试。</p>
         <div class="conflict-actions">
           <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">
@@ -542,6 +618,21 @@ async function overwriteLatest() {
   gap: 2px;
   margin: 2px 0 0;
   font-size: 12px;
+}
+
+/* 有差异的字段整行加重，避免用户在长列表里漏看 */
+.conflict-row-differs {
+  border-left: 3px solid var(--status-orange, #f59e0b);
+  padding-left: 8px;
+}
+
+.conflict-row-differs dt {
+  color: var(--status-orange-strong, #b45309);
+  font-weight: 600;
+}
+
+.conflict-diff {
+  margin-bottom: 10px;
 }
 
 .conflict-server {

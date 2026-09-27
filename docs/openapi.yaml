@@ -1083,9 +1083,12 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: |
-            状态冲突：`DEPARTURE_VERSION_CONFLICT` 表示提交所基于的 `version` 已过期
-            （团期已被他人修改），调用方应重新读取后决定是否覆盖；
-            其他 409 表示名额、改挂或导游时间冲突。
+            状态冲突。**`DEPARTURE_VERSION_CONFLICT` 优先级最高**：只要提交的 `version`
+            与库内当前版本不一致就直接返回它，不会被后面的名额 / 改挂 / 导游冲突抢先解释 ——
+            版本过期意味着调用方基于旧数据提交，其余冲突的提示对旧表单都是误导；
+            调用方应重新读取团期后再决定是否覆盖。
+            版本一致时才按顺序返回：`DEPARTURE_CAPACITY_CONFLICT`（名额已被占满）、
+            `DEPARTURE_STATE_CONFLICT`（改挂线路受限，或团期在修改期间被并发改动）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

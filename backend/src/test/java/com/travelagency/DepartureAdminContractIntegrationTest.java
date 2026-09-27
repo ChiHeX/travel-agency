@@ -336,6 +336,67 @@ class DepartureAdminContractIntegrationTest {
         assertEquals(8, after.version.intValue(), "过期提交不得改动版本");
     }
 
+    /**
+     * 版本过期时，名额症状不能抢先（真实数据库）。
+     *
+     * <p>旧表单打开时名额还空着，之后别人下单占满（已占 20 人），旧表单把上限改成 10：
+     * 名额规则本身也不成立。但必须报<b>版本冲突</b>（根因），而不是「最大人数不能小于已占用的 20 人」
+     * （症状）—— 后者对提交者毫无意义，也不会让他想到去重新载入数据。</p>
+     *
+     * <p>后半段是反向保证：带上最新版本再提交时，名额规则照常生效，
+     * 说明优先级只是把根因提前，并没有吞掉真实错误。</p>
+     */
+    @Test
+    @DisplayName("乐观锁：版本过期优先于名额症状（409 而不是 422），版本一致时名额规则照常生效")
+    void versionConflictWinsOverCapacitySymptom() throws Exception {
+        Long id = createDeparture(routeId, 30, "DRAFT");
+        setSeats(id, 8, 12);
+        departures.update(null, new UpdateWrapper<Departure>().eq("id", id).set("version", 5));
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(routeId, 10, null, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_VERSION_CONFLICT"));
+
+        assertEquals(30, departures.selectById(id).maxPeople.intValue(), "冲突提交不得改动任何字段");
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(routeId, 10, null, 5)))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+    }
+
+    /**
+     * 版本过期时，改挂的状态冲突也不能抢先（真实数据库）。
+     *
+     * <p>旧表单想把团期改挂到另一条线路，而它在这期间已经被上架：改挂闸门会报
+     * {@code DEPARTURE_STATE_CONFLICT}。但根因同样是版本过期，必须优先报出来，
+     * 前端才能提示「团期已被他人修改」并让用户重新载入。</p>
+     */
+    @Test
+    @DisplayName("乐观锁：版本过期优先于改挂症状，版本一致时改挂闸门照常拒绝")
+    void versionConflictWinsOverRebindSymptom() throws Exception {
+        Long id = createDeparture(routeId, 30, "DRAFT");
+        departures.update(null, new UpdateWrapper<Departure>()
+                .eq("id", id).set("status", "OPEN").set("version", 5));
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(otherRouteId, 30, null, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_VERSION_CONFLICT"));
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(otherRouteId, 30, null, 5)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_STATE_CONFLICT"));
+
+        assertEquals(routeId, departures.selectById(id).routeId, "冲突时不能改动线路");
+    }
+
     /** 版本号缺失或为负属于请求字段问题（422），不能落成"静默按 0 处理"。 */
     @Test
     @DisplayName("乐观锁：修改请求缺少 version 返回 422")

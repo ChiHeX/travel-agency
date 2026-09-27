@@ -248,6 +248,19 @@ public class DepartureService {
      *       版本写在 WHERE 里，同时把 {@code version + 1} 写回，成功后版本前进一步。</li>
      * </ol>
      *
+     * <p><b>错误优先级（从上到下，先命中先返回）</b>。旧表单提交时，先报"版本过期"而不是
+     * 后续那些依赖当前状态的症状，前端才能进入「载入最新数据 / 保留我的修改并覆盖」的流程：</p>
+     * <ol>
+     *   <li>团期不存在 → 404；</li>
+     *   <li>请求自身语义不成立（日期颠倒、价格为负、人数 &lt; 1）→ 422，与库内状态无关；</li>
+     *   <li>引用的线路 / 导游不存在 → 422，同样是请求引用不成立；</li>
+     *   <li><b>提交版本已过期 → 409 {@code DEPARTURE_VERSION_CONFLICT}</b>（见
+     *       {@link #requireCurrentVersion}）；</li>
+     *   <li>依赖当前状态的业务规则：改挂闸门 409、名额低于已占用 422、导游时间冲突 409；</li>
+     *   <li>并发导致上述闸门在语句执行时才失效 → 由影响行数判定，原因仍按 ④→⑤ 的顺序给出
+     *       （{@link #updateConflict}）。</li>
+     * </ol>
+     *
      * <p>影响行数为 0 时用 {@code SELECT ... FOR UPDATE} 当前读核实原因（{@link #updateConflict}）。
      * 绝不能用普通 {@code selectById} 回读后放行 —— REPEATABLE READ 下那是本事务的旧快照，
      * 会把"条件更新其实没生效"误判成成功。</p>
@@ -260,9 +273,13 @@ public class DepartureService {
     public AdminDepartureView update(Long departureId, DepartureUpdateRequest request, Long operatorId) {
         DepartureCreateRequest editable = request.editableFields();
         Departure existing = requireDeparture(departureId);
+        // ② 请求自身语义；③ 引用的线路 / 导游必须存在。
         validateEditableFields(editable);
         requireRoute(editable.routeId());
         requireGuide(editable.guideId());
+        // ④ 乐观锁早判：版本过期就先报，不让下面那些依赖当前状态的检查抢先抛错。
+        requireCurrentVersion(existing, request.version());
+        // ⑤ 依赖当前状态的业务规则。
         boolean rebinding = !Objects.equals(existing.routeId, editable.routeId());
         if (rebinding) {
             // 锁顺序固定为「导游 → 团期」：requireGuide 已先取到导游行锁，这里再锁团期行，
@@ -335,13 +352,14 @@ public class DepartureService {
     }
 
     /**
-     * 条件 UPDATE 影响 0 行时的失败判定。
+     * 条件 UPDATE 影响 0 行时的失败判定，优先级与 {@link #update} 声明的一致：
+     * 版本 → 名额 → 改挂 → 兜底。
      *
      * <p>判定基于 {@link DepartureMapper#selectByIdForUpdate} 这个<b>当前读</b>：
      * REPEATABLE READ 下普通 {@code SELECT} 走一致性快照，本事务前面已经读过该行，
      * 这里会读回旧数据，把并发的改动看成"没有变化"，从而给出错误的原因、甚至误判成功。</p>
      *
-     * <p><b>顺序很重要：先判版本。</b>版本不一致就是"基于过期数据提交"，必须直接 409，
+     * <p><b>先判版本</b>：版本不一致就是"基于过期数据提交"，必须直接 409，
      * 不能让后面的名额 / 改挂判定去解释它 —— 那两处只看字段取值，看不出"有人在中间改过"。</p>
      *
      * <p>也不需要"其实是成功"的分支：{@code SET} 里始终有 {@code version = version + 1}，
@@ -353,9 +371,7 @@ public class DepartureService {
             return new BusinessException(404, "RESOURCE_NOT_FOUND", "团期不存在");
         }
         if (!Objects.equals(latest.version, request.version())) {
-            return new BusinessException(409, "DEPARTURE_VERSION_CONFLICT",
-                    "团期已被他人修改（当前版本 " + latest.version + "，你提交的是 "
-                            + request.version() + "），请查看最新数据后再决定是否覆盖");
+            return versionConflict(latest.version, request.version());
         }
         DepartureCreateRequest editable = request.editableFields();
         int occupied = DepartureView.occupiedSeats(latest);
@@ -369,6 +385,35 @@ public class DepartureService {
         }
         return new BusinessException(409, "DEPARTURE_STATE_CONFLICT",
                 "团期在本次修改期间被并发改动，请重试");
+    }
+
+    /**
+     * 乐观锁早判：提交版本与库内不一致时立即返回 409，不让后面的名额 / 改挂检查先抛出来。
+     *
+     * <p>为什么必须提前：那些检查读的是<b>当前</b>状态，而提交旧表单的人对状态的认知是旧的。
+     * 例如表单打开时名额还空着，之后别人下了单把名额占满，旧表单把上限从 30 改成 10 ——
+     * 名额检查会先报「最大人数不能小于已占用的 20 人」（422），提交者根本不明白
+     * 一个"还空着的"团期为什么占用了 20 人，也就不会想到去重新载入最新数据。
+     * <b>版本过期才是根因</b>，而且前端只有拿到 {@code DEPARTURE_VERSION_CONFLICT}
+     * 才会进入「载入最新数据 / 保留我的修改并覆盖」的流程。</p>
+     *
+     * <p>同理，改挂检查也会先报「团期已开放报名」之类的状态冲突，掩盖"表单已过期"这个事实。</p>
+     *
+     * <p>这里用的是本事务第一次读到的版本（一致性快照）。若它已经不等于提交版本，
+     * 说明表单确实基于过期数据，判定成立；即便版本是在这一刻之后才被改的，
+     * UPDATE 的 WHERE 条件仍会兜住，由 {@link #updateConflict} 给出同一个结论。</p>
+     */
+    private void requireCurrentVersion(Departure existing, Integer submittedVersion) {
+        if (!Objects.equals(existing.version, submittedVersion)) {
+            throw versionConflict(existing.version, submittedVersion);
+        }
+    }
+
+    /** 版本冲突的统一构造：早判与 0 行判定共用，保证同一原因在所有路径上文案与结果码一致。 */
+    private static BusinessException versionConflict(Integer currentVersion, Integer submittedVersion) {
+        return new BusinessException(409, "DEPARTURE_VERSION_CONFLICT",
+                "团期已被他人修改（当前版本 " + currentVersion + "，你提交的是 "
+                        + submittedVersion + "），请查看最新数据后再决定是否覆盖");
     }
 
     private static String capacityMessage(int occupied) {

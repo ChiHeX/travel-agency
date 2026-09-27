@@ -258,12 +258,14 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：只写契约允许的字段，绝不覆盖名额计数与状态；版本按乐观锁自增")
     void updateNeverTouchesServerOwnedColumns() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        // 用一个不会与其它字段撞值的版本号，便于精确断言"写入的是 版本+1"；
+        // 库内版本必须与提交版本一致，否则会先被乐观锁早判拦下（那正是下面的用例覆盖的）。
+        Departure existing = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
+        existing.version = 7;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(existing);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
-        // 用一个不会与其它字段撞值的版本号，便于精确断言"写入的是 版本+1"。
         service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 40, 7), ACTOR);
 
         ArgumentCaptor<Wrapper<Departure>> captor = ArgumentCaptor.forClass(Wrapper.class);
@@ -508,6 +510,68 @@ class DepartureAdminServiceTest {
     }
 
     /**
+     * 版本过期时必须优先报版本冲突，而不是名额规则的 422。
+     *
+     * <p>旧表单打开时名额还空着，之后别人下单占满；旧表单把上限从 30 改成 10 时，
+     * 名额规则本身也不成立。但"一个还空着的团期为什么占用了 20 人"对提交者毫无意义 ——
+     * 版本过期才是根因，前端也只有拿到 {@code DEPARTURE_VERSION_CONFLICT}
+     * 才会进入「载入最新数据 / 保留我的修改并覆盖」的流程。</p>
+     */
+    @Test
+    @DisplayName("修改：版本过期优先于名额规则（409 而不是 422）")
+    void staleVersionWinsOverCapacityRule() {
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        stubRoute(ROUTE_ID);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 10, DEFAULT_VERSION), ACTOR));
+
+        assertEquals(409, ex.getStatus(), "版本过期是根因，不能先报名额规则的 422");
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /** 同理，版本过期也不能被改挂的状态冲突抢先解释。 */
+    @Test
+    @DisplayName("修改：版本过期优先于改挂检查（同样是 409 但结果码是版本冲突）")
+    void staleVersionWinsOverRebindRule() {
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(otherRouteId, null, 30, DEFAULT_VERSION), ACTOR));
+
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        // 早判直接返回：不会为了一次注定失败的提交去拿团期行锁，也不会执行条件更新。
+        verify(departureMapper, never()).selectByIdForUpdate(any());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /**
+     * 反向保证：版本一致时，名额规则照常生效 —— 优先级只是把"根因"提前，不能吞掉真实错误。
+     */
+    @Test
+    @DisplayName("修改：版本一致时名额规则照常返回 422")
+    void currentVersionStillReportsCapacityRule() {
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
+        current.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        stubRoute(ROUTE_ID);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 10, 5), ACTOR));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /**
      * 影响行数为 0 时按当前读判定结果：**当前读与请求不一致就必须失败**。
      *
      * <p>这条守住的是原来的核心缺陷：普通 {@code selectById} 回读在 REPEATABLE READ 下会看到
@@ -534,40 +598,44 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 乐观锁：提交的版本与库内不一致就是"基于过期数据提交"，必须 409。
+     * 乐观锁早判：读到的版本就已经不等于提交版本（表单基于过期数据）。
      *
      * <p>对应真实场景 —— 两位工作人员各自打开同一条团期，前一位先保存（版本前进一步），
-     * 后一位拿着旧版本提交，不能悄悄覆盖前一位对日期 / 价格 / 导游的改动。</p>
+     * 后一位拿着旧版本提交，不能悄悄覆盖前一位对日期 / 价格 / 导游的改动。
+     * 这一条走的是早判：连条件更新都不该执行。</p>
+     *
+     * <p>版本在「读取之后、写入之前」才被改掉的并发情形由
+     * {@link #versionConflictTakesPrecedenceOverCapacity} 覆盖（那里走 0 行分支）。</p>
      */
     @Test
-    @DisplayName("修改：版本过期返回 409 DEPARTURE_VERSION_CONFLICT，且不写库")
+    @DisplayName("修改：读到的版本已过期时立即返回 409 DEPARTURE_VERSION_CONFLICT，且不写库")
     void updateRejectsStaleVersion() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
-        // 库内版本已经前进到 5，客户端仍按 0 提交。
-        Departure latest = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
-        latest.version = 5;
-        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(latest);
+        // 库内版本已经是 5，客户端仍按 0 提交。
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
         stubRoute(ROUTE_ID);
-        when(departureMapper.update(isNull(), any())).thenReturn(0);
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 30, DEFAULT_VERSION), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
     /**
-     * 版本判定必须排在名额判定之前。
+     * 版本在「读取之后、写入之前」被改掉（走 0 行分支）时，同样必须优先报版本冲突。
      *
-     * <p>两处都只看字段取值：名额判定看到"上限够用"就会放过，改挂判定也看不出"有人在中间改过"，
-     * 只有版本能说明这次提交已经过期。所以顺序反了会给出误导性的原因。</p>
+     * <p>名额判定与改挂判定都只看字段取值：名额判定看到"上限够用"就会放过，
+     * 改挂判定也看不出"有人在中间改过"，只有版本能说明这次提交已经过期。
+     * 所以 0 行分支里的顺序反了会给出误导性的原因。</p>
      */
     @Test
-    @DisplayName("修改：既版本过期又名额不足时，优先报版本冲突")
+    @DisplayName("修改：并发改版本导致 0 行时，优先报版本冲突而不是名额冲突")
     void versionConflictTakesPrecedenceOverCapacity() {
+        // 读到的版本还是 0（早判通过），写入时库内已经是 7 —— 条件更新匹配 0 行。
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         Departure latest = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);

@@ -793,6 +793,11 @@ class TradingFlowContractIntegrationTest {
      * 但团期 id 是可以被直接提交的，所以"前端不展示"不构成防线。
      * 这里直接向下单接口提交一个仍为 OPEN、出发日期已过去的团期 id。</p>
      *
+     * <p>夹具日期以<b>数据库当天</b>为基准（见 {@link #databaseToday()}），
+     * 与生产判断 {@code CURRENT_DATE} 同源；否则 JVM 与库会话时区不一致、
+     * 或测试跨过午夜时，这个"三天前"可能相对数据库日历只过去了两天，
+     * 用例会以与被测逻辑无关的原因失败。</p>
+     *
      * <p>断言被拒之后不留任何痕迹：没有订单、没有支付单、名额一点没动
      * （占名额的条件 UPDATE 里也带了 {@code start_date >= CURRENT_DATE}，
      * 因此即便应用层预检被并发竞态绕过，也不会真的占走名额）。</p>
@@ -800,11 +805,16 @@ class TradingFlowContractIntegrationTest {
     @Test
     @DisplayName("已过出发日期的 OPEN 团期不能下单：直传 id 也被拒，且不留订单、支付单与名额变化")
     void rejectsOrderingAnAlreadyDepartedDeparture() throws Exception {
-        // 状态保持"报名中"，只把日期挪到过去。
+        // 状态保持"报名中"，只把日期挪到数据库日历的过去。
+        LocalDate today = databaseToday();
         Departure departed = departure();
-        departed.startDate = LocalDate.now().minusDays(3);
-        departed.endDate = LocalDate.now().minusDays(1);
+        departed.startDate = today.minusDays(3);
+        departed.endDate = today.minusDays(1);
         departures.updateById(departed);
+
+        // 夹具前提自检：确实早于数据库当天，否则这条用例证明不了任何东西。
+        assertTrue(departures.selectById(departureId).startDate.isBefore(databaseToday()),
+                "夹具前提：出发日期必须早于数据库当天");
 
         mvc.perform(post("/api/orders").header("Authorization", buyerToken)
                         .header("Idempotency-Key", newKey())
@@ -823,14 +833,27 @@ class TradingFlowContractIntegrationTest {
                 "被拒的下单不得留下支付单");
     }
 
-    /** 当天出发的团期仍可下单：口径与公开列表一致（{@code start_date >= CURRENT_DATE}）。 */
+    /**
+     * 当天出发的团期仍可下单：口径与公开列表一致（{@code start_date >= CURRENT_DATE}）。
+     *
+     * <p>这条正是在测"当天／早于当天"的边界，因此夹具必须落在<b>数据库当天</b>上：
+     * 用 {@code LocalDate.now()} 时，只要 JVM 与库会话时区不同（CI/容器常见 UTC），
+     * 或者测试恰好跨过午夜，写进去的就会是数据库的昨天或明天 ——
+     * 昨天会被正确拒绝、明天会被正确接受，用例都会以与被测逻辑无关的原因失败。
+     * 生产判断用的是 {@code CURDATE()}，夹具就用 {@link #databaseToday()}。</p>
+     */
     @Test
     @DisplayName("当天出发的 OPEN 团期仍可下单（口径与公开列表一致）")
     void stillAcceptsOrderingADepartureLeavingToday() throws Exception {
-        Departure today = departure();
-        today.startDate = LocalDate.now();
-        today.endDate = LocalDate.now().plusDays(2);
-        departures.updateById(today);
+        LocalDate today = databaseToday();
+        Departure leaving = departure();
+        leaving.startDate = today;
+        leaving.endDate = today.plusDays(2);
+        departures.updateById(leaving);
+
+        // 夹具前提自检：出发日期确实等于数据库当天，边界才是被测的那个边界。
+        assertEquals(databaseToday(), departures.selectById(departureId).startDate,
+                "夹具前提：出发日期必须等于数据库当天");
 
         book(orderBody(1, 0), newKey(), 201);
 
@@ -840,6 +863,20 @@ class TradingFlowContractIntegrationTest {
     // ------------------------------------------------------------------
     // 断言辅助
     // ------------------------------------------------------------------
+
+    /**
+     * 测试夹具的日期基准：<b>与生产判断用同一个口径</b>。
+     *
+     * <p>{@code OrderService.create} 的应用层预检、以及占名额语句里的
+     * {@code start_date >= CURRENT_DATE}，取的都是<b>数据库</b>日期
+     * （{@code TravelOrderMapper.databaseToday()} 就是 {@code SELECT CURDATE()}）。
+     * 夹具若用 {@code LocalDate.now()}，在 JVM 与数据库会话时区不一致（CI/容器常见 UTC）、
+     * 或测试恰好跨过午夜时，写进去的"今天"会变成数据库的昨天或明天，
+     * 日期边界用例就会以与被测逻辑无关的原因失败。</p>
+     */
+    private LocalDate databaseToday() {
+        return orders.databaseToday();
+    }
 
     /** 查订单实体，断言存在。 */
     private TravelOrder orderOf(String orderNo) {

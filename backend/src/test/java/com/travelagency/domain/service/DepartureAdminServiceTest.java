@@ -32,6 +32,8 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -276,10 +278,23 @@ class DepartureAdminServiceTest {
         assertFalse(sqlSet.contains("status"), "不得写入 status");
         // 版本由乐观锁自增，写入的是「提交版本 + 1」，而不是把客户端提交的版本原样写回。
         assertTrue(sqlSet.contains("version"), "版本应当按乐观锁自增");
-        assertTrue(wrapper.getParamNameValuePairs().containsValue(8),
-                "应当写入 版本+1（7 → 8），实际参数：" + wrapper.getParamNameValuePairs());
-        assertFalse(wrapper.getParamNameValuePairs().containsValue(7),
-                "不得把客户端提交的版本原样写回");
+        assertEquals(8, setParameter(wrapper, "version"), "SET 里应当写入「提交版本 + 1」（7 → 8）");
+    }
+
+    /**
+     * 取出 SET 子句中某一列实际绑定的参数值。
+     *
+     * <p>不能对整个 {@code paramNameValuePairs} 做 {@code containsValue}：WHERE 与 SET 的参数
+     * 共用同一个 Map，{@code WHERE version = 7} 本来就必须绑定 7，
+     * 拿"7 是否出现在参数表里"判断"有没有把 7 写回"是错的 ——
+     * 而且结论还取决于哪一段 SQL 先被物化。这里按 SET 子句里该列引用的参数名精确取值。</p>
+     */
+    private static Object setParameter(UpdateWrapper<Departure> wrapper, String column) {
+        Matcher matcher = Pattern
+                .compile(column + "=#\\{ew\\.paramNameValuePairs\\.(\\w+)}")
+                .matcher(wrapper.getSqlSet());
+        assertTrue(matcher.find(), "SET 子句里应当有 " + column + "，实际为：" + wrapper.getSqlSet());
+        return wrapper.getParamNameValuePairs().get(matcher.group(1));
     }
 
     @Test

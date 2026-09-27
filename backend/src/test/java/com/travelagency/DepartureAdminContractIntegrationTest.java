@@ -299,6 +299,43 @@ class DepartureAdminContractIntegrationTest {
         assertEquals(1, after.version.intValue(), "失败提交不能推进版本号");
     }
 
+    /**
+     * 版本自增与过期拒绝在<b>真实数据库</b>上的行为：以版本 7 提交后库里变成 8，再用 7 提交被拒。
+     *
+     * <p>为什么必须连真库验这一条：单测只能用 {@code UpdateWrapper} 的 SQL 片段与参数表做断言，
+     * 而 WHERE 与 SET 共用同一个参数 Map（{@code WHERE version = 7} 本来就会绑定 7），
+     * 靠"7 有没有出现在参数表里"判断"是否把 7 原样写回"是不可靠的。
+     * 真实 UPDATE 的结果没有这个歧义：成功一次版本恰好 +1，同一个版本再提交必然 409。</p>
+     */
+    @Test
+    @DisplayName("乐观锁：成功修改后版本 7 → 8，再用版本 7 提交被拒")
+    void versionAdvancesByOneAndStaleVersionIsRejected() throws Exception {
+        Long id = createDeparture(routeId, 30, "DRAFT");
+        // 直接把行版本置为 7，避免为了构造版本号连续调用 7 次接口。
+        departures.update(null, new UpdateWrapper<Departure>().eq("id", id).set("version", 7));
+
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(routeId, 35, null, 7)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maxPeople").value(35))
+                .andExpect(jsonPath("$.data.version").value(8));
+
+        assertEquals(8, currentVersion(id), "成功后版本必须从 7 前进到 8");
+        assertEquals(35, departures.selectById(id).maxPeople.intValue());
+
+        // 同一个版本再提交一次：它已经是过期版本，必须被拒且不改动任何字段。
+        mvc.perform(put("/api/admin/departures/" + id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateBody(routeId, 12, null, 7)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DEPARTURE_VERSION_CONFLICT"));
+
+        Departure after = departures.selectById(id);
+        assertEquals(35, after.maxPeople.intValue(), "过期提交不得改动数据");
+        assertEquals(8, after.version.intValue(), "过期提交不得改动版本");
+    }
+
     /** 版本号缺失或为负属于请求字段问题（422），不能落成"静默按 0 处理"。 */
     @Test
     @DisplayName("乐观锁：修改请求缺少 version 返回 422")

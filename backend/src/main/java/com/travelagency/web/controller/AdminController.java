@@ -16,7 +16,6 @@ import com.travelagency.common.security.CurrentUser;
 import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.AccountStatusUpdateRequest;
 import com.travelagency.domain.dto.DashboardView;
-import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.GuideView;
 import com.travelagency.domain.dto.GuideUpdateRequest;
@@ -56,7 +55,6 @@ import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.SysUserRoleMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
-import com.travelagency.domain.service.DepartureService;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
@@ -64,7 +62,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
 import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -99,7 +96,6 @@ import java.util.stream.Collectors;
 public class AdminController {
 
     private final RouteService routeService;
-    private final DepartureService departureService;
     private final OrderService orderService;
     private final TravelOrderMapper orderMapper;
     private final TravelRouteMapper routeMapper;
@@ -119,7 +115,6 @@ public class AdminController {
 
     public AdminController(
             RouteService routeService,
-            DepartureService departureService,
             OrderService orderService,
             TravelOrderMapper orderMapper,
             TravelRouteMapper routeMapper,
@@ -136,7 +131,6 @@ public class AdminController {
             PasswordEncoder passwordEncoder,
             AuthService authService, GuideService guideService) {
         this.routeService = routeService;
-        this.departureService = departureService;
         this.orderService = orderService;
         this.orderMapper = orderMapper;
         this.routeMapper = routeMapper;
@@ -218,56 +212,10 @@ public class AdminController {
                 .toList();
     }
 
-    // 线路与行程管理端点已迁移到 AdminRouteController：此前这里的实现与契约不一致
-    // （返回实体、状态码不是 201/204、行程缺少 items/hotelName、删除不级联），
+    // 线路与行程管理端点已迁移到 AdminRouteController，团期管理端点已迁移到
+    // AdminDepartureController：此前这些实现与契约不一致（返回实体、状态码不是 201/204、
+    // 行程缺少 items/hotelName、删除不级联、团期状态接口返回 data:null 且允许客户端提交名额字段），
     // 迁移后 AdminController 只保留其它后台模块的接口。
-
-    /**
-     * 后台团期分页查询，对齐契约 GET /admin/departures（分页信封 + routeId/guideId/status/日期区间筛选）。
-     */
-    @GetMapping("/departures")
-    public ApiResponse<PageResponse<DepartureView>> departures(
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) Long routeId,
-            @RequestParam(required = false) Long guideId,
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateFrom,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateTo) {
-        return ApiResponse.ok(departureService.page(routeId, guideId, status, startDateFrom, startDateTo, page, size));
-    }
-
-    /**
-     * 团期管理详情，对齐契约 GET /admin/departures/{departureId}。
-     * 此前缺少该映射，前端 api/modules.js 调用时会命中 PUT 的路径而返回 405。
-     */
-    @GetMapping("/departures/{id}")
-    public ApiResponse<DepartureView> departureDetail(@PathVariable Long id) {
-        return ApiResponse.ok(departureService.detail(id));
-    }
-
-    @PostMapping("/departures")
-    public ApiResponse<DepartureView> createDeparture(@RequestBody Departure departure) {
-        Departure saved = departureService.save(departure);
-        log("团期", "CREATE", "DEPARTURE", saved.id, "SUCCESS", "创建团期");
-        // 回查以带回 created_at / updated_at 等数据库默认值，并返回契约 Departure 视图。
-        return ApiResponse.ok(departureService.detail(saved.id));
-    }
-
-    @PutMapping("/departures/{id}")
-    public ApiResponse<DepartureView> updateDeparture(@PathVariable Long id, @RequestBody Departure departure) {
-        departure.id = id;
-        Departure saved = departureService.save(departure);
-        log("团期", "UPDATE", "DEPARTURE", id, "SUCCESS", "编辑团期");
-        return ApiResponse.ok(departureService.detail(saved.id));
-    }
-
-    @PatchMapping("/departures/{id}/status")
-    public ApiResponse<Void> updateDepartureStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
-        departureService.changeStatus(id, request.status());
-        log("团期", "STATUS", "DEPARTURE", id, "SUCCESS", "团期状态变更为 " + request.status());
-        return ApiResponse.ok();
-    }
 
     /**
      * 后台景点分页查询，对齐契约 GET /admin/attractions（分页信封 + keyword 筛选）。

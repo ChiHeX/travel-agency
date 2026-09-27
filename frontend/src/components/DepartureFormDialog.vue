@@ -35,6 +35,34 @@ const occupiedSeats = computed(() => {
 const submitting = ref(false)
 const submitError = ref('')
 
+/**
+ * 乐观锁状态。
+ *
+ * <p>{@code baseVersion} 是<b>表单当前对应的团期版本</b>，提交修改时用它做乐观锁。
+ * 打开表单时取 {@code props.departure.version}；一旦通过冲突面板重新取回服务端数据
+ * （无论用户选择"载入最新数据"还是"保留我的修改并覆盖"），都必须把基准版本更新为那一份的
+ * 版本 —— 否则用户点了"载入服务器最新数据"之后再保存，提交的仍是旧版本，会再次撞上同一个冲突。</p>
+ */
+const conflictMessage = ref('')
+const conflictLatest = ref(null)
+const conflictLoading = ref(false)
+const baseVersion = ref(null)
+
+/**
+ * 冲突对比覆盖**全部可编辑字段**。
+ *
+ * <p>修改请求（{@link DepartureUpdateRequest}）会提交线路、导游、日期、价格、人数等所有可编辑字段，
+ * 因此对比必须逐项列出它们 —— 只对比日期 / 价格 / 人数的话，
+ * 别人改了线路或导游时，用户会在看不到差异的情况下把它覆盖掉。</p>
+ */
+const EDITABLE_FIELD_LABELS = {
+  routeId: '所属线路',
+  guideId: '带团导游',
+  dates: '日期',
+  prices: '价格',
+  maxPeople: '最大人数'
+}
+
 const routes = ref([])
 const routeTotal = ref(0)
 const routePageNo = ref(0)
@@ -47,6 +75,42 @@ const guidesLoading = ref(false)
 
 const hasMoreRoutes = computed(() => routes.value.length < routeTotal.value)
 const hasMoreGuides = computed(() => guides.value.length < guideTotal.value)
+
+/**
+ * 服务端最新数据与用户当前填写不一致的可编辑字段。
+ *
+ * <p>逐项比较，包括线路与导游 —— 它们同样在修改请求里提交，漏掉就会造成
+ * "看不到差异却被覆盖"。</p>
+ */
+const conflictDifferences = computed(() => {
+  const latest = conflictLatest.value
+  if (!latest) return []
+  const keys = []
+  if (String(latest.routeId ?? '') !== String(form.routeId ?? '')) keys.push('routeId')
+  if (String(latest.guideId ?? '') !== String(form.guideId ?? '')) keys.push('guideId')
+  if ((latest.startDate || '') !== (form.startDate || '')
+      || (latest.endDate || '') !== (form.endDate || '')) keys.push('dates')
+  if (money(latest.adultPrice) !== money(form.adultPrice)
+      || money(latest.childPrice) !== money(form.childPrice)) keys.push('prices')
+  if (Number(latest.maxPeople) !== Number(form.maxPeople)) keys.push('maxPeople')
+  return keys
+})
+
+const differs = (key) => conflictDifferences.value.includes(key)
+
+/** 表单里选中的线路名；选项列表里找不到时退回显示 id，避免显示空白。 */
+function routeNameOf(routeId) {
+  if (!routeId) return '未选择'
+  const found = routes.value.find((item) => String(item.id) === String(routeId))
+  return found ? found.name : `线路 #${routeId}`
+}
+
+/** 表单里选中的导游名；未分配时明确写出来，而不是留空。 */
+function guideNameOf(guideId) {
+  if (!guideId) return '暂不分配'
+  const found = guides.value.find((item) => String(item.id) === String(guideId))
+  return found ? found.name : `导游 #${guideId}`
+}
 
 const form = reactive({
   routeId: '',
@@ -77,6 +141,10 @@ function reset() {
     guideId: source.guideId ? String(source.guideId) : ''
   })
   submitError.value = ''
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  // 重置表单时一并把基准版本拉回当前这条团期的版本（新建时为 null，创建请求不带 version）。
+  baseVersion.value = source.version ?? null
 }
 
 /** 按 id 去重合并，避免"加载更多"把同一页重复追加进来。 */
@@ -214,7 +282,7 @@ async function save() {
   if (invalid) return ElMessage.warning(invalid)
 
   // 主键按契约 Id 提交字符串；金额提交固定两位小数的字符串。
-  const payload = {
+  const editable = {
     routeId: String(form.routeId),
     startDate: form.startDate,
     endDate: form.endDate,
@@ -223,23 +291,85 @@ async function save() {
     maxPeople: Number(form.maxPeople),
     guideId: form.guideId ? String(form.guideId) : null
   }
+  // 创建请求（DepartureCreateRequest）不含 version；修改请求（DepartureUpdateRequest）必填，
+  // 用「表单当前对应的版本」提交，与库内不一致即视为基于过期数据提交。
+  const editing = Boolean(props.departure?.id)
+  const payload = editing
+    ? { ...editable, version: baseVersion.value ?? props.departure.version }
+    : editable
 
   submitting.value = true
   try {
-    const saved = props.departure?.id
+    const saved = editing
       ? await adminApi.updateDeparture(props.departure.id, payload)
       : await adminApi.createDeparture(payload)
-    ElMessage.success(props.departure?.id
-      ? '团期已更新'
-      : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
+    ElMessage.success(editing ? '团期已更新' : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
+    conflictLatest.value = null
     emit('saved', saved)
     close()
   } catch (cause) {
-    // 409（名额 / 状态 / 导游冲突）与 422（字段语义）由后端给出可读 message，展示在原地，不重复弹窗。
-    submitError.value = cause.message || '保存失败，请稍后重试'
+    if (editing && cause.status === 409 && cause.code === 'DEPARTURE_VERSION_CONFLICT') {
+      // 乐观锁冲突：保留用户已填写的内容，把服务端最新数据取回来并排展示，
+      // 由用户决定"改用最新数据"还是"保留我的修改并覆盖"，不擅自丢弃任何一方。
+      submitError.value = ''
+      conflictMessage.value = cause.message || '团期已被他人修改'
+      await loadLatestForConflict()
+    } else {
+      // 其余 409（名额 / 状态 / 导游）与 422（字段语义）由后端给出可读 message，就地展示。
+      submitError.value = cause.message || '保存失败，请稍后重试'
+    }
   } finally {
     submitting.value = false
   }
+}
+
+/** 拉取服务端最新团期，用于冲突面板的对比展示。 */
+async function loadLatestForConflict() {
+  conflictLoading.value = true
+  try {
+    conflictLatest.value = await adminApi.departure(props.departure.id)
+  } catch {
+    // 取不到最新数据时仍保留提示与用户输入，用户可关闭后重开表单再试。
+    conflictLatest.value = null
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+/**
+ * 采用服务端最新数据：用最新值覆盖表单，并把基准版本推进到那一份的版本。
+ *
+ * <p>基准版本必须一起更新：表单内容已经等于服务端最新数据，之后再保存应当基于这个版本，
+ * 而不是表单打开时那个已过期的版本。</p>
+ */
+function adoptLatest() {
+  if (!conflictLatest.value) return
+  Object.assign(form, {
+    routeId: conflictLatest.value.routeId ? String(conflictLatest.value.routeId) : '',
+    startDate: conflictLatest.value.startDate || '',
+    endDate: conflictLatest.value.endDate || '',
+    adultPrice: money(conflictLatest.value.adultPrice),
+    childPrice: money(conflictLatest.value.childPrice),
+    maxPeople: conflictLatest.value.maxPeople || 20,
+    guideId: conflictLatest.value.guideId ? String(conflictLatest.value.guideId) : ''
+  })
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
+  conflictMessage.value = ''
+  conflictLatest.value = null
+}
+
+/**
+ * 保留我的修改并覆盖：先取回最新版本作为基准，再重试一次。
+ *
+ * <p>这次的覆盖是用户明确选择的结果：服务端要求提交的版本等于库内当前版本，
+ * 因此必须用刚取回的版本重试，而不是继续用表单打开时的旧版本。</p>
+ */
+async function overwriteLatest() {
+  if (!conflictLatest.value) return
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  await save()
 }
 </script>
 
@@ -256,6 +386,70 @@ async function save() {
   >
     <div class="dialog-form-grid">
       <p v-if="submitError" class="form-error wide" role="alert">{{ submitError }}</p>
+
+      <!-- 乐观锁冲突：用户填写的内容原样保留，同时把服务端最新数据并排摆出来，由用户决定 -->
+      <div v-if="conflictMessage" class="conflict-panel wide" role="alert">
+        <p class="conflict-title">{{ conflictMessage }}</p>
+        <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
+        <el-skeleton v-if="conflictLoading" :rows="3" animated />
+        <template v-else-if="conflictLatest">
+          <!-- 先点明会被覆盖的字段：修改请求会提交全部可编辑字段（含线路与导游），
+               只对比日期 / 价格 / 人数会让用户在看不到差异的情况下覆盖他人的改动。 -->
+          <p v-if="conflictDifferences.length" class="conflict-note conflict-diff">
+            以下字段服务器与你填写的不一致，
+            <strong>{{ conflictDifferences.map((key) => EDITABLE_FIELD_LABELS[key]).join('、') }}</strong>；
+            选择「保留我的修改并覆盖」会用你填写的值覆盖它们。
+          </p>
+          <p v-else class="conflict-note conflict-diff">你填写的各项与服务器当前值一致。</p>
+
+          <dl class="conflict-grid">
+            <div :class="{ 'conflict-row-differs': differs('routeId') }">
+              <dt>所属线路{{ differs('routeId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.routeName || `线路 #${conflictLatest.routeId}` }}</span>
+                <span class="conflict-mine">你填写：{{ routeNameOf(form.routeId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('guideId') }">
+              <dt>带团导游{{ differs('guideId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.guideName || '未分配' }}</span>
+                <span class="conflict-mine">你填写：{{ guideNameOf(form.guideId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('dates') }">
+              <dt>日期{{ differs('dates') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.startDate }} ~ {{ conflictLatest.endDate }}</span>
+                <span class="conflict-mine">你填写：{{ form.startDate }} ~ {{ form.endDate }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('prices') }">
+              <dt>价格（成人 / 儿童）{{ differs('prices') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：¥{{ conflictLatest.adultPrice }} / ¥{{ conflictLatest.childPrice }}</span>
+                <span class="conflict-mine">你填写：¥{{ money(form.adultPrice) }} / ¥{{ money(form.childPrice) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('maxPeople') }">
+              <dt>最大人数{{ differs('maxPeople') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.maxPeople }} 人</span>
+                <span class="conflict-mine">你填写：{{ form.maxPeople }} 人</span>
+              </dd>
+            </div>
+          </dl>
+        </template>
+        <p v-else class="conflict-note">暂时取不到服务器最新数据，可关闭后重新打开表单再试。</p>
+        <div class="conflict-actions">
+          <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">
+            载入服务器最新数据（放弃我的修改）
+          </button>
+          <button type="button" class="primary-button" :disabled="!conflictLatest || submitting" @click="overwriteLatest">
+            保留我的修改并覆盖
+          </button>
+        </div>
+      </div>
 
       <div class="form-field wide">
         <label>所属线路 <span class="req">*</span></label>
@@ -385,6 +579,75 @@ async function save() {
 .option-more:disabled {
   color: var(--text-tertiary);
   cursor: default;
+}
+
+.conflict-panel {
+  border: 1px solid var(--status-orange, #f59e0b);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg-warning-subtle, #fffbeb);
+}
+
+.conflict-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--status-orange-strong, #b45309);
+}
+
+.conflict-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.conflict-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.conflict-grid dt {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-grid dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+/* 有差异的字段整行加重，避免用户在长列表里漏看 */
+.conflict-row-differs {
+  border-left: 3px solid var(--status-orange, #f59e0b);
+  padding-left: 8px;
+}
+
+.conflict-row-differs dt {
+  color: var(--status-orange-strong, #b45309);
+  font-weight: 600;
+}
+
+.conflict-diff {
+  margin-bottom: 10px;
+}
+
+.conflict-server {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.conflict-mine {
+  color: var(--text-secondary);
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 @media (max-width: 640px) {

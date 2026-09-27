@@ -6,7 +6,9 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.exception.BusinessException;
-import com.travelagency.domain.dto.DepartureUpsertRequest;
+import com.travelagency.domain.dto.AdminDepartureView;
+import com.travelagency.domain.dto.DepartureCreateRequest;
+import com.travelagency.domain.dto.DepartureUpdateRequest;
 import com.travelagency.domain.dto.DepartureView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
@@ -30,6 +32,8 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -43,6 +47,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -69,6 +74,9 @@ class DepartureAdminServiceTest {
 
     /** 模拟登录后台操作人（Controller 传入 CurrentUser.required().userId()）。 */
     private static final long ACTOR = 99L;
+
+    /** 测试里团期行的初始版本，修改请求默认按这个版本提交。 */
+    private static final int DEFAULT_VERSION = 0;
 
     private static final Long ROUTE_ID = 21L;
     private static final Long DEPARTURE_ID = 51L;
@@ -102,7 +110,7 @@ class DepartureAdminServiceTest {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
 
-        service.create(request(ROUTE_ID, null, 30), ACTOR);
+        service.create(createRequest(ROUTE_ID, null, 30), ACTOR);
 
         ArgumentCaptor<Departure> captor = ArgumentCaptor.forClass(Departure.class);
         verify(departureMapper).insert(captor.capture());
@@ -127,7 +135,7 @@ class DepartureAdminServiceTest {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, GUIDE_ID));
 
-        DepartureView view = service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR);
+        AdminDepartureView view = service.create(createRequest(ROUTE_ID, GUIDE_ID, 30), ACTOR);
 
         assertNotNull(view);
         assertEquals(DEPARTURE_ID, view.id());
@@ -144,7 +152,7 @@ class DepartureAdminServiceTest {
         when(routeMapper.selectById(ROUTE_ID)).thenReturn(null);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.create(request(ROUTE_ID, null, 30), ACTOR));
+                () -> service.create(createRequest(ROUTE_ID, null, 30), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -158,7 +166,7 @@ class DepartureAdminServiceTest {
         when(guideMapper.selectByIdForUpdate(GUIDE_ID)).thenReturn(null);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR));
+                () -> service.create(createRequest(ROUTE_ID, GUIDE_ID, 30), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -169,7 +177,7 @@ class DepartureAdminServiceTest {
     @DisplayName("创建：返程早于出发返回 422，且不写库")
     void createRejectsInvertedDateRange() {
         LocalDate start = LocalDate.now().plusDays(10);
-        DepartureUpsertRequest inverted = new DepartureUpsertRequest(ROUTE_ID, start, start.minusDays(1),
+        DepartureCreateRequest inverted = new DepartureCreateRequest(ROUTE_ID, start, start.minusDays(1),
                 new BigDecimal("2999.00"), new BigDecimal("1999.00"), 30, null);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -183,7 +191,7 @@ class DepartureAdminServiceTest {
     @DisplayName("创建：最大人数小于 1 返回 422，且不写库")
     void createRejectsNonPositiveCapacity() {
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.create(request(ROUTE_ID, null, 0), ACTOR));
+                () -> service.create(createRequest(ROUTE_ID, null, 0), ACTOR));
 
         assertEquals(422, ex.getStatus());
         verify(departureMapper, never()).insert(any(Departure.class));
@@ -193,7 +201,7 @@ class DepartureAdminServiceTest {
     @DisplayName("创建：价格为负返回 422，且不写库")
     void createRejectsNegativePrice() {
         LocalDate start = LocalDate.now().plusDays(10);
-        DepartureUpsertRequest negative = new DepartureUpsertRequest(ROUTE_ID, start, start.plusDays(5),
+        DepartureCreateRequest negative = new DepartureCreateRequest(ROUTE_ID, start, start.plusDays(5),
                 new BigDecimal("-1.00"), new BigDecimal("1999.00"), 30, null);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -211,7 +219,7 @@ class DepartureAdminServiceTest {
         stubGuideConflict();
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR));
+                () -> service.create(createRequest(ROUTE_ID, GUIDE_ID, 30), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
@@ -236,7 +244,7 @@ class DepartureAdminServiceTest {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, GUIDE_ID));
 
-        service.create(request(ROUTE_ID, GUIDE_ID, 30), ACTOR);
+        service.create(createRequest(ROUTE_ID, GUIDE_ID, 30), ACTOR);
 
         InOrder order = inOrder(guideMapper, departureMapper);
         order.verify(guideMapper).selectByIdForUpdate(GUIDE_ID);
@@ -249,33 +257,57 @@ class DepartureAdminServiceTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("修改：只写契约允许的字段，绝不覆盖名额计数、状态与版本")
+    @DisplayName("修改：只写契约允许的字段，绝不覆盖名额计数与状态；版本按乐观锁自增")
     void updateNeverTouchesServerOwnedColumns() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        // 用一个不会与其它字段撞值的版本号，便于精确断言"写入的是 版本+1"；
+        // 库内版本必须与提交版本一致，否则会先被乐观锁判定拦下（那正是下面的用例覆盖的）。
+        Departure existing = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
+        existing.version = 7;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(existing);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(existing);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
-        service.update(DEPARTURE_ID, request(ROUTE_ID, null, 40), ACTOR);
+        service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 40, 7), ACTOR);
 
         ArgumentCaptor<Wrapper<Departure>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(departureMapper).update(isNull(), captor.capture());
-        String sqlSet = ((UpdateWrapper<Departure>) captor.getValue()).getSqlSet();
+        UpdateWrapper<Departure> wrapper = (UpdateWrapper<Departure>) captor.getValue();
+        String sqlSet = wrapper.getSqlSet();
         assertTrue(sqlSet.contains("max_people"), "可编辑字段应当写入");
         assertTrue(sqlSet.contains("adult_price"), "可编辑字段应当写入");
         // 这一组断言是本用例的核心：整体写回实体会让已报名人数凭空消失（可用名额虚增、进而超卖）。
         assertFalse(sqlSet.contains("reserved_people"), "不得写入 reserved_people");
         assertFalse(sqlSet.contains("confirmed_people"), "不得写入 confirmed_people");
         assertFalse(sqlSet.contains("status"), "不得写入 status");
-        assertFalse(sqlSet.contains("version"), "不得写入 version");
+        // 版本由乐观锁自增，写入的是「提交版本 + 1」，而不是把客户端提交的版本原样写回。
+        assertTrue(sqlSet.contains("version"), "版本应当按乐观锁自增");
+        assertEquals(8, setParameter(wrapper, "version"), "SET 里应当写入「提交版本 + 1」（7 → 8）");
+    }
+
+    /**
+     * 取出 SET 子句中某一列实际绑定的参数值。
+     *
+     * <p>不能对整个 {@code paramNameValuePairs} 做 {@code containsValue}：WHERE 与 SET 的参数
+     * 共用同一个 Map，{@code WHERE version = 7} 本来就必须绑定 7，
+     * 拿"7 是否出现在参数表里"判断"有没有把 7 写回"是错的 ——
+     * 而且结论还取决于哪一段 SQL 先被物化。这里按 SET 子句里该列引用的参数名精确取值。</p>
+     */
+    private static Object setParameter(UpdateWrapper<Departure> wrapper, String column) {
+        Matcher matcher = Pattern
+                .compile(column + "=#\\{ew\\.paramNameValuePairs\\.(\\w+)}")
+                .matcher(wrapper.getSqlSet());
+        assertTrue(matcher.find(), "SET 子句里应当有 " + column + "，实际为：" + wrapper.getSqlSet());
+        return wrapper.getParamNameValuePairs().get(matcher.group(1));
     }
 
     @Test
     @DisplayName("修改：最大人数小于已占用名额返回 422，且不更新")
     void updateRejectsCapacityBelowOccupiedSeats() {
         // 已占用 4 + 8 = 12 人。
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
 
         BusinessException ex = assertThrows(BusinessException.class,
@@ -289,15 +321,17 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：最大人数恰好等于已占用名额时允许（边界）")
     void updateAllowsCapacityEqualToOccupiedSeats() {
-        // 第一次读用于定位与名额校验，第二次读是写入后的回查：替身不会真的改库，
-        // 所以这里显式返回"已按新容量落库"的那一行，断言才对应真实运行时的结果。
+        // 锁内当前读给出的是「判定基准」那一行；写入后的回查（detail）另走 selectById，
+        // 替身不会真的改库，所以那里显式返回"已按新容量落库"的那一行。
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 12, 4, 8, null));
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
-        DepartureView view = service.update(DEPARTURE_ID, request(ROUTE_ID, null, 12), ACTOR);
+        AdminDepartureView view = service.update(DEPARTURE_ID, request(ROUTE_ID, null, 12), ACTOR);
 
         assertNotNull(view);
         assertEquals(0, view.availableSeats().intValue(), "名额刚好坐满时余位为 0");
@@ -372,8 +406,9 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：名额闸门写进 UPDATE 的 WHERE 子句")
     void updatePutsCapacityGateIntoTheStatement() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -433,20 +468,25 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 读取时显示名额充足、写入时已被并发下单占满：UPDATE 匹配 0 行，
+     * 名额正好在「锁内判定」与「条件 UPDATE」之间被并发下单占满：UPDATE 匹配 0 行，
      * 必须判定为 409，而不是当成成功更新（否则会写出已占人数 &gt; 最大人数的团期）。
      *
-     * <p>原因必须用当前读 {@code selectByIdForUpdate} 核实 —— REPEATABLE READ 下
-     * 普通 {@code selectById} 会读回本事务的旧快照，把并发变化看成"没变化"。</p>
+     * <p>判定基准统一成锁内当前读之后，这个窗口已经缩到很小 —— 锁内读到的还是"名额够用"，
+     * 真正执行 UPDATE 时已被占满。所以这里给 {@code selectByIdForUpdate} 配两次返回：
+     * 第一次是判定基准，第二次是 0 行之后的回读。</p>
+     *
+     * <p>回读同样必须是当前读：REPEATABLE READ 下普通 {@code selectById} 会读回本事务的旧快照，
+     * 把并发变化看成"没变化"。</p>
      */
     @Test
-    @DisplayName("修改：并发下单占位导致名额闸门失效时返回 409，而不是默默写入")
+    @DisplayName("修改：并发下单占位导致条件更新匹配 0 行时返回 409，而不是默默写入")
     void updateReportsCapacityConflictWhenGateFailsInsideTheUpdate() {
-        // 第一次读：30 人上限、0 人占用，前置校验通过。
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
-        // 当前读：并发下单后已占 20 人，而本次要把上限改成 10。
         when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                // 判定基准：30 人上限、0 人占用，名额检查通过。
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null))
+                // 0 行之后回读：并发下单后已占 20 人，而本次要把上限改成 10。
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null));
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
@@ -456,7 +496,7 @@ class DepartureAdminServiceTest {
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_CAPACITY_CONFLICT", ex.getCode());
-        verify(departureMapper).selectByIdForUpdate(DEPARTURE_ID);
+        verify(departureMapper, times(2)).selectByIdForUpdate(DEPARTURE_ID);
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
@@ -478,6 +518,97 @@ class DepartureAdminServiceTest {
 
         assertEquals(409, ex.getStatus());
         assertEquals("DEPARTURE_STATE_CONFLICT", ex.getCode());
+    }
+
+    /**
+     * 版本过期时必须优先报版本冲突，而不是名额规则的 422。
+     *
+     * <p>旧表单打开时名额还空着，之后别人下单占满；旧表单把上限从 30 改成 10 时，
+     * 名额规则本身也不成立。但"一个还空着的团期为什么占用了 20 人"对提交者毫无意义 ——
+     * 版本过期才是根因，前端也只有拿到 {@code DEPARTURE_VERSION_CONFLICT}
+     * 才会进入「载入最新数据 / 保留我的修改并覆盖」的流程。</p>
+     */
+    @Test
+    @DisplayName("修改：版本过期优先于名额规则（409 而不是 422）")
+    void staleVersionWinsOverCapacityRule() {
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
+        stubRoute(ROUTE_ID);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 10, DEFAULT_VERSION), ACTOR));
+
+        assertEquals(409, ex.getStatus(), "版本过期是根因，不能先报名额规则的 422");
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /** 同理，版本过期也不能被改挂的状态冲突抢先解释。 */
+    @Test
+    @DisplayName("修改：版本过期优先于改挂检查（同样是 409 但结果码是版本冲突）")
+    void staleVersionWinsOverRebindRule() {
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(otherRouteId, null, 30, DEFAULT_VERSION), ACTOR));
+
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /**
+     * 评审指出的竞态：版本在「首次读取」与「锁内当前读」之间被改掉。
+     *
+     * <p>方法里现在只有一次判定读取（锁内当前读），所以这里模拟的是那一份数据本身已经更新：
+     * 快照里是版本 0、团期仍是 DRAFT，锁内拿到的是版本 5、且团期已被上架。
+     * 若判定基准不统一（比如只信快照、或不复查版本），改挂闸门会先报
+     * {@code DEPARTURE_STATE_CONFLICT}「已开放报名，不能改挂」，把"表单已过期"盖掉。</p>
+     */
+    @Test
+    @DisplayName("修改：版本在两次读取之间被改掉时，报版本冲突而不是改挂状态冲突")
+    void versionChangedBeforeTheLockedReadStillWinsOverRebindRule() {
+        Departure snapshot = departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null);
+        Departure locked = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        locked.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(snapshot);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(locked);
+        Long otherRouteId = 22L;
+        stubRoute(otherRouteId);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(otherRouteId, null, 30, DEFAULT_VERSION), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode(),
+                "锁内已经能看到更新的版本，就不该让改挂闸门先报状态冲突");
+        verify(departureMapper, never()).update(any(), any());
+    }
+
+    /**
+     * 反向保证：版本一致时，名额规则照常生效 —— 优先级只是把"根因"提前，不能吞掉真实错误。
+     */
+    @Test
+    @DisplayName("修改：版本一致时名额规则照常返回 422")
+    void currentVersionStillReportsCapacityRule() {
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
+        current.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
+        stubRoute(ROUTE_ID);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 10, 5), ACTOR));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
     }
 
     /**
@@ -507,36 +638,81 @@ class DepartureAdminServiceTest {
     }
 
     /**
-     * 0 行的另一种含义：驱动 {@code useAffectedRows=true} 时，"字段值完全没有变化"也返回 0。
+     * 乐观锁早判：读到的版本就已经不等于提交版本（表单基于过期数据）。
      *
-     * <p>这不是冲突。用当前读逐字段确认目标状态确实已经达成后按幂等成功处理 ——
-     * 这样正确性不押在 JDBC 参数上：默认取 matched 行数时该分支根本不会走到，
-     * 打开 {@code useAffectedRows} 时也不会把一次无变化的重复保存误报成冲突。</p>
+     * <p>对应真实场景 —— 两位工作人员各自打开同一条团期，前一位先保存（版本前进一步），
+     * 后一位拿着旧版本提交，不能悄悄覆盖前一位对日期 / 价格 / 导游的改动。
+     * 这一条走的是锁内版本判定：连条件更新都不该执行。</p>
+     *
+     * <p>版本在「锁内判定之后、写入之前」才被改掉的并发情形由
+     * {@link #versionConflictTakesPrecedenceOverCapacity} 覆盖（那里走 0 行分支）。</p>
      */
     @Test
-    @DisplayName("修改：0 行且当前读确认目标状态已达成时按幂等成功处理")
-    void updateTreatsNoOpAsSuccessWhenCurrentReadMatchesTheRequest() {
-        Departure unchanged = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 4, 8, null);
-        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(unchanged);
-        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(unchanged);
+    @DisplayName("修改：锁内读到的版本已过期时立即返回 409 DEPARTURE_VERSION_CONFLICT，且不写库")
+    void updateRejectsStaleVersion() {
+        // 库内版本已经是 5，客户端仍按 0 提交。
+        Departure stale = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        stale.version = 5;
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(stale);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(stale);
         stubRoute(ROUTE_ID);
-        when(departureMapper.update(isNull(), any())).thenReturn(0);
 
-        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 30, DEFAULT_VERSION), ACTOR));
+
+        assertEquals(409, ex.getStatus());
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode());
+        verify(departureMapper, never()).update(any(), any());
+        verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
-    /** 金额只比数值：99.50 与 99.5 是同一个价格，不能因此判成"被改动过"。 */
+    /**
+     * 版本在「读取之后、写入之前」被改掉（走 0 行分支）时，同样必须优先报版本冲突。
+     *
+     * <p>名额判定与改挂判定都只看字段取值：名额判定看到"上限够用"就会放过，
+     * 改挂判定也看不出"有人在中间改过"，只有版本能说明这次提交已经过期。
+     * 所以 0 行分支里的顺序反了会给出误导性的原因。</p>
+     */
     @Test
-    @DisplayName("修改：金额小数位不同但数值相同时仍算目标状态已达成")
-    void updateTreatsTrailingZeroMoneyAsSameAmount() {
-        Departure unchanged = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
-        unchanged.adultPrice = new BigDecimal("2999.0");
-        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(unchanged);
-        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(unchanged);
+    @DisplayName("修改：并发改版本导致 0 行时，优先报版本冲突而不是名额冲突")
+    void versionConflictTakesPrecedenceOverCapacity() {
+        // 读到的版本还是 0（早判通过），写入时库内已经是 7 —— 条件更新匹配 0 行。
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure latest = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 8, 12, null);
+        latest.version = 7;
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(latest);
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(0);
 
-        assertNotNull(service.update(DEPARTURE_ID, request(ROUTE_ID, null, 30), ACTOR));
+        // 请求上限 10 < 已占用 20，同时也过期。
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 10, DEFAULT_VERSION), ACTOR));
+
+        assertEquals("DEPARTURE_VERSION_CONFLICT", ex.getCode(), "过期提交应当报版本冲突，而不是名额冲突");
+    }
+
+    /** 版本闸门与自增都要写进同一条语句：WHERE 带 version，SET 里 version + 1。 */
+    @Test
+    @DisplayName("修改：版本闸门写进 WHERE，并在 SET 中自增")
+    void updatePutsVersionGateIntoTheStatement() {
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.update(DEPARTURE_ID, updateRequest(ROUTE_ID, null, 30, DEFAULT_VERSION), ACTOR);
+
+        ArgumentCaptor<Wrapper<Departure>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(departureMapper).update(isNull(), captor.capture());
+        UpdateWrapper<Departure> wrapper = (UpdateWrapper<Departure>) captor.getValue();
+        assertTrue(wrapper.getSqlSegment().contains("version"),
+                "版本闸门必须在 WHERE 中，实际为：" + wrapper.getSqlSegment());
+        assertTrue(wrapper.getSqlSet().contains("version"),
+                "版本自增必须在 SET 中，实际为：" + wrapper.getSqlSet());
+        assertFalse(wrapper.getSqlSet().contains("reserved_people"),
+                "名额计数不得被这次修改写回，实际为：" + wrapper.getSqlSet());
     }
 
     /** 影响行数为 0 且行已不存在时按 404 处理，不把并发删除当成成功。 */
@@ -572,8 +748,9 @@ class DepartureAdminServiceTest {
     @Test
     @DisplayName("修改：同一导游时间重叠返回 409，且不更新")
     void updateRejectsGuideOverlap() {
-        when(departureMapper.selectById(DEPARTURE_ID))
-                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        Departure current = departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null);
+        when(departureMapper.selectById(DEPARTURE_ID)).thenReturn(current);
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(current);
         stubRoute(ROUTE_ID);
         stubGuide(GUIDE_ID);
         stubGuideConflict();
@@ -589,8 +766,8 @@ class DepartureAdminServiceTest {
     @DisplayName("修改：字段语义错误（日期颠倒）返回 422，且不读线路")
     void updateRejectsInvertedDateRangeBeforeLookups() {
         LocalDate start = LocalDate.now().plusDays(10);
-        DepartureUpsertRequest inverted = new DepartureUpsertRequest(ROUTE_ID, start, start.minusDays(1),
-                new BigDecimal("2999.00"), new BigDecimal("1999.00"), 30, null);
+        DepartureUpdateRequest inverted = new DepartureUpdateRequest(ROUTE_ID, start, start.minusDays(1),
+                new BigDecimal("2999.00"), new BigDecimal("1999.00"), 30, null, DEFAULT_VERSION);
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
 
@@ -641,7 +818,7 @@ class DepartureAdminServiceTest {
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
-        DepartureView view = service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR);
+        AdminDepartureView view = service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR);
 
         assertNotNull(view, "契约要求返回更新后的团期，不能是 null");
         assertEquals("OPEN", view.status(), "视图必须来自写入后的回查结果");
@@ -817,7 +994,7 @@ class DepartureAdminServiceTest {
         stubRoute(ROUTE_ID);
         stubGuide(GUIDE_ID);
 
-        DepartureView view = service.detail(DEPARTURE_ID);
+        AdminDepartureView view = service.detail(DEPARTURE_ID);
 
         assertEquals("云南 6 日", view.routeName());
         assertEquals("李导", view.guideName());
@@ -831,7 +1008,7 @@ class DepartureAdminServiceTest {
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         when(routeMapper.selectById(ROUTE_ID)).thenReturn(null);
 
-        DepartureView view = service.detail(DEPARTURE_ID);
+        AdminDepartureView view = service.detail(DEPARTURE_ID);
 
         assertNull(view.routeName(), "线路被删除后联查为空，不能抛异常");
         assertNull(view.guideName(), "未安排导游时导游名为 null");
@@ -870,10 +1047,22 @@ class DepartureAdminServiceTest {
                 .thenReturn(new ArrayList<>(List.of(1L)));
     }
 
-    private static DepartureUpsertRequest request(Long routeId, Long guideId, int maxPeople) {
+    /** 创建请求（契约上不含 version）。 */
+    private static DepartureCreateRequest createRequest(Long routeId, Long guideId, int maxPeople) {
         LocalDate start = LocalDate.now().plusDays(10);
-        return new DepartureUpsertRequest(routeId, start, start.plusDays(5),
+        return new DepartureCreateRequest(routeId, start, start.plusDays(5),
                 new BigDecimal("2999.00"), new BigDecimal("1999.00"), maxPeople, guideId);
+    }
+
+    /** 修改请求：字段与创建相同，另带读取时的版本号。 */
+    private static DepartureUpdateRequest request(Long routeId, Long guideId, int maxPeople) {
+        return updateRequest(routeId, guideId, maxPeople, DEFAULT_VERSION);
+    }
+
+    private static DepartureUpdateRequest updateRequest(Long routeId, Long guideId, int maxPeople, int version) {
+        LocalDate start = LocalDate.now().plusDays(10);
+        return new DepartureUpdateRequest(routeId, start, start.plusDays(5),
+                new BigDecimal("2999.00"), new BigDecimal("1999.00"), maxPeople, guideId, version);
     }
 
     private static Departure departure(Long id, Long routeId, String status,

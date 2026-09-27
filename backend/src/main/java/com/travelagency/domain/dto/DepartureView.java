@@ -11,6 +11,10 @@ import java.time.LocalDateTime;
  *
  * <p>不直接序列化持久化实体：实体带 version 字段（契约无此项），
  * 且缺少 availableSeats 这一计算字段与 routeName / guideName 这两个联查字段。</p>
+ *
+ * <p>后台团期管理需要额外的乐观锁版本号，见 {@link AdminDepartureView} ——
+ * 那个字段只对会提交修改的后台编辑器有意义，不应出现在公开线路详情、
+ * 导游端与订单详情共用的本视图里。</p>
  */
 public record DepartureView(
         Long id,

@@ -9,6 +9,7 @@
     "mock:api": "steady -p 4010 --host 0.0.0.0 -r ../docs/openapi.yaml",
     "contract:validate": "steady validate ../docs/openapi.yaml",
     "build": "vite build",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -22,6 +23,9 @@
   "devDependencies": {
     "@stdy/cli": "0.22.2",
     "@vitejs/plugin-vue": "^6.0.1",
-    "vite": "^7.1.4"
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^29.1.1",
+    "vite": "^7.1.4",
+    "vitest": "^4.1.11"
   }
 }

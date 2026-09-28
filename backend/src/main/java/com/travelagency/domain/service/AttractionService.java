@@ -242,6 +242,12 @@ public class AttractionService {
      *
      * <p>删除只对"未被引用"的景点开放，不提供级联：把线路行程里的景点一起删掉会静默改变
      * 已上架线路的行程内容。需要让景点不再对外可见时应改状态为 {@code DISABLED}。</p>
+     *
+     * <p>删除影响 0 行同样按 404 处理，与 {@link #update} 同一口径：读取与删除之间该景点被
+     * 另一个请求删掉时，{@code deleteById} 匹配不到任何行，而旧实现不看返回值，照样记一条
+     * "删除景点：xxx" 的操作日志并回 204 —— 操作日志会把别人做的删除记到这次请求头上，
+     * 事后无法从审计记录里分辨。抛 404 后既不记日志也不回成功，调用方看到的结果与
+     * "这条景点本来就不存在"完全一致。</p>
      */
     @Transactional
     public void delete(Long attractionId, Long operatorId) {
@@ -251,13 +257,17 @@ public class AttractionService {
             throw new BusinessException(409, "ATTRACTION_STATE_CONFLICT",
                     "该景点已被" + referencingModule + "引用，不能删除；如需下架请把状态改为 DISABLED");
         }
+        int deleted;
         try {
-            attractions.deleteById(attractionId);
+            deleted = attractions.deleteById(attractionId);
         } catch (DataIntegrityViolationException ex) {
             // 竞态兜底：引用检查与删除之间，另一个事务插入了引用行（外键拒绝删除）。
             // 这一层保证并发下拿到的仍是契约声明的 409，而不是 500。
             throw new BusinessException(409, "ATTRACTION_STATE_CONFLICT",
                     "该景点刚被其它资料引用，不能删除，请刷新后重试");
+        }
+        if (deleted == 0) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "景点不存在或已被删除");
         }
         operationLog.record(operatorId, "景点", "DELETE", "ATTRACTION", attractionId,
                 "删除景点：" + attraction.name);

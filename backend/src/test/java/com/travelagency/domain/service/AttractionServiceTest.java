@@ -59,13 +59,16 @@ class AttractionServiceTest {
             departures, placeGuideItems, guideArticles, operationLog);
 
     /**
-     * MyBatis-Plus 的 {@code update} 返回"匹配行数"，而 {@code AttractionService} 把
-     * <b>0 行当成"记录已被并发删除"并返回 404</b>。Mockito 对 {@code int} 的默认返回值恰好是 0，
-     * 不显式打桩的话所有修改用例都会变成 404；需要验证"0 行"的用例在自己的方法里覆盖这个桩。
+     * MyBatis-Plus 的 {@code update} / {@code deleteById} 返回受影响行数，而 {@code AttractionService}
+     * 把 <b>0 行当成"记录已被并发删除"并返回 404</b>。Mockito 对 {@code int} 的默认返回值恰好是 0，
+     * 不显式打桩的话所有修改/删除用例都会变成 404；需要验证"0 行"的用例在自己的方法里覆盖这个桩。
      */
     @BeforeEach
-    void stubUpdateMatchesOneRow() {
+    void stubSingleRowWrites() {
         when(attractions.update(ArgumentMatchers.isNull(), any())).thenReturn(1);
+        // 必须写 any(Long.class)：BaseMapper 上 deleteById 有 (Serializable) 与 (T) 两个重载，
+        // 无类型的 any() 会让编译器无法在两者之间选择。
+        when(attractions.deleteById(any(Long.class))).thenReturn(1);
     }
 
     // ===================== 公开详情 =====================
@@ -422,6 +425,30 @@ class AttractionServiceTest {
         assertEquals(409, error.getStatus());
         assertTrue(error.getMessage().contains("攻略文章"), error.getMessage());
         verify(attractions, never()).deleteById(any(Long.class));
+    }
+
+    /**
+     * 记录在本事务读取之后被另一个请求删掉：{@code deleteById} 匹配 0 行。
+     *
+     * <p>旧实现不看返回值，照样记一条"删除景点：xxx"的操作日志并让接口回 204 ——
+     * 别人做的删除被记到这次请求头上，事后从操作日志里分不出真正执行删除的是谁。
+     * 现在 0 行按 404 处理，既不记日志也不回成功，调用方看到的结果与
+     * "这条景点本来就不存在"完全一致（同 {@link AttractionService#delete} 的顺序路径）。</p>
+     */
+    @Test
+    @DisplayName("删除：记录在删除之前已被并发删除（0 行）时返回 404，不记成功日志")
+    void deleteFailsWhenTheRowIsAlreadyGone() {
+        when(attractions.selectById(56L)).thenReturn(place(56L, 1));
+        when(itineraryItems.selectCount(any())).thenReturn(0L);
+        when(placeGuideItems.selectCount(any())).thenReturn(0L);
+        when(guideArticles.selectCount(any())).thenReturn(0L);
+        when(attractions.deleteById(56L)).thenReturn(0);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.delete(56L, 7L));
+
+        assertEquals(404, error.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", error.getCode());
+        verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
     @Test

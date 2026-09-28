@@ -16,6 +16,7 @@ import com.travelagency.domain.mapper.PlaceGuideItemMapper;
 import com.travelagency.domain.mapper.RouteItineraryItemMapper;
 import com.travelagency.domain.mapper.TravelGuideArticleMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -56,6 +57,16 @@ class AttractionServiceTest {
     private final OperationLogRecorder operationLog = mock(OperationLogRecorder.class);
     private final AttractionService service = new AttractionService(attractions, itineraryItems, routes,
             departures, placeGuideItems, guideArticles, operationLog);
+
+    /**
+     * MyBatis-Plus 的 {@code update} 返回"匹配行数"，而 {@code AttractionService} 把
+     * <b>0 行当成"记录已被并发删除"并返回 404</b>。Mockito 对 {@code int} 的默认返回值恰好是 0，
+     * 不显式打桩的话所有修改用例都会变成 404；需要验证"0 行"的用例在自己的方法里覆盖这个桩。
+     */
+    @BeforeEach
+    void stubUpdateMatchesOneRow() {
+        when(attractions.update(ArgumentMatchers.isNull(), any())).thenReturn(1);
+    }
 
     // ===================== 公开详情 =====================
 
@@ -262,9 +273,21 @@ class AttractionServiceTest {
         verify(attractions, never()).update(any(), any());
     }
 
+    /**
+     * 并发场景：本次编辑读到记录之后、写回之前，另一位管理员把景点停用了。
+     *
+     * <p>契约里 {@code status} 不是必填，{@code null} 的语义是"保持当前状态"。旧实现的做法是
+     * 把读到的旧值一起写回去（{@code SET status = 读到的值}），于是这次普通资料编辑等价于
+     * "用旧快照覆盖状态"：读 ACTIVE → 对方停用并提交 → 本事务把 ACTIVE 写回，停用被撤销，
+     * 与代码注释声称的"保留库内现值"正好相反。</p>
+     *
+     * <p>修好之后 {@code status} 未提交时连列名都不进 SET，库内现值由数据库自己保留，
+     * 并发的停用不可能被这次编辑覆盖。这里钉住的就是这个机制本身——不写该列，
+     * 而不是"写一个恰好正确的值"。</p>
+     */
     @Test
-    @DisplayName("修改：未提交 status 时保留库内现值，不把停用的景点悄悄重新启用")
-    void updateKeepsStoredStatusWhenNotSubmitted() {
+    @DisplayName("修改：未提交 status 时该列不进 SET，并发停用的结果不会被覆盖")
+    void concurrentDisableSurvivesAnEditThatDoesNotSubmitStatus() {
         Attraction stored = place(41L, 0);
         when(attractions.selectById(41L)).thenReturn(stored);
 
@@ -272,8 +295,10 @@ class AttractionServiceTest {
                 "改名后的景点", "丽江", "新地址", 100.2, 26.8, "新简介", "团队测试数据", null), 7L);
 
         var wrapper = capturedUpdate();
-        assertTrue(wrapper.getSqlSet().contains("status"), "status 必须显式写入，避免整体回写实体");
-        assertTrue(wrapper.getParamNameValuePairs().containsValue(0), "未提交 status 时应写入库内现值 DISABLED(0)");
+        assertFalse(wrapper.getSqlSet().contains("status"),
+                "status 未提交时不得出现在 SET 里：写回读到的旧值会让并发的停用/启用被这次编辑覆盖");
+        assertFalse(wrapper.getParamNameValuePairs().containsValue(0),
+                "不得把读到的旧状态当作新值写回");
         assertTrue(wrapper.getSqlSet().contains("data_source"));
         assertTrue(wrapper.getSqlSet().contains("longitude"));
         assertFalse(wrapper.getSqlSet().contains("created_at"), "created_at 不由业务写入");
@@ -284,14 +309,50 @@ class AttractionServiceTest {
     }
 
     @Test
-    @DisplayName("修改：显式提交 status 时按 ACTIVE(1) 落库")
+    @DisplayName("修改：显式提交 status 时才写该列，并按 ACTIVE(1) 落库")
     void updateAppliesSubmittedStatus() {
         when(attractions.selectById(42L)).thenReturn(place(42L, 0));
 
         service.update(42L, new AttractionUpsertRequest(
                 "重新启用", "大理", null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
 
-        assertTrue(capturedUpdate().getParamNameValuePairs().containsValue(1));
+        var wrapper = capturedUpdate();
+        assertTrue(wrapper.getSqlSet().contains("status"), "显式提交 status 时必须写入该列");
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(1));
+    }
+
+    @Test
+    @DisplayName("修改：显式提交 DISABLED 时按 0 落库")
+    void updateAppliesSubmittedDisabledStatus() {
+        when(attractions.selectById(45L)).thenReturn(place(45L, 1));
+
+        service.update(45L, new AttractionUpsertRequest(
+                "停用景点", "大理", null, null, null, null, "团队测试数据", "DISABLED"), 7L);
+
+        var wrapper = capturedUpdate();
+        assertTrue(wrapper.getSqlSet().contains("status"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(0));
+    }
+
+    /**
+     * 记录在本事务读取之后被并发删除：UPDATE 匹配 0 行。
+     *
+     * <p>旧实现不检查影响行数，接着照旧记"修改成功"的操作日志，再用同一事务的快照回查
+     * （REPEATABLE READ 下仍能看到那一行），最终把一个已经不存在的景点当成"修改后的结果"返回 200。
+     * 删除动作本身也被记成成功，事后无从发现这次修改根本没落库。</p>
+     */
+    @Test
+    @DisplayName("修改：记录在写回之前被并发删除（0 行）时返回 404，不记成功日志、不回旧快照")
+    void updateFailsWhenTheRowIsDeletedBeforeTheWrite() {
+        when(attractions.selectById(44L)).thenReturn(place(44L, 1));
+        when(attractions.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.update(44L,
+                new AttractionUpsertRequest("景点", "大理", null, null, null, null, "团队测试数据", null), 7L));
+
+        assertEquals(404, error.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", error.getCode());
+        verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
     @Test

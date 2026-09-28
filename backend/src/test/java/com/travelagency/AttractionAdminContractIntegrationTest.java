@@ -144,6 +144,7 @@ class AttractionAdminContractIntegrationTest {
         assertEquals(name + "-改名", updated.path("name").asString());
         assertEquals("丽江", updated.path("city").asString());
         assertTrue(updated.get("address").isNull(), "PUT 需要能清空可选字段");
+        assertEquals("ACTIVE", updated.path("status").asString(), "未提交 status 时状态不应发生变化");
 
         // 停用：公开详情 / 公开列表都不再暴露该景点
         okData(put("/api/admin/attractions/" + id).header("Authorization", token)
@@ -154,6 +155,21 @@ class AttractionAdminContractIntegrationTest {
                 .andExpect(status().isNotFound());
         assertEquals(0, attractions.selectById(Long.parseLong(id)).status,
                 "停用必须真的落库成 0（否则公开接口的 404 只是响应层的假象）");
+
+        // 停用之后再提交一次不带 status 的资料编辑：状态必须原样留在 DISABLED。
+        // 本用例<b>证明不了</b>并发下的丢失更新（那需要在服务的读取与写回之间插入另一次提交，
+        // 见 AttractionServiceTest#concurrentDisableSurvivesAnEditThatDoesNotSubmitStatus）；
+        // 它挡的是另一类回归：把"未提交 status"当成"按 ACTIVE 建档"。
+        JsonNode editedWhileDisabled = okData(put("/api/admin/attractions/" + id).header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"" + name + "-再次编辑\",\"city\":\"丽江\","
+                        + "\"dataSource\":\"团队测试数据\"}"));
+        assertEquals("DISABLED", editedWhileDisabled.path("status").asString(),
+                "不带 status 的资料编辑不得改变已停用景点的状态");
+        assertEquals(0, attractions.selectById(Long.parseLong(id)).status,
+                "未提交 status 时必须连 status 列都不写，库内仍应是 0");
+        mvc().perform(get("/api/attractions/{id}", id))
+                .andExpect(status().isNotFound());
 
         // 删除：未被任何行程 / 指南 / 攻略引用 → 204 且无响应体
         MockHttpServletResponse deleted = mvc()

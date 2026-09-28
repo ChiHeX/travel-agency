@@ -190,26 +190,40 @@ public class AttractionService {
      * {@code updated_at} 一起写回，使数据库的 {@code ON UPDATE CURRENT_TIMESTAMP} 失效 ——
      * 于是"最近修改时间"永远停在建档那一刻，契约的 {@code updatedAt} 也就失去意义。</p>
      *
+     * <p><b>只有请求显式提交了 {@code status} 才写这一列</b>，未提交时连列名都不出现在 SET 里，
+     * 库内现值由数据库自己保留。契约里 {@code status} 不是必填，{@code null} 表示"保持当前状态"；
+     * 若把读到的旧值 {@code SET status = 旧值} 写回去，就变成一次普通资料编辑替数据库决定了状态：
+     * 本事务在读取之后、写回之前，另一位管理员完成的停用会被这次编辑悄悄撤销
+     * （读到 ACTIVE → 对方停用并提交 → 本事务把 ACTIVE 写回，景点被重新启用）。</p>
+     *
      * <p>目标不存在时返回 404。旧实现是无条件 {@code updateById}：影响 0 行也照回 200 +
      * 请求体，调用方会以为一条不存在的景点保存成功了。</p>
+     *
+     * <p>UPDATE 影响 0 行同样按 404 处理：那说明这条记录在本事务读取之后被并发删除，
+     * 此时既不能记"修改成功"的操作日志，也不能靠随后的回查把旧快照当成修改结果返回
+     * （同一事务的 REPEATABLE READ 快照仍能看到那一行）。0 行确实等价于"记录不存在"——
+     * MySQL 驱动默认回的是<b>匹配行数</b>而不是实际变更行数，写入内容与库内完全相同也会算 1 行，
+     * 所以这个判定不会把"没有实质改动"误判成 404（注意：若给 JDBC URL 加上 {@code useAffectedRows=true}
+     * 就会改成返回变更行数，该前提随之失效）。</p>
      */
     @Transactional
     public AttractionView update(Long attractionId, AttractionUpsertRequest request, Long operatorId) {
         Attraction current = requireAttraction(attractionId);
         applyEditableFields(current, request);
-        // status 未提交时保留库内现值，不把停用的景点悄悄重新启用。
-        if (request.hasStatus()) {
-            current.status = statusValue(request.status());
-        }
-        attractions.update(null, new UpdateWrapper<Attraction>().eq("id", attractionId)
+        UpdateWrapper<Attraction> update = new UpdateWrapper<Attraction>().eq("id", attractionId)
                 .set("name", current.name)
                 .set("city", current.city)
                 .set("address", current.address)
                 .set("longitude", current.longitude)
                 .set("latitude", current.latitude)
                 .set("intro", current.intro)
-                .set("data_source", current.dataSource)
-                .set("status", current.status));
+                .set("data_source", current.dataSource);
+        if (request.hasStatus()) {
+            update.set("status", statusValue(request.status()));
+        }
+        if (attractions.update(null, update) == 0) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "景点不存在或已被删除，修改未生效");
+        }
         operationLog.record(operatorId, "景点", "UPDATE", "ATTRACTION", attractionId,
                 "修改景点：" + current.name);
         return requireView(attractionId);

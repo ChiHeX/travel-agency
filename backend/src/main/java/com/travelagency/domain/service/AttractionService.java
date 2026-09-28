@@ -76,6 +76,10 @@ public class AttractionService {
      * 排序按名称升序，与后台列表（创建时间倒序）刻意不同 —— 用户端是"按名字找地方"的浏览场景，
      * 后台是"刚录入的先看到"的维护场景。</p>
      *
+     * <p>排序补了 {@code id} 作为第二关键字：{@code name} 上没有唯一约束，"人民公园"这类重名景点
+     * 在不同城市里很常见，只按 {@code name} 排序时重名行的先后由 MySQL 决定，翻页会出现重复或漏项
+     * （与后台列表用 {@code created_at DESC, id DESC} 挡掉的是同一类问题）。</p>
+     *
      * <p>与后台列表共用 {@link AttractionView} 映射：此前该端点直出 {@code Attraction} 实体，
      * 响应里的 {@code status} 是整数 1、坐标被全局 {@code BigDecimal} 序列化器变成两位小数字符串，
      * 与契约 {@code Attraction} 的 {@code AccountStatus} 和 JSON number 都不符。</p>
@@ -89,7 +93,8 @@ public class AttractionService {
         if (city != null && !city.isBlank()) {
             query.eq("city", city.trim());
         }
-        Page<Attraction> result = attractions.selectPage(newPage(page, size), query.orderByAsc("name"));
+        Page<Attraction> result = attractions.selectPage(newPage(page, size),
+                query.orderByAsc("name").orderByAsc("id"));
         return toViewPage(result);
     }
 

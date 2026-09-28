@@ -137,6 +137,10 @@ class AttractionServiceTest {
         String sql = query.getValue().getSqlSegment();
         assertTrue(sql.contains("status"), "公开列表必须过滤已启用的景点：" + sql);
         assertTrue(sql.contains("city"), "city 参数应按所属城市过滤：" + sql);
+        // name 上没有唯一约束（多个城市都可能有"人民公园"），只按 name 排序时重名行的先后由 MySQL 决定，
+        // LIMIT/OFFSET 翻页会出现重复或漏项。这里钉住 id 兜底，与后台列表的 created_at, id 同一思路。
+        assertTrue(sql.matches("(?s).*ORDER BY\\s+name\\s+ASC\\s*,\\s*id\\s+ASC.*"),
+                "公开列表排序必须带 id 兜底，否则重名景点翻页会重复或漏项：" + sql);
         AttractionView item = page.items().get(0);
         assertEquals("ACTIVE", item.status());
         assertEquals(new BigDecimal("100.1650000").doubleValue(), item.longitude(), 0.0);

@@ -153,6 +153,40 @@ describe('AdminResourcesView（景点资料库）', () => {
     expect(dialog().props('attraction')).toMatchObject({ id: '12', name: '西湖' })
   })
 
+  /**
+   * 保存成功后的刷新页码必须按 POST / PUT 分开。
+   *
+   * <p>改动前的实现两种情况都回第 1 页：在第 2 页改完一个景点后列表跳回第 1 页，
+   * 被改的那条（created_at 没变，仍在第 2 页）从视野里消失，看起来像被删掉了。</p>
+   */
+  it('编辑保存后留在当前页（连同筛选条件），新增保存后才回到第 1 页', async () => {
+    fetchAttractions.mockResolvedValue({ items: [activeAttraction], total: 45, totalPages: 3 })
+    const wrapper = mountView()
+    await flushPromises()
+
+    // 翻到第 2 页并带上筛选词
+    await wrapper.find('.resource-search input').setValue('西湖')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+    await buttonByText(wrapper, '下一页').trigger('click')
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenLastCalledWith({ page: 2, size: 20, keyword: '西湖' })
+
+    const dialog = wrapper.findComponent({ name: 'AttractionFormDialog' })
+
+    // 修改（PUT）：created_at 不变，记录仍在第 2 页，不能跳回第 1 页
+    dialog.vm.$emit('saved', { attraction: activeAttraction, created: false })
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenLastCalledWith({ page: 2, size: 20, keyword: '西湖' })
+    expect(wrapper.text()).toContain('第 2 / 3 页')
+
+    // 新增（POST）：记录排在第一页，必须先回到第 1 页才看得到
+    dialog.vm.$emit('saved', { attraction: activeAttraction, created: true })
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenLastCalledWith({ page: 1, size: 20, keyword: '西湖' })
+    expect(wrapper.text()).toContain('第 1 / 3 页')
+  })
+
   it('删除：确认后调用契约端点并刷新列表', async () => {
     const wrapper = mountView()
     await flushPromises()

@@ -155,10 +155,25 @@ function clearKeyword() {
   load()
 }
 
-/** 新增/编辑成功后回到第 1 页：后台列表按创建时间倒序，新建的记录就在第一页。 */
+/** 新增成功后回到第 1 页：后台列表按创建时间倒序，新建的记录就在第一页。 */
 function reloadFirstPage() {
   page.value = 1
   load()
+}
+
+/**
+ * 景点保存成功后的刷新策略，按 POST / PUT 分开：
+ *
+ * <p>① 新增（POST）—— 记录按 {@code created_at DESC} 排在第一页，回第 1 页才能看到它；
+ * ② 修改（PUT）—— {@code created_at} 不变，被改的那条仍在原来的页码上。
+ * 旧实现两种情况都回第 1 页：在第 2 页改完一个景点后，列表跳回第 1 页，
+ * 刚编辑的那条从视野里消失，看起来像是被删掉了。修改后留在当前页（连同 keyword 筛选）。</p>
+ *
+ * @param {{ created?: boolean }} payload 由 AttractionFormDialog 的 saved 事件给出
+ */
+function onAttractionSaved(payload) {
+  if (payload?.created) reloadFirstPage()
+  else load()
 }
 
 /** 打开景点新增/编辑弹窗；row 为空表示新增。 */
@@ -506,7 +521,7 @@ onMounted(load)
       v-if="resource === 'attractions'"
       v-model="attractionDialogVisible"
       :attraction="editingAttraction"
-      @saved="reloadFirstPage"
+      @saved="onAttractionSaved"
     />
 
     <DepartureFormDialog

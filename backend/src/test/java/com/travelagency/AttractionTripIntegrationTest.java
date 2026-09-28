@@ -25,11 +25,22 @@ import tools.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
+import static org.hamcrest.Matchers.endsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * 景点公开浏览端点的数据库集成测试（需要 {@code TRAVEL_MYSQL_TEST=true}）：
+ * 覆盖"必须在真库上才成立"的部分 —— 详情只列出已发布线路的未来开放团期、
+ * 剩余名额按 {@code max(0, maxPeople - reserved - confirmed)} 计算，
+ * 以及公开列表 {@code city} 契约上限（64 码点）两侧的边界。
+ *
+ * <p>参数校验本身不需要数据库，由 {@code AttractionPublicWebContractTest} 覆盖；
+ * 本类只负责"校验通过之后"的行为。</p>
+ */
 @SpringBootTest
 @Transactional
 @EnabledIfEnvironmentVariable(named = "TRAVEL_MYSQL_TEST", matches = "true")
@@ -69,6 +80,29 @@ class AttractionTripIntegrationTest {
         assertEquals("499.00", data.path("departures").get(0).path("childPrice").asText());
         assertEquals(full.id.toString(), data.path("departures").get(1).path("id").asText());
         assertEquals(0, data.path("departures").get(1).path("availableSeats").asInt());
+    }
+
+    /**
+     * 公开列表 {@code city} 的契约上限（{@code maxLength: 64}）在真实服务上的两侧边界：
+     * 恰好 64 码点必须照旧返回 200，65 码点返回 422。
+     *
+     * <p>{@code AttractionPublicWebContractTest} 不需要数据库，只能断言"超长被拒"；
+     * 若把上限写成比 64 更小的值，那些用例仍会通过。这里是唯一能挡住"误伤合法请求"的地方 ——
+     * 校验通过后查询要真的落到数据库、结果要真的按分页信封序列化出来。</p>
+     */
+    @Test
+    void publicListAcceptsCityAtTheContractLimitAndRejectsOneOverIt() throws Exception {
+        MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+
+        mvc.perform(get("/api/attractions").param("page", "1").param("size", "5")
+                        .param("city", "城".repeat(64)))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/attractions").param("page", "1").param("size", "5")
+                        .param("city", "城".repeat(65)))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("city")));
     }
 
     private Attraction place(String name) {

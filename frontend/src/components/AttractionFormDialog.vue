@@ -16,6 +16,9 @@ import { adminApi } from '@/api/modules'
  * - `address` / `intro` / 坐标允许为空，提交 null 表示清空（PUT 会真的写 NULL）。
  *
  * 页面校验只用于改善交互，最终由后端裁定；后端返回的 message 会就地展示。
+ *
+ * 保存成功后 emit `saved`，载荷是 `{ attraction, created }`：`attraction` 是后端返回的景点，
+ * `created` 表示这次走的是 POST（新建）还是 PUT（修改），由调用方决定刷新哪一页。
  */
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -124,7 +127,9 @@ async function save() {
       ? await adminApi.updateAttraction(props.attraction.id, payload)
       : await adminApi.createAttraction(payload)
     ElMessage.success(editing ? '景点资料已更新' : '景点资料已新增')
-    emit('saved', saved)
+    // 带上 created：POST 和 PUT 对列表的影响不同 —— 新建的记录排在第一页，
+    // 修改的记录留在原来的位置（created_at 不变），页面据此决定刷新哪一页。
+    emit('saved', { attraction: saved, created: !editing })
     close()
   } catch (cause) {
     // 后端 422（字段语义）与 404（记录已被删除）的 message 都可读，就地展示。

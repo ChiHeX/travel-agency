@@ -112,6 +112,8 @@ describe('AttractionFormDialog', () => {
     expect(payload).not.toHaveProperty('id')
     expect(payload).not.toHaveProperty('createdAt')
     expect(wrapper.emitted('saved')).toHaveLength(1)
+    // 载荷要说明这次走的是 POST：调用方据此把列表刷到第 1 页（新建记录排在第一页）。
+    expect(wrapper.emitted('saved')[0][0]).toEqual({ attraction: { id: '1', status: 'ACTIVE' }, created: true })
     expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([false])
   })
 
@@ -134,6 +136,11 @@ describe('AttractionFormDialog', () => {
       status: 'DISABLED',
       longitude: 100.1005,
       latitude: 25.6896
+    })
+    // 修改走的是 PUT：记录位置不变，调用方不该把列表刷回第 1 页。
+    expect(wrapper.emitted('saved')[0][0]).toEqual({
+      attraction: { ...disabledAttraction, name: '苍山（改名）' },
+      created: false
     })
   })
 

@@ -27,6 +27,10 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 public class AttractionController {
 
+    /** 契约 {@code GET /attractions} 的 {@code city} 上限（{@code maxLength: 64}）。 */
+    private static final int CITY_MAX_CHARS = 64;
+    private static final String CITY_LENGTH_MESSAGE = "city 长度不能超过 64 个字符";
+
     private final AttractionService attractionService;
 
     public AttractionController(AttractionService attractionService) {
@@ -38,6 +42,9 @@ public class AttractionController {
      *
      * <p>只返回已启用的景点；{@code keyword} 按契约限制为 100 个码点
      * （它会被拼进 {@code LIKE %…%}，而本端点无需登录，必须有上限）。</p>
+     *
+     * <p>{@code city} 同样按契约的 {@code maxLength: 64} 校验：它是<b>无需登录</b>的公开参数，
+     * 只写在 {@code docs/openapi.yaml} 里的上限拦不住任何请求，客户端可以送任意长度的字符串进来。</p>
      */
     @GetMapping
     public ApiResponse<PageResponse<AttractionView>> list(
@@ -45,7 +52,8 @@ public class AttractionController {
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
             @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
-            @RequestParam(required = false) String city) {
+            @RequestParam(required = false)
+            @CodePointLength(max = CITY_MAX_CHARS, message = CITY_LENGTH_MESSAGE) String city) {
         return ApiResponse.ok(attractionService.pagePublic(keyword, city, page, size));
     }
 

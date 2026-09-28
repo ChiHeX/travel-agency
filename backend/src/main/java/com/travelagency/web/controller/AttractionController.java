@@ -1,14 +1,11 @@
 package com.travelagency.web.controller;
 
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.validation.KeywordRules;
-import com.travelagency.domain.entity.Attraction;
 import com.travelagency.domain.dto.AttractionDetailView;
+import com.travelagency.domain.dto.AttractionView;
 import com.travelagency.domain.service.AttractionService;
-import com.travelagency.domain.mapper.AttractionMapper;
 import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,42 +14,50 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * 景点公开浏览接口，对齐契约 {@code Content} 一组的 {@code /attractions} 两个端点。
+ *
+ * <p>两个端点都走 {@link AttractionService}：此前列表在 Controller 里直接用 Mapper 拼查询，
+ * 并把 {@code Attraction} 实体直接返回（{@code status} 是整数 1、坐标是两位小数字符串，
+ * 与契约的 {@code AccountStatus} / JSON number 都不符），详情用的是另一份重复的映射 record。
+ * 现在两者共用 {@link AttractionView}，同一张表在任何接口上只有一种响应形状。</p>
+ */
 @RestController
 @RequestMapping("/api/attractions")
 @Validated
 public class AttractionController {
 
-    private final AttractionMapper attractionMapper;
+    /** 契约 {@code GET /attractions} 的 {@code city} 上限（{@code maxLength: 64}）。 */
+    private static final int CITY_MAX_CHARS = 64;
+    private static final String CITY_LENGTH_MESSAGE = "city 长度不能超过 64 个字符";
+
     private final AttractionService attractionService;
 
-    public AttractionController(AttractionMapper attractionMapper, AttractionService attractionService) {
-        this.attractionMapper = attractionMapper;
+    public AttractionController(AttractionService attractionService) {
         this.attractionService = attractionService;
     }
 
     /**
-     * 公开景点分页查询，对齐契约 GET /attractions（AttractionPageEnvelope）。
-     * 此前面向契约的 page/size 参数缺失且返回裸数组，前端按 data.items 取值会拿到 undefined。
+     * 公开景点分页查询，对齐契约 {@code GET /attractions}（{@code AttractionPageEnvelope}）。
+     *
+     * <p>只返回已启用的景点；{@code keyword} 按契约限制为 100 个码点
+     * （它会被拼进 {@code LIKE %…%}，而本端点无需登录，必须有上限）。</p>
+     *
+     * <p>{@code city} 同样按契约的 {@code maxLength: 64} 校验：它是<b>无需登录</b>的公开参数，
+     * 只写在 {@code docs/openapi.yaml} 里的上限拦不住任何请求，客户端可以送任意长度的字符串进来。</p>
      */
     @GetMapping
-    public ApiResponse<PageResponse<Attraction>> list(
+    public ApiResponse<PageResponse<AttractionView>> list(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
             @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
-            @RequestParam(required = false) String city) {
-        QueryWrapper<Attraction> query = new QueryWrapper<Attraction>().eq("status", 1);
-        if (keyword != null && !keyword.isBlank()) {
-            query.and(w -> w.like("name", keyword.trim()).or().like("intro", keyword.trim()));
-        }
-        if (city != null && !city.isBlank()) {
-            query.eq("city", city.trim());
-        }
-        Page<Attraction> result = attractionMapper.selectPage(
-                new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)), query.orderByAsc("name"));
-        return ApiResponse.ok(PageResponse.from(result));
+            @RequestParam(required = false)
+            @CodePointLength(max = CITY_MAX_CHARS, message = CITY_LENGTH_MESSAGE) String city) {
+        return ApiResponse.ok(attractionService.pagePublic(keyword, city, page, size));
     }
 
+    /** 公开景点详情与途经该景点的未来开放团期，对齐契约 {@code AttractionDetailEnvelope}。 */
     @GetMapping("/{id}")
     public ApiResponse<AttractionDetailView> detail(@PathVariable Long id) {
         return ApiResponse.ok(attractionService.detail(id));

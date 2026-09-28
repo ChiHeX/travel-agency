@@ -32,7 +32,6 @@ import com.travelagency.domain.dto.StaffAccountRequest;
 import com.travelagency.domain.dto.StaffUpdateRequest;
 import com.travelagency.domain.dto.StaffView;
 import com.travelagency.domain.dto.StatusRequest;
-import com.travelagency.domain.entity.Attraction;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.Hotel;
@@ -43,7 +42,6 @@ import com.travelagency.domain.entity.SysRole;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.SysUserRole;
 import com.travelagency.domain.entity.TravelOrder;
-import com.travelagency.domain.mapper.AttractionMapper;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.HotelMapper;
@@ -101,7 +99,6 @@ public class AdminController {
     private final TravelRouteMapper routeMapper;
     private final DepartureMapper departureMapper;
     private final RefundMapper refundMapper;
-    private final AttractionMapper attractionMapper;
     private final HotelMapper hotelMapper;
     private final GuideMapper guideMapper;
     private final OperationLogMapper operationLogMapper;
@@ -120,7 +117,6 @@ public class AdminController {
             TravelRouteMapper routeMapper,
             DepartureMapper departureMapper,
             RefundMapper refundMapper,
-            AttractionMapper attractionMapper,
             HotelMapper hotelMapper,
             GuideMapper guideMapper,
             OperationLogMapper operationLogMapper,
@@ -136,7 +132,6 @@ public class AdminController {
         this.routeMapper = routeMapper;
         this.departureMapper = departureMapper;
         this.refundMapper = refundMapper;
-        this.attractionMapper = attractionMapper;
         this.hotelMapper = hotelMapper;
         this.guideMapper = guideMapper;
         this.operationLogMapper = operationLogMapper;
@@ -213,43 +208,10 @@ public class AdminController {
     }
 
     // 线路与行程管理端点已迁移到 AdminRouteController，团期管理端点已迁移到
-    // AdminDepartureController：此前这些实现与契约不一致（返回实体、状态码不是 201/204、
-    // 行程缺少 items/hotelName、删除不级联、团期状态接口返回 data:null 且允许客户端提交名额字段），
-    // 迁移后 AdminController 只保留其它后台模块的接口。
-
-    /**
-     * 后台景点分页查询，对齐契约 GET /admin/attractions（分页信封 + keyword 筛选）。
-     */
-    @GetMapping("/attractions")
-    public ApiResponse<PageResponse<Attraction>> attractions(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false)
-            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword) {
-        QueryWrapper<Attraction> query = new QueryWrapper<>();
-        appendKeyword(query, keyword, "name", "intro", "city");
-        return ApiResponse.ok(PageResponse.from(attractionMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
-    }
-
-    @PostMapping("/attractions")
-    public ApiResponse<Attraction> createAttraction(@RequestBody Attraction attraction) {
-        attractionMapper.insert(attraction);
-        return ApiResponse.ok(attraction);
-    }
-
-    @PutMapping("/attractions/{id}")
-    public ApiResponse<Attraction> updateAttraction(@PathVariable Long id, @RequestBody Attraction attraction) {
-        attraction.id = id;
-        attractionMapper.updateById(attraction);
-        return ApiResponse.ok(attraction);
-    }
-
-    @DeleteMapping("/attractions/{id}")
-    public ApiResponse<Void> deleteAttraction(@PathVariable Long id) {
-        attractionMapper.deleteById(id);
-        return ApiResponse.ok();
-    }
+    // AdminDepartureController，景点管理端点已迁移到 AdminAttractionController：
+    // 此前这些实现与契约不一致（返回实体、状态码不是 201/204、响应字段形状违约、
+    // 行程缺少 items/hotelName、删除不级联或直接撞外键报 500、团期状态接口返回 data:null
+    // 且允许客户端提交名额字段），迁移后 AdminController 只保留其它后台模块的接口。
 
     /**
      * 后台酒店分页查询，对齐契约 GET /admin/hotels（分页信封 + keyword 筛选）。
@@ -449,7 +411,7 @@ public class AdminController {
      *
      * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}；
      * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
-     * 与本文件 {@code /admin/guides}、{@code /admin/attractions} 等同族端点的口径也不一致。
+     * 与本文件 {@code /admin/guides}、{@code /admin/hotels} 等同族端点的口径也不一致。
      * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
      * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。</p>
      */

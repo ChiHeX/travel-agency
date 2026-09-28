@@ -1,7 +1,8 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import AttractionFormDialog from '@/components/AttractionFormDialog.vue'
 import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
 
 const props = defineProps({
@@ -20,6 +21,16 @@ const pending = ref(null)
  */
 const departureDialogVisible = ref(false)
 const editingDeparture = ref(null)
+
+/** 景点新增/编辑弹窗状态，对应契约 /admin/attractions 的写入端点。 */
+const attractionDialogVisible = ref(false)
+const editingAttraction = ref(null)
+
+/** 景点列表的 keyword 筛选（契约 GET /admin/attractions 的 keyword 参数）。 */
+const keyword = ref('')
+
+/** 契约 AccountStatus：景点停用后即从用户端列表与详情撤下。 */
+const ATTRACTION_STATUS_LABEL = { ACTIVE: '启用', DISABLED: '停用' }
 
 const loaders = {
   attractions: adminApi.attractions,
@@ -82,12 +93,104 @@ const refundLabel = (status) => REFUND_STATUS_LABEL[status] || status
 const refundTagClass = (status) =>
   status === 'REFUNDED' ? 'success' : status === 'REJECTED' ? 'danger' : 'warning'
 
-async function load() {
+/**
+ * 景点列表的分页状态（契约 GET /admin/attractions 的 page / size）。
+ *
+ * <p>不传分页参数时后端按 page=1、size=20 返回，页面上没有任何翻页入口，
+ * 第 21 条之后的景点就<b>无法在界面里被管理</b>（既看不到也没法编辑或删除）。
+ * 因此景点这一档必须显式传 page / size 并提供翻页控件。</p>
+ */
+const page = ref(1)
+const PAGE_SIZE = 20
+const total = ref(0)
+const totalPages = ref(0)
+
+/**
+ * 拉取列表。
+ *
+ * @param {boolean} retryOnEmptyPage 当前页取空且不是第一页时是否回退一页重取（删除最后一条后会遇到）
+ */
+async function load(retryOnEmptyPage = true) {
   loading.value = true
   try {
-    rows.value = (await loaders[props.resource]())?.items || []
+    // 只有景点列表在契约里有 keyword 参数；其它资源不传，避免拼出后端不认识的查询串。
+    const searching = keyword.value.trim()
+    const params = props.resource === 'attractions'
+      ? { page: page.value, size: PAGE_SIZE, ...(searching ? { keyword: searching } : {}) }
+      : undefined
+    const result = await loaders[props.resource](params)
+    rows.value = result?.items || []
+    if (props.resource !== 'attractions') return
+
+    total.value = Number(result?.total ?? rows.value.length)
+    totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
+    // 删掉当前页最后一条后，这一页可能已经空了：回退一页，而不是停在一个空页上。
+    if (retryOnEmptyPage && !rows.value.length && page.value > 1) {
+      page.value -= 1
+      await load(false)
+    }
   } finally {
     loading.value = false
+  }
+}
+
+/** 翻页：delta 为 -1 / +1，越界时不动。 */
+function goToPage(delta) {
+  const next = page.value + delta
+  if (next < 1 || (totalPages.value && next > totalPages.value)) return
+  page.value = next
+  load()
+}
+
+/** 提交筛选：必须先回到第 1 页，否则会停在"上一次筛选下的第 N 页"，很容易落到空页。 */
+function search() {
+  page.value = 1
+  load()
+}
+
+/** 清空筛选项并回到第 1 页。 */
+function clearKeyword() {
+  keyword.value = ''
+  page.value = 1
+  load()
+}
+
+/** 新增/编辑成功后回到第 1 页：后台列表按创建时间倒序，新建的记录就在第一页。 */
+function reloadFirstPage() {
+  page.value = 1
+  load()
+}
+
+/** 打开景点新增/编辑弹窗；row 为空表示新增。 */
+function openAttractionDialog(row) {
+  editingAttraction.value = row || null
+  attractionDialogVisible.value = true
+}
+
+/**
+ * 删除景点资料，走契约 DELETE /admin/attractions/{attractionId}（成功 204）。
+ *
+ * 契约只允许删除<b>未被引用</b>的景点：仍被线路行程、地点指南或攻略文章引用时后端返回 409，
+ * 错误提示由 axios 拦截器统一弹出（message 里点明了是被什么挡住的），这里不重复提示。
+ * 想让景点从用户端撤下而不影响已引用它的线路时，应改用「停用」而不是删除。
+ */
+async function removeAttraction(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除景点「${row.name}」吗？已被线路行程、地点指南或攻略文章引用的景点不能删除，如需下架请改为「停用」。`,
+      '删除景点资料',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await adminApi.deleteAttraction(row.id)
+    ElMessage.success('景点资料已删除')
+  } catch {
+    // 失败提示已由拦截器给出；无论成功与否都重新拉取列表，避免页面停留在与库内不符的状态。
+  } finally {
+    await load().catch(() => {})
   }
 }
 
@@ -145,7 +248,12 @@ async function decision(row, action) {
   }
 }
 
-watch(() => props.resource, load)
+watch(() => props.resource, () => {
+  // 切换资源时清掉上一个资源的筛选词与页码，避免把景点的 keyword/页码带到别的列表上。
+  keyword.value = ''
+  page.value = 1
+  load()
+})
 onMounted(load)
 </script>
 
@@ -164,6 +272,13 @@ onMounted(load)
         + 新增团期
       </button>
       <button
+        v-else-if="resource === 'attractions'"
+        class="primary-button"
+        @click="openAttractionDialog(null)"
+      >
+        + 新增景点资料
+      </button>
+      <button
         v-else-if="resource !== 'refunds'"
         class="primary-button"
         @click="ElMessage.info('新增表单已对接对应后端 CRUD API')"
@@ -171,6 +286,26 @@ onMounted(load)
         + 新增{{ title.replace('管理', '').replace('资料', '') }}
       </button>
     </div>
+
+    <!-- 景点资料的 keyword 筛选，对应契约 GET /admin/attractions 的 keyword 参数 -->
+    <form v-if="resource === 'attractions'" class="resource-search" @submit.prevent="search">
+      <input
+        v-model="keyword"
+        maxlength="100"
+        placeholder="按景点名称、所属城市或简介搜索"
+        aria-label="按景点名称、所属城市或简介搜索"
+      />
+      <button type="submit" class="secondary-button" :disabled="loading">查询</button>
+      <button
+        v-if="keyword"
+        type="button"
+        class="text-button"
+        :disabled="loading"
+        @click="clearKeyword"
+      >
+        清空
+      </button>
+    </form>
 
     <div class="admin-panel">
       <div v-if="loading">
@@ -202,6 +337,15 @@ onMounted(load)
             <th>联系电话</th>
             <th>个人专长简介</th>
             <th>状态</th>
+          </tr>
+          <tr v-else-if="resource === 'attractions'">
+            <th>景点名称</th>
+            <th>所属城市</th>
+            <th>地址</th>
+            <th>地理经纬度</th>
+            <th>资料来源</th>
+            <th>状态</th>
+            <th style="text-align: right;">操作</th>
           </tr>
           <tr v-else>
             <th>名称</th>
@@ -291,6 +435,32 @@ onMounted(load)
               <td><span class="tag success">{{ row.status }}</span></td>
             </tr>
 
+            <tr v-else-if="resource === 'attractions'">
+              <td>
+                <strong>{{ row.name }}</strong>
+                <div class="muted-text">景点 #{{ row.id }}</div>
+              </td>
+              <td>{{ row.city || '—' }}</td>
+              <td>{{ row.address || '—' }}</td>
+              <td>
+                {{ row.longitude ?? '—' }}, {{ row.latitude ?? '—' }}
+                <div v-if="row.longitude === null || row.latitude === null" class="muted-text">
+                  未填写坐标，不会出现在用户端地图上
+                </div>
+              </td>
+              <td>{{ row.dataSource || '—' }}</td>
+              <td>
+                <span class="tag" :class="row.status === 'ACTIVE' ? 'success' : 'danger'">
+                  {{ ATTRACTION_STATUS_LABEL[row.status] || row.status }}
+                </span>
+              </td>
+              <td style="text-align: right;">
+                <button type="button" class="text-button" @click="openAttractionDialog(row)">编辑</button>
+                <span class="divider">|</span>
+                <button type="button" class="text-button text-danger" @click="removeAttraction(row)">删除</button>
+              </td>
+            </tr>
+
             <tr v-else>
               <td><strong>{{ row.name }}</strong></td>
               <td>{{ row.city || row.address || '—' }}</td>
@@ -303,9 +473,41 @@ onMounted(load)
       </table>
 
       <div v-else class="empty-box">
-        暂无相关资料数据。
+        {{ resource === 'attractions' && keyword.trim()
+          ? `没有匹配「${keyword.trim()}」的景点资料，可清空筛选后重试。`
+          : '暂无相关资料数据。' }}
+      </div>
+
+      <!-- 景点资料分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
+      <div v-if="resource === 'attractions'" class="resource-pager">
+        <button
+          type="button"
+          class="secondary-button"
+          :disabled="loading || page <= 1"
+          @click="goToPage(-1)"
+        >
+          上一页
+        </button>
+        <span class="muted-text">
+          第 {{ page }} / {{ totalPages || 1 }} 页，共 {{ total }} 条
+        </span>
+        <button
+          type="button"
+          class="secondary-button"
+          :disabled="loading || page >= totalPages"
+          @click="goToPage(1)"
+        >
+          下一页
+        </button>
       </div>
     </div>
+
+    <AttractionFormDialog
+      v-if="resource === 'attractions'"
+      v-model="attractionDialogVisible"
+      :attraction="editingAttraction"
+      @saved="reloadFirstPage"
+    />
 
     <DepartureFormDialog
       v-if="resource === 'departures'"
@@ -317,6 +519,32 @@ onMounted(load)
 </template>
 
 <style scoped>
+.resource-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.resource-search input {
+  flex: 1 1 260px;
+  max-width: 420px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: white;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.resource-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 .amount {
   color: var(--price-orange);
   font-weight: 800;

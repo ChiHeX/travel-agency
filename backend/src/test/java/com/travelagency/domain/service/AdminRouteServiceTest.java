@@ -410,7 +410,7 @@ class AdminRouteServiceTest {
     @DisplayName("新增行程：酒店不存在返回 422，天数序号重复返回 409")
     void createDayValidatesHotelAndDayNumber() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
-        when(hotelMapper.selectById(999L)).thenReturn(null);
+        when(hotelMapper.selectOne(any())).thenReturn(null);
         BusinessException hotelMissing = assertThrows(BusinessException.class,
                 () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 999L), ACTOR));
         assertEquals(422, hotelMissing.getStatus());
@@ -431,7 +431,7 @@ class AdminRouteServiceTest {
     @DisplayName("新增行程：已停用的酒店不能安排进新行程（422），且不写库")
     void createDayRejectsDisabledHotel() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
-        when(hotelMapper.selectById(6L)).thenReturn(hotel(6L, "已停用酒店", 0));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
@@ -450,7 +450,7 @@ class AdminRouteServiceTest {
     @DisplayName("修改行程：新指向停用酒店返回 422；已停用酒店原样保留则放行")
     void updateDayOnlyRejectsNewlyAssigningDisabledHotel() {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", 5L));
-        when(hotelMapper.selectById(6L)).thenReturn(hotel(6L, "已停用酒店", 0));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.updateDay(11L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
@@ -479,7 +479,7 @@ class AdminRouteServiceTest {
     void createDayPersistsRouteBinding() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
         Hotel hotel = hotel(5L, "昆明测试酒店", 1);
-        when(hotelMapper.selectById(5L)).thenReturn(hotel);
+        when(hotelMapper.selectOne(any())).thenReturn(hotel);
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
             RouteItineraryDay inserted = invocation.getArgument(0);

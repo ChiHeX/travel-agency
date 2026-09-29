@@ -553,12 +553,25 @@ public class AdminRouteService {
         return item;
     }
 
-    /** 按主键取酒店；未指定（null）返回 null，指定了但不存在则 422。 */
-    private Hotel requireHotel(Long hotelId) {
+    /**
+     * 按主键取酒店并加行锁；未指定（null）返回 null，指定了但不存在则 422。
+     *
+     * <p><b>必须是当前读（{@code SELECT ... FOR UPDATE}），不能用普通查询。</b>
+     * 普通查询读的是本事务的一致性快照，而这个快照在事务第一次读（例如前面的
+     * {@code requireRoute}）时就已经建立：酒店如果在"读状态"与"写行程"之间被另一位工作人员停用并提交，
+     * 快照里它仍然是 ACTIVE —— 校验通过、行程落库，而这家酒店此刻已经是停用状态，
+     * "停用后不能再被安排进新行程"的规则就被绕过了。</p>
+     *
+     * <p>加锁同时把两个动作串行化：本事务持有该酒店行的排他锁直到提交，期间的停用
+     * （{@code HotelService#update} 的 UPDATE）会等待，提交后才生效；反过来，停用先提交时
+     * 这里的当前读会读到 DISABLED 并返回 422。锁在 {@code createDay} / {@code updateDay}
+     * 的事务结束时释放（两者都是 {@code @Transactional}）。</p>
+     */
+    private Hotel lockHotel(Long hotelId) {
         if (hotelId == null) {
             return null;
         }
-        Hotel hotel = hotelMapper.selectById(hotelId);
+        Hotel hotel = hotelMapper.selectOne(new QueryWrapper<Hotel>().eq("id", hotelId).last("FOR UPDATE"));
         if (hotel == null) {
             throw new BusinessException(422, "VALIDATION_ERROR", "指定的酒店不存在");
         }
@@ -572,9 +585,12 @@ public class AdminRouteService {
      * （被行程引用的酒店不允许删除，见 {@code HotelService#delete}），若这里放行，
      * 停用就退化成一个没有任何效果的标记 —— 后台写着"停止使用"，实际仍能被安排、
      * 用户端也照旧显示。停用不删除资料，也不改动已经引用它的行程。</p>
+     *
+     * <p>状态判定与行程写入之间不允许被别人插进一次停用：判定的读走 {@link #lockHotel} 的当前读，
+     * 见那里的说明。</p>
      */
     private Hotel requireActiveHotel(Long hotelId) {
-        Hotel hotel = requireHotel(hotelId);
+        Hotel hotel = lockHotel(hotelId);
         if (hotel != null && !isActive(hotel)) {
             throw disabledHotel(hotel);
         }
@@ -589,7 +605,7 @@ public class AdminRouteService {
      * 必须先把酒店换掉才能改文案。因此只有新指向一家停用酒店（含从"不指定"改成停用酒店）时才拦。</p>
      */
     private Hotel requireAssignableHotel(Long currentHotelId, Long nextHotelId) {
-        Hotel hotel = requireHotel(nextHotelId);
+        Hotel hotel = lockHotel(nextHotelId);
         if (hotel != null && !isActive(hotel) && !Objects.equals(hotel.id, currentHotelId)) {
             throw disabledHotel(hotel);
         }

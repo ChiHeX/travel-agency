@@ -36,7 +36,7 @@ const keyword = ref('')
 
 /**
  * 契约 AccountStatus：景点与酒店共用同一套枚举，停用即停止对外使用
- * （景点从用户端列表与详情撤下；酒店不再用于新的行程安排）。
+ * （景点从用户端列表与详情撤下；酒店不再被安排进新的每日行程，后端在写行程时以 422 拒绝）。
  */
 const ACCOUNT_STATUS_LABEL = { ACTIVE: '启用', DISABLED: '停用' }
 

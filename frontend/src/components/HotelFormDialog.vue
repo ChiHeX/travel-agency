@@ -11,7 +11,8 @@ import { adminApi } from '@/api/modules'
  *
  * 字段口径与后端一致：
  * - `status` 是契约 AccountStatus 枚举 `ACTIVE` / `DISABLED`（后端映射成库内 1/0），
- *   新建默认 ACTIVE；DISABLED 表示停用该资料，但不影响已经被线路行程引用的行程内容；
+ *   新建默认 ACTIVE；DISABLED 表示停用该资料，但不影响已经被线路行程引用的行程内容，
+ *   只是不能再被安排进新的每日行程（后端会拒绝，行程编辑的下拉里也标注为「已停用」）；
  * - `longitude` / `latitude` 是 JSON number，且必须在经度 ±180、纬度 ±90 之内（后端 422 兜底）；
  * - `address` / `contactPhone` / `intro` / 坐标允许为空，提交 null 表示清空（PUT 会真的写 NULL）。
  *
@@ -180,7 +181,7 @@ async function save() {
         <label>运营状态</label>
         <select v-model="form.status">
           <option value="ACTIVE">启用（可用于行程）</option>
-          <option value="DISABLED">停用（停止使用）</option>
+          <option value="DISABLED">停用（不再安排进新行程）</option>
         </select>
       </div>
 
@@ -215,8 +216,8 @@ async function save() {
       <p class="form-hint wide">
         经纬度用于每日行程的地图标注，请填写 WGS-84 坐标；未填写坐标的酒店仍可保存并安排进行程。
         酒店只作为行程资源使用，本项目不提供酒店订单、库存、房型销售与单独下单。
-        停用只是把资料标记为不再使用，既不删除资料也不改动已引用它的行程；删除则要求没有任何
-        行程还在引用该酒店，否则后端会拒绝并提示被线路行程占用。
+        停用只是把资料标记为不再使用：既不删除资料，也不改动已引用它的行程，但停用后这家酒店
+        不能再被安排进新的每日行程；删除则要求没有任何行程还在引用该酒店，否则后端会拒绝并提示被线路行程占用。
       </p>
     </div>
 

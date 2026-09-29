@@ -6,6 +6,7 @@ import { adminApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
 import RouteFormDialog from '@/components/RouteFormDialog.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
+import { fetchAllPages } from '@/utils/paging'
 
 /**
  * 线路管理详情页：线路资料、团期概览、每日行程与行程项目管理。
@@ -85,22 +86,37 @@ async function load() {
   }
 }
 
-/** 行程表单需要的酒店 / 景点候选项，全部来自后端真实数据。 */
+/**
+ * 行程表单需要的酒店 / 景点候选项，全部来自后端真实数据。
+ *
+ * 逐页取全量（契约 size 上限 100）：只取第一页时，第 101 条之后的酒店 / 景点在界面上永远
+ * 选不到，使用者只会以为这条数据不存在。
+ */
 async function loadOptions() {
   if (optionsLoaded.value) return
   optionsLoaded.value = true
   try {
-    const [hotelPage, attractionPage] = await Promise.all([
-      adminApi.hotels({ page: 1, size: 100 }),
-      adminApi.attractions({ page: 1, size: 100 })
+    const [hotelList, attractionList] = await Promise.all([
+      fetchAllPages(adminApi.hotels),
+      fetchAllPages(adminApi.attractions)
     ])
-    hotels.value = hotelPage?.items || []
-    attractions.value = attractionPage?.items || []
+    hotels.value = hotelList
+    attractions.value = attractionList
   } catch {
     // 候选项加载失败不影响手写行程文本，用户仍可正常保存行程。
     hotels.value = []
     attractions.value = []
   }
+}
+
+/**
+ * 停用的酒店不能再被安排进新行程（后端会以 422 拒绝），下拉里直接禁掉并标注。
+ *
+ * 例外是"这一天原本就指向它"：那种情况下必须保持可选。若一并禁掉，
+ * 编辑这条行程时下拉会显示成空的，连带改个餐食说明都会保存失败（后端会拦新指向停用酒店）。
+ */
+function isHotelDisabledOption(hotel) {
+  return hotel.status !== 'ACTIVE' && String(hotel.id) !== String(dayForm.hotelId)
 }
 
 async function toggleStatus() {
@@ -476,7 +492,14 @@ onMounted(load)
           <label>所属酒店</label>
           <select v-model="dayForm.hotelId">
             <option value="">不指定</option>
-            <option v-for="hotel in hotels" :key="hotel.id" :value="hotel.id">{{ hotel.name }}</option>
+            <option
+              v-for="hotel in hotels"
+              :key="hotel.id"
+              :value="hotel.id"
+              :disabled="isHotelDisabledOption(hotel)"
+            >
+              {{ hotel.name }}{{ isHotelDisabledOption(hotel) ? '（已停用）' : '' }}
+            </option>
           </select>
         </div>
         <div class="form-field wide">

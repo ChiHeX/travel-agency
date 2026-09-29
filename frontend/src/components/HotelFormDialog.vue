@@ -13,6 +13,8 @@ import { adminApi } from '@/api/modules'
  * - `status` 是契约 AccountStatus 枚举 `ACTIVE` / `DISABLED`（后端映射成库内 1/0），
  *   新建默认 ACTIVE；DISABLED 表示停用该资料，但不影响已经被线路行程引用的行程内容，
  *   只是不能再被安排进新的每日行程（后端会拒绝，行程编辑的下拉里也标注为「已停用」）；
+ *   **编辑时只有用户真的改过状态才提交该字段**，否则后端会保留库内现值，避免用旧状态
+ *   覆盖另一位管理员的并发停用（见 `shouldSubmitStatus`）；
  * - `longitude` / `latitude` 是 JSON number，且必须在经度 ±180、纬度 ±90 之内（后端 422 兜底）；
  * - `address` / `contactPhone` / `intro` / 坐标允许为空，提交 null 表示清空（PUT 会真的写 NULL）。
  *
@@ -33,6 +35,12 @@ const emit = defineEmits(['update:modelValue', 'saved'])
 const submitting = ref(false)
 const formError = ref('')
 
+/**
+ * 打开弹窗时表单里回填的状态（新建时为契约默认的 ACTIVE）。
+ * 编辑时用它判断用户是否真的改过状态 —— 只有改过才提交 `status`，见 `shouldSubmitStatus()`。
+ */
+const originalStatus = ref('ACTIVE')
+
 const form = reactive({
   name: '',
   address: '',
@@ -46,6 +54,7 @@ const form = reactive({
 
 function reset() {
   const source = props.hotel || {}
+  const status = source.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
   Object.assign(form, {
     name: source.name || '',
     address: source.address || '',
@@ -55,8 +64,9 @@ function reset() {
     latitude: source.latitude === null || source.latitude === undefined ? '' : String(source.latitude),
     intro: source.intro || '',
     dataSource: source.dataSource || '',
-    status: source.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
+    status
   })
+  originalStatus.value = status
   formError.value = ''
 }
 
@@ -116,6 +126,22 @@ function validate() {
   return ''
 }
 
+/**
+ * 这次保存是否要把 `status` 一起提交。
+ *
+ * 编辑时**只在用户真的改了状态之后**才提交它。后端的口径是：契约里 `status` 不是必填，
+ * 未提交表示"保持库内现值"，只有显式提交才写这一列 —— 每次编辑都顺手带上表单里的旧状态
+ * 会让这个保护完全失效：管理员只改地址时，用的是打开弹窗那一刻读到的旧 `ACTIVE`，
+ * 而另一位管理员可能刚好在这期间把这家酒店停用了，于是这次"只改地址"的保存
+ * 会把它重新启用（读旧值 → 对方停用并提交 → 本事务把 ACTIVE 写回）。
+ *
+ * 新建没有"库内现值"可言，状态是本次建档的明确意图，一律提交。
+ */
+function shouldSubmitStatus() {
+  if (!props.hotel?.id) return true
+  return form.status !== originalStatus.value
+}
+
 async function save() {
   if (submitting.value) return
   formError.value = ''
@@ -130,7 +156,8 @@ async function save() {
     latitude: coordinate(form.latitude, -90, 90, '纬度').value,
     intro: optional(form.intro),
     dataSource: form.dataSource.trim(),
-    status: form.status
+    // 未改状态时不带这个字段，交给后端保留库内现值（并发停用不会被覆盖）。
+    ...(shouldSubmitStatus() ? { status: form.status } : {})
   }
 
   submitting.value = true
@@ -139,6 +166,11 @@ async function save() {
     const saved = editing
       ? await adminApi.updateHotel(props.hotel.id, payload)
       : await adminApi.createHotel(payload)
+    // 保存成功后，"原始值"要以服务端确认的状态为准：否则"先停用保存、再改回启用保存"的
+    // 第二次保存会因为值等于打开弹窗时的旧值而漏掉 status —— 界面显示启用，库内却仍是停用。
+    if (saved?.status === 'ACTIVE' || saved?.status === 'DISABLED') {
+      originalStatus.value = saved.status
+    }
     ElMessage.success(editing ? '酒店资料已更新' : '酒店资料已新增')
     // 带上 created：POST 和 PUT 对列表的影响不同 —— 新建的记录排在第一页，
     // 修改的记录留在原来的位置（created_at 不变），页面据此决定刷新哪一页。

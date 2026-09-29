@@ -10,6 +10,8 @@ import HotelFormDialog from '../HotelFormDialog.vue'
  * <ul>
  *   <li>请求体里的 {@code status} 必须是契约 {@code AccountStatus}（{@code ACTIVE}/{@code DISABLED}），
  *       不能是库内的 1/0；</li>
+ *   <li><b>编辑时只有用户真的改过状态才提交 {@code status}</b>：后端的口径是"未提交即保持库内现值"，
+ *       每次编辑都带上旧状态会让并发停用被静默覆盖（只改地址的保存把刚停用的酒店重新启用）；</li>
  *   <li>{@code longitude} / {@code latitude} 必须是 JSON number（或 null），不能是字符串；</li>
  *   <li>契约里酒店<b>没有 city</b>，表单不得凭空提交后端不认识的字段（严格模式下就是 400）；</li>
  *   <li>可空字段清空时要提交 {@code null}，PUT 才能真正把库内字段清掉。</li>
@@ -30,7 +32,7 @@ vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() }
 }))
 
-/** 已停用的酒店：编辑时表单必须回填 DISABLED，保存不得把它悄悄改成启用。 */
+/** 已停用的酒店：编辑时表单必须回填 DISABLED，保存时不得把它悄悄改成启用。 */
 const disabledHotel = {
   id: '31',
   name: '苍山脚下的演示酒店',
@@ -44,6 +46,9 @@ const disabledHotel = {
   createdAt: '2026-09-01T10:00:00+08:00',
   updatedAt: '2026-09-02T10:00:00+08:00'
 }
+
+/** 启用的酒店：编辑它但不碰状态时，请求体里不应出现 status（否则会覆盖并发停用）。 */
+const activeHotel = { ...disabledHotel, id: '32', name: '杭州湖畔演示酒店', status: 'ACTIVE' }
 
 function mountDialog(hotel = null) {
   return mount(HotelFormDialog, {
@@ -114,7 +119,7 @@ describe('HotelFormDialog', () => {
     expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([false])
   })
 
-  it('编辑已停用的酒店：回填 DISABLED 并原样提交，不会静默改成启用', async () => {
+  it('编辑已停用的酒店：回填 DISABLED，未改动状态时不提交 status，不会静默改成启用', async () => {
     updateHotel.mockResolvedValue({ ...disabledHotel, name: '苍山脚下的演示酒店（改名）' })
     const wrapper = mountDialog(disabledHotel)
     await flushPromises()
@@ -131,16 +136,73 @@ describe('HotelFormDialog', () => {
     expect(updateHotel.mock.calls[0][0]).toBe('31')
     expect(updateHotel.mock.calls[0][1]).toMatchObject({
       name: '苍山脚下的演示酒店（改名）',
-      status: 'DISABLED',
       contactPhone: '0872-1234567',
       longitude: 100.1005,
       latitude: 25.6896
     })
+    // 未动过状态就不提交它：后端据此保留库内现值，酒店不会被"编辑一下"就启用回来。
+    expect(updateHotel.mock.calls[0][1]).not.toHaveProperty('status')
     // 修改走的是 PUT：记录位置不变，调用方不该把列表刷回第 1 页。
     expect(wrapper.emitted('saved')[0][0]).toEqual({
       hotel: { ...disabledHotel, name: '苍山脚下的演示酒店（改名）' },
       created: false
     })
+  })
+
+  /**
+   * 并发停用的核心回归：管理员只改地址时，请求体里不能带上打开弹窗时读到的旧状态。
+   *
+   * <p>后端把"未提交 status"定义为保持库内现值；如果每次编辑都顺手提交表单里的旧 ACTIVE，
+   * 那么"读旧值 → 另一位管理员停用并提交 → 本事务把 ACTIVE 写回"这条丢失更新就会真的发生。</p>
+   */
+  it('编辑启用中的酒店：只改地址时不提交 status，改动状态后才提交新值', async () => {
+    // 真实后端会回显落库后的状态；用它驱动"保存后再改回来"的那一步。
+    updateHotel.mockImplementation(async (id, payload) => ({ ...activeHotel, ...payload }))
+    const wrapper = mountDialog(activeHotel)
+    await flushPromises()
+
+    expect(wrapper.find('select').element.value).toBe('ACTIVE')
+
+    await field(wrapper, '详细地址').setValue('浙江省杭州市西湖区（改）')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    const untouched = updateHotel.mock.calls[0][1]
+    expect(untouched).not.toHaveProperty('status')
+    expect(untouched.address).toBe('浙江省杭州市西湖区（改）')
+    // 反向：不能因为"要省字段"把地址也省掉。
+    expect(untouched).toHaveProperty('name', '杭州湖畔演示酒店')
+
+    // 用户主动停用：必须显式提交 DISABLED，后端才知道这是本次编辑的意图。
+    updateHotel.mockClear()
+    await wrapper.find('select').setValue('DISABLED')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(updateHotel.mock.calls[0][1].status).toBe('DISABLED')
+
+    // 保存成功后再改回启用：此时的"原始值"应当是服务端刚确认的 DISABLED，而不是打开弹窗时的
+    // ACTIVE —— 否则这次改回启用会漏掉 status，界面显示启用而库内仍是停用。
+    updateHotel.mockClear()
+    await wrapper.find('select').setValue('ACTIVE')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(updateHotel.mock.calls[0][1].status).toBe('ACTIVE')
+  })
+
+  /** 新建没有"库内现值"可言：状态是本次建档的明确意图，必须提交（含显式停用）。 */
+  it('新增：无论是否改动状态都提交 status，显式选择 DISABLED 时按停用建档', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'DISABLED' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('待停用演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await wrapper.find('select').setValue('DISABLED')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(createHotel).toHaveBeenCalledTimes(1)
+    expect(createHotel.mock.calls[0][0].status).toBe('DISABLED')
   })
 
   it('编辑：清空坐标、地址与联系方式时提交 null，PUT 才能真正清空库内字段', async () => {

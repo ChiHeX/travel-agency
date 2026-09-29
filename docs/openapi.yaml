@@ -927,6 +927,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ItineraryDayEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Routes]
       operationId: deleteItineraryDay
@@ -1240,6 +1241,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HotelEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
       operationId: deleteHotel

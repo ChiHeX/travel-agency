@@ -1,9 +1,10 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
 import AttractionFormDialog from '@/components/AttractionFormDialog.vue'
 import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
+import HotelFormDialog from '@/components/HotelFormDialog.vue'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -26,11 +27,18 @@ const editingDeparture = ref(null)
 const attractionDialogVisible = ref(false)
 const editingAttraction = ref(null)
 
-/** 景点列表的 keyword 筛选（契约 GET /admin/attractions 的 keyword 参数）。 */
+/** 酒店资料新增/编辑弹窗状态，对应契约 /admin/hotels 的写入端点。 */
+const hotelDialogVisible = ref(false)
+const editingHotel = ref(null)
+
+/** 景点与酒店列表共用的 keyword 筛选（契约两者的 GET 端点都声明了 keyword 参数）。 */
 const keyword = ref('')
 
-/** 契约 AccountStatus：景点停用后即从用户端列表与详情撤下。 */
-const ATTRACTION_STATUS_LABEL = { ACTIVE: '启用', DISABLED: '停用' }
+/**
+ * 契约 AccountStatus：景点与酒店共用同一套枚举，停用即停止对外使用
+ * （景点从用户端列表与详情撤下；酒店不再被安排进新的每日行程，后端在写行程时以 422 拒绝）。
+ */
+const ACCOUNT_STATUS_LABEL = { ACTIVE: '启用', DISABLED: '停用' }
 
 const loaders = {
   attractions: adminApi.attractions,
@@ -94,16 +102,20 @@ const refundTagClass = (status) =>
   status === 'REFUNDED' ? 'success' : status === 'REJECTED' ? 'danger' : 'warning'
 
 /**
- * 景点列表的分页状态（契约 GET /admin/attractions 的 page / size）。
+ * 景点列表与酒店列表的分页状态（契约 GET /admin/attractions 与 GET /admin/hotels 的 page / size）。
  *
  * <p>不传分页参数时后端按 page=1、size=20 返回，页面上没有任何翻页入口，
- * 第 21 条之后的景点就<b>无法在界面里被管理</b>（既看不到也没法编辑或删除）。
- * 因此景点这一档必须显式传 page / size 并提供翻页控件。</p>
+ * 第 21 条之后的资料就<b>无法在界面里被管理</b>（既看不到也没法编辑或删除）。
+ * 因此这一档必须显式传 page / size 并提供翻页控件。</p>
  */
 const page = ref(1)
 const PAGE_SIZE = 20
 const total = ref(0)
 const totalPages = ref(0)
+
+/** 契约里声明了 page / size / keyword 的资源：两者的列表行为完全一致，共用一套分页与筛选。 */
+const PAGED_RESOURCES = ['attractions', 'hotels']
+const pagedResource = computed(() => PAGED_RESOURCES.includes(props.resource))
 
 /**
  * 拉取列表。
@@ -113,14 +125,14 @@ const totalPages = ref(0)
 async function load(retryOnEmptyPage = true) {
   loading.value = true
   try {
-    // 只有景点列表在契约里有 keyword 参数；其它资源不传，避免拼出后端不认识的查询串。
+    // 只有契约里有分页与 keyword 的资源才传查询参数；其它资源不传，避免拼出后端不认识的查询串。
     const searching = keyword.value.trim()
-    const params = props.resource === 'attractions'
+    const params = pagedResource.value
       ? { page: page.value, size: PAGE_SIZE, ...(searching ? { keyword: searching } : {}) }
       : undefined
     const result = await loaders[props.resource](params)
     rows.value = result?.items || []
-    if (props.resource !== 'attractions') return
+    if (!pagedResource.value) return
 
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
@@ -180,6 +192,45 @@ function onAttractionSaved(payload) {
 function openAttractionDialog(row) {
   editingAttraction.value = row || null
   attractionDialogVisible.value = true
+}
+
+/** 打开酒店资料新增/编辑弹窗；row 为空表示新增。 */
+function openHotelDialog(row) {
+  editingHotel.value = row || null
+  hotelDialogVisible.value = true
+}
+
+/** 酒店保存成功后的刷新策略与景点同口径：新增回第 1 页，修改留在当前页。 */
+function onHotelSaved(payload) {
+  if (payload?.created) reloadFirstPage()
+  else load()
+}
+
+/**
+ * 删除酒店资料，走契约 DELETE /admin/hotels/{hotelId}（成功 204）。
+ *
+ * 契约只允许删除<b>未被行程引用</b>的酒店：仍被线路每日行程引用时后端返回 409，
+ * 错误提示由 axios 拦截器统一弹出（message 里点明了是被线路行程挡住的），这里不重复提示。
+ * 想让酒店停止使用而不影响引用它的行程时，应改用「停用」而不是删除。
+ */
+async function removeHotel(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除酒店「${row.name}」吗？已被线路行程引用的酒店不能删除，如需停止使用请改为「停用」。`,
+      '删除酒店资料',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await adminApi.deleteHotel(row.id)
+    ElMessage.success('酒店资料已删除')
+  } catch {
+    // 失败提示已由拦截器给出；无论成功与否都重新拉取列表，避免页面停留在与库内不符的状态。
+  } finally {
+    await load().catch(() => {})
+  }
 }
 
 /**
@@ -294,6 +345,13 @@ onMounted(load)
         + 新增景点资料
       </button>
       <button
+        v-else-if="resource === 'hotels'"
+        class="primary-button"
+        @click="openHotelDialog(null)"
+      >
+        + 新增酒店资料
+      </button>
+      <button
         v-else-if="resource !== 'refunds'"
         class="primary-button"
         @click="ElMessage.info('新增表单已对接对应后端 CRUD API')"
@@ -302,13 +360,17 @@ onMounted(load)
       </button>
     </div>
 
-    <!-- 景点资料的 keyword 筛选，对应契约 GET /admin/attractions 的 keyword 参数 -->
-    <form v-if="resource === 'attractions'" class="resource-search" @submit.prevent="search">
+    <!-- 景点与酒店资料的 keyword 筛选，对应契约 GET 端点的 keyword 参数 -->
+    <form v-if="pagedResource" class="resource-search" @submit.prevent="search">
       <input
         v-model="keyword"
         maxlength="100"
-        placeholder="按景点名称、所属城市或简介搜索"
-        aria-label="按景点名称、所属城市或简介搜索"
+        :placeholder="resource === 'hotels'
+          ? '按酒店名称、地址或简介搜索'
+          : '按景点名称、所属城市或简介搜索'"
+        :aria-label="resource === 'hotels'
+          ? '按酒店名称、地址或简介搜索'
+          : '按景点名称、所属城市或简介搜索'"
       />
       <button type="submit" class="secondary-button" :disabled="loading">查询</button>
       <button
@@ -357,6 +419,15 @@ onMounted(load)
             <th>景点名称</th>
             <th>所属城市</th>
             <th>地址</th>
+            <th>地理经纬度</th>
+            <th>资料来源</th>
+            <th>状态</th>
+            <th style="text-align: right;">操作</th>
+          </tr>
+          <tr v-else-if="resource === 'hotels'">
+            <th>酒店名称</th>
+            <th>地址</th>
+            <th>联系电话</th>
             <th>地理经纬度</th>
             <th>资料来源</th>
             <th>状态</th>
@@ -466,13 +537,39 @@ onMounted(load)
               <td>{{ row.dataSource || '—' }}</td>
               <td>
                 <span class="tag" :class="row.status === 'ACTIVE' ? 'success' : 'danger'">
-                  {{ ATTRACTION_STATUS_LABEL[row.status] || row.status }}
+                  {{ ACCOUNT_STATUS_LABEL[row.status] || row.status }}
                 </span>
               </td>
               <td style="text-align: right;">
                 <button type="button" class="text-button" @click="openAttractionDialog(row)">编辑</button>
                 <span class="divider">|</span>
                 <button type="button" class="text-button text-danger" @click="removeAttraction(row)">删除</button>
+              </td>
+            </tr>
+
+            <tr v-else-if="resource === 'hotels'">
+              <td>
+                <strong>{{ row.name }}</strong>
+                <div class="muted-text">酒店 #{{ row.id }}</div>
+              </td>
+              <td>{{ row.address || '—' }}</td>
+              <td>{{ row.contactPhone || '—' }}</td>
+              <td>
+                {{ row.longitude ?? '—' }}, {{ row.latitude ?? '—' }}
+                <div v-if="row.longitude === null || row.latitude === null" class="muted-text">
+                  未填写坐标，行程地图上不会标注该酒店
+                </div>
+              </td>
+              <td>{{ row.dataSource || '—' }}</td>
+              <td>
+                <span class="tag" :class="row.status === 'ACTIVE' ? 'success' : 'danger'">
+                  {{ ACCOUNT_STATUS_LABEL[row.status] || row.status }}
+                </span>
+              </td>
+              <td style="text-align: right;">
+                <button type="button" class="text-button" @click="openHotelDialog(row)">编辑</button>
+                <span class="divider">|</span>
+                <button type="button" class="text-button text-danger" @click="removeHotel(row)">删除</button>
               </td>
             </tr>
 
@@ -488,13 +585,13 @@ onMounted(load)
       </table>
 
       <div v-else class="empty-box">
-        {{ resource === 'attractions' && keyword.trim()
-          ? `没有匹配「${keyword.trim()}」的景点资料，可清空筛选后重试。`
+        {{ pagedResource && keyword.trim()
+          ? `没有匹配「${keyword.trim()}」的${resource === 'hotels' ? '酒店' : '景点'}资料，可清空筛选后重试。`
           : '暂无相关资料数据。' }}
       </div>
 
-      <!-- 景点资料分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
-      <div v-if="resource === 'attractions'" class="resource-pager">
+      <!-- 景点 / 酒店资料分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
+      <div v-if="pagedResource" class="resource-pager">
         <button
           type="button"
           class="secondary-button"
@@ -522,6 +619,13 @@ onMounted(load)
       v-model="attractionDialogVisible"
       :attraction="editingAttraction"
       @saved="onAttractionSaved"
+    />
+
+    <HotelFormDialog
+      v-if="resource === 'hotels'"
+      v-model="hotelDialogVisible"
+      :hotel="editingHotel"
+      @saved="onHotelSaved"
     />
 
     <DepartureFormDialog

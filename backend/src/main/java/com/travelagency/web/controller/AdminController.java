@@ -34,7 +34,6 @@ import com.travelagency.domain.dto.StaffView;
 import com.travelagency.domain.dto.StatusRequest;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
-import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Staff;
@@ -44,7 +43,6 @@ import com.travelagency.domain.entity.SysUserRole;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
-import com.travelagency.domain.mapper.HotelMapper;
 import com.travelagency.domain.mapper.OperationLogMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.StaffMapper;
@@ -99,7 +97,6 @@ public class AdminController {
     private final TravelRouteMapper routeMapper;
     private final DepartureMapper departureMapper;
     private final RefundMapper refundMapper;
-    private final HotelMapper hotelMapper;
     private final GuideMapper guideMapper;
     private final OperationLogMapper operationLogMapper;
     private final SysUserMapper userMapper;
@@ -117,7 +114,6 @@ public class AdminController {
             TravelRouteMapper routeMapper,
             DepartureMapper departureMapper,
             RefundMapper refundMapper,
-            HotelMapper hotelMapper,
             GuideMapper guideMapper,
             OperationLogMapper operationLogMapper,
             SysUserMapper userMapper,
@@ -132,7 +128,6 @@ public class AdminController {
         this.routeMapper = routeMapper;
         this.departureMapper = departureMapper;
         this.refundMapper = refundMapper;
-        this.hotelMapper = hotelMapper;
         this.guideMapper = guideMapper;
         this.operationLogMapper = operationLogMapper;
         this.userMapper = userMapper;
@@ -208,44 +203,11 @@ public class AdminController {
     }
 
     // 线路与行程管理端点已迁移到 AdminRouteController，团期管理端点已迁移到
-    // AdminDepartureController，景点管理端点已迁移到 AdminAttractionController：
+    // AdminDepartureController，景点管理端点已迁移到 AdminAttractionController，
+    // 酒店资料管理端点已迁移到 AdminHotelController：
     // 此前这些实现与契约不一致（返回实体、状态码不是 201/204、响应字段形状违约、
     // 行程缺少 items/hotelName、删除不级联或直接撞外键报 500、团期状态接口返回 data:null
     // 且允许客户端提交名额字段），迁移后 AdminController 只保留其它后台模块的接口。
-
-    /**
-     * 后台酒店分页查询，对齐契约 GET /admin/hotels（分页信封 + keyword 筛选）。
-     */
-    @GetMapping("/hotels")
-    public ApiResponse<PageResponse<Hotel>> hotels(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false)
-            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword) {
-        QueryWrapper<Hotel> query = new QueryWrapper<>();
-        appendKeyword(query, keyword, "name", "address", "intro");
-        return ApiResponse.ok(PageResponse.from(hotelMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
-    }
-
-    @PostMapping("/hotels")
-    public ApiResponse<Hotel> createHotel(@RequestBody Hotel hotel) {
-        hotelMapper.insert(hotel);
-        return ApiResponse.ok(hotel);
-    }
-
-    @PutMapping("/hotels/{id}")
-    public ApiResponse<Hotel> updateHotel(@PathVariable Long id, @RequestBody Hotel hotel) {
-        hotel.id = id;
-        hotelMapper.updateById(hotel);
-        return ApiResponse.ok(hotel);
-    }
-
-    @DeleteMapping("/hotels/{id}")
-    public ApiResponse<Void> deleteHotel(@PathVariable Long id) {
-        hotelMapper.deleteById(id);
-        return ApiResponse.ok();
-    }
 
     /**
      * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status 筛选）。
@@ -411,7 +373,8 @@ public class AdminController {
      *
      * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}；
      * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
-     * 与本文件 {@code /admin/guides}、{@code /admin/hotels} 等同族端点的口径也不一致。
+     * 与本文件 {@code /admin/guides}、{@code AdminHotelController} 的 {@code /admin/hotels}
+     * 等同族端点的口径也不一致。
      * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
      * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。</p>
      */

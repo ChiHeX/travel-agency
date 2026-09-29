@@ -288,6 +288,51 @@ class RouteAdminContractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * 停用的酒店不能再被安排进新行程（422），但已经安排好的行程不受影响。
+     *
+     * <p>停用是"这家酒店不再使用"的唯一手段 —— 被行程引用的酒店不允许删除（409）。
+     * 若这里放行，停用就只是一个没有任何效果的标记：后台写着"停止使用"，
+     * 工作人员却仍能把这家酒店排进新行程，用户端也照旧显示。</p>
+     */
+    @Test
+    void disabledHotelCannotBeScheduledIntoNewItineraryDays() throws Exception {
+        String id = createRoute("停用酒店线路-" + suffix(), 3);
+        Hotel disabled = disabledHotel();
+
+        // 新增行程指向停用酒店：422，且一天行程都不落库。
+        mvc.perform(post("/api/admin/routes/" + id + "/itinerary-days").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天\",\"hotelId\":\"" + disabled.id + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message")
+                        .value(org.hamcrest.Matchers.containsString("已停用")));
+        assertEquals(0L, days.selectCount(new QueryWrapper<RouteItineraryDay>().eq("route_id", id)).longValue());
+
+        // 已经安排在启用酒店上的一天：改成停用酒店被拒，原样保留则放行。
+        Hotel active = hotel();
+        String dayId = createDayWithHotel(id, 1, "第一天", active.id);
+        mvc.perform(put("/api/admin/itinerary-days/" + dayId).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天\",\"hotelId\":\"" + disabled.id + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        assertEquals(active.id, days.selectById(dayId).hotelId, "422 时不得改动行程上的酒店");
+
+        // 把这一天正在使用的酒店停用之后，仍要能修改这一天的其它字段
+        // （把已停用酒店原样留在原地不算"重新安排"）。
+        active.status = 0;
+        hotels.updateById(active);
+        mvc.perform(put("/api/admin/itinerary-days/" + dayId).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天（改餐食）\",\"meals\":\"早、午餐\","
+                                + "\"hotelId\":\"" + active.id + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.meals").value("早、午餐"))
+                .andExpect(jsonPath("$.data.hotelName").value(active.name));
+    }
+
     @Test
     void managesItineraryItemsWithContractShape() throws Exception {
         String id = createRoute("行程项目线路-" + suffix(), 3);
@@ -483,6 +528,24 @@ class RouteAdminContractIntegrationTest {
         hotel.latitude = new BigDecimal("24.8800950");
         hotels.insert(hotel);
         return hotel;
+    }
+
+    /** 停用的酒店：资料仍在库内（status = 0），只是不能再被安排进新行程。 */
+    private Hotel disabledHotel() {
+        Hotel hotel = hotel();
+        hotel.status = 0;
+        hotels.updateById(hotel);
+        return hotel;
+    }
+
+    /** 通过接口创建一天行程并安排指定酒店，返回行程 id。 */
+    private String createDayWithHotel(String routeId, int dayNumber, String title, Long hotelId) throws Exception {
+        String body = "{\"dayNumber\":" + dayNumber + ",\"title\":\"" + title + "\",\"hotelId\":\"" + hotelId + "\"}";
+        String response = mvc.perform(post("/api/admin/routes/" + routeId + "/itinerary-days")
+                        .header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        return json.readTree(response).get("data").get("id").asString();
     }
 
     private Attraction attraction() {

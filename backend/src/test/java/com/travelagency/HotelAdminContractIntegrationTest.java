@@ -262,8 +262,8 @@ class HotelAdminContractIntegrationTest {
     }
 
     /**
-     * 冻结契约的 {@code HotelUpsertRequest} 给各文本字段写明了 maxLength，而库内的列宽是
-     * {@code VARCHAR(128/255/20/500)} 与 {@code TEXT}。两边必须一致：
+     * 冻结契约的 {@code HotelCreateRequest} / {@code HotelUpdateRequest} 给各文本字段写明了 maxLength，
+     * 而库内的列宽是 {@code VARCHAR(128/255/20/500)} 与 {@code TEXT}。两边必须一致：
      * 列比契约窄时，正好取到契约上限的合法请求会在写库阶段炸成 5xx ——
      * 那是"契约允许、实现拒绝"，调用方无从规避。这里按<b>上限值本身</b>创建并要求原样读回。
      */

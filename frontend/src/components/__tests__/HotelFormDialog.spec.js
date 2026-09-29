@@ -4,7 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import HotelFormDialog from '../HotelFormDialog.vue'
 
 /**
- * 酒店资料新增/修改表单的契约测试（契约 {@code HotelUpsertRequest} / {@code Hotel}）。
+ * 酒店资料新增/修改表单的契约测试（契约 {@code HotelCreateRequest} / {@code HotelUpdateRequest} / {@code Hotel}）。
  *
  * <p>覆盖的是酒店这一档最容易出现的违约点：</p>
  * <ul>

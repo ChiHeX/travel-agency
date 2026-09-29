@@ -72,11 +72,26 @@ npm run build
 npm run contract:validate
 ```
 
-存量库需要先执行迁移：
+## 部署到已有数据库（升级顺序）
+
+**先执行迁移，再部署新代码。** `Hotel` 实体的列清单包含 `version`，因此缺列时受影响的不只是修改接口：
 
 ```bash
 mysql -h localhost -u travel -p travel_agency < sql/migrations/008-add-hotel-version.sql
 ```
+
+实测复现（本机把列删掉后跑酒店集成测试）：酒店**列表**、**详情**、**创建**、**修改**全部失败，MySQL 报
+`Unknown column 'version' in 'field list'` —— 生成的 SQL 里已经包含该列：
+
+```sql
+SELECT id,name,address,contact_phone,longitude,latitude,intro,data_source,status,version,created_at,updated_at
+  FROM hotel ORDER BY created_at DESC,id DESC LIMIT ?
+INSERT INTO hotel (name, ..., status, version) VALUES (?, ..., ?, ?)
+```
+
+执行迁移后同一组测试 10/10 通过，说明脚本本身就是修复手段。`deploy/` 里的 MySQL 用的是持久卷
+（`travel_agency_mysql_data`），`schema.sql` 通篇 `CREATE TABLE IF NOT EXISTS`，对已存在的库重复执行
+**不会**补列，也不会报错 —— 升级必须显式跑这个迁移（该脚本幂等，重复执行安全）。
 
 本轮结果：后端 **470 passed / 0 failed**（PR #42 复审后为 464，本轮 +6）；前端 **50 passed / 0 failed**（+6）；前端生产构建与 `steady validate ../docs/openapi.yaml` 通过。
 

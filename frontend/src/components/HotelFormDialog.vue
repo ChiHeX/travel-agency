@@ -2,7 +2,6 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
-import { CONTRACT_MAX_PAGE_SIZE } from '@/utils/paging'
 
 /**
  * 酒店资料新增 / 修改表单弹窗（对应契约 POST /admin/hotels 与 PUT /admin/hotels/{hotelId}）。
@@ -194,20 +193,19 @@ const conflictDifferences = computed(() => {
 const differs = (key) => conflictDifferences.value.includes(key)
 
 /**
- * 取回服务器最新资料。
+ * 取回服务器最新资料：走契约的 `GET /admin/hotels/{hotelId}`，**按主键**读取。
  *
- * <p>契约里没有"单个酒店详情"端点（GET /admin/hotels/{hotelId} 不存在），
- * 因此用列表端点的 keyword 精确检索拿最新行：关键字取打开弹窗时的名称，
- * 定位仍然按 id 匹配。取不到时面板会提示重新打开表单，不会假装已同步。</p>
+ * <p>不用列表端点按名称检索：另一位管理员可能已经改过名称（旧名称检索不到），
+ * 同名资料也可能超过一页 —— 那样接口正确报了冲突，用户却「载入最新数据」和
+ * 「保留我的修改并覆盖」都做不了，冲突提示等于没有出口。
+ * 取不到时（例如资料已被删除）面板会提示重新打开表单，不会假装已同步。</p>
  */
 async function loadLatest() {
   const hotelId = props.hotel?.id
   if (!hotelId) return
   conflictLoading.value = true
   try {
-    const page = await adminApi.hotels({ page: 1, size: CONTRACT_MAX_PAGE_SIZE, keyword: props.hotel.name })
-    const items = page?.items || []
-    conflictLatest.value = items.find((item) => String(item.id) === String(hotelId)) || null
+    conflictLatest.value = (await adminApi.hotel(hotelId)) || null
   } catch {
     conflictLatest.value = null
   } finally {
@@ -372,7 +370,7 @@ async function save() {
           </dl>
         </template>
         <p v-else class="conflict-note">
-          暂时取不到服务器最新资料（可能已被他人删除，或列表检索不到），请关闭后重新打开表单再试。
+          暂时取不到服务器最新资料（可能已被他人删除，或接口暂时不可用），请关闭后重新打开表单再试。
         </p>
         <div class="conflict-actions">
           <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">

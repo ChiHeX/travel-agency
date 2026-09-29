@@ -151,11 +151,10 @@ class HotelAdminWebContractTest {
     }
 
     /**
-     * 契约只声明了 GET/POST {@code /admin/hotels} 与 PUT/DELETE {@code /admin/hotels/{hotelId}}，
-     * 既没有 {@code PATCH} 也没有单个酒店的 {@code GET}：
-     * 这些方法必须被框架挡下（405），而不是悄悄落到某个实现上。
+     * 契约声明的是 GET/POST {@code /admin/hotels} 与 GET/PUT/DELETE {@code /admin/hotels/{hotelId}}；
+     * {@code PATCH} 不在其中，必须被框架挡下（405），而不是悄悄落到某个实现上。
      *
-     * <p>反过来说，这两条也钉住了"迁移后没有残留旧映射"：若 {@code AdminController} 里那套
+     * <p>反过来说，这条也钉住了"迁移后没有残留旧映射"：若 {@code AdminController} 里那套
      * 遗留端点还在，同一路径上会存在重复映射，应用根本起不来。</p>
      */
     @Test
@@ -165,13 +164,30 @@ class HotelAdminWebContractTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"DISABLED\"}"))
                 .andExpect(status().isMethodNotAllowed());
 
-        // 契约里没有 GET /admin/hotels/{hotelId}（详情不单独提供）
-        mvc().perform(get("/api/admin/hotels/1").with(user("staff").roles("STAFF")))
-                .andExpect(status().isMethodNotAllowed());
-
         // 列表路径只接受 GET/POST
         mvc().perform(delete("/api/admin/hotels").with(user("staff").roles("STAFF")))
                 .andExpect(status().isMethodNotAllowed());
+    }
+
+    /**
+     * 详情端点（{@code GET /admin/hotels/{hotelId}}）：乐观锁冲突后前端必须能按主键取到
+     * 服务器最新资料（含最新名称与版本号）。权限与路径注册同样按契约校验。
+     */
+    @Test
+    void hotelDetailRequiresStaffAndIsRegistered() throws Exception {
+        mvc().perform(get("/api/admin/hotels/1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+
+        mvc().perform(get("/api/admin/hotels/1").with(user("plain").roles("USER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 路径已注册：非数字路径参数应在进入业务逻辑前被判为参数类型错误（400），
+        // 若未注册这里会是 404，因此该断言能真实区分"未注册"与"已注册"。
+        mvc().perform(get("/api/admin/hotels/abc").with(user("staff").roles("STAFF")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
     /** 字段语义错误必须在访问数据库之前返回 422，并给出可定位的 errors 列表。 */

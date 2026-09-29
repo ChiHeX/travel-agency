@@ -331,6 +331,30 @@ class HotelServiceTest {
     // ===================== 乐观锁 =====================
 
     /**
+     * 详情端点：乐观锁冲突后前端按主键取服务器最新资料，因此它必须回契约形状
+     * （含最新 {@code version}，坐标是 number、状态是枚举），不存在时 404。
+     */
+    @Test
+    @DisplayName("详情：按主键返回契约形状（含最新版本号），不存在返回 404")
+    void getReturnsContractShapeAndRequiresExistence() {
+        Hotel stored = hotel(60L, 1);
+        stored.version = 5;
+        when(hotels.selectById(60L)).thenReturn(stored);
+
+        HotelView view = service.get(60L);
+
+        assertEquals(60L, view.id());
+        assertEquals("ACTIVE", view.status());
+        assertEquals(5, view.version(), "详情必须给出最新版本号，冲突面板才能用它重新提交");
+        assertEquals("酒店 60", view.name());
+
+        when(hotels.selectById(404L)).thenReturn(null);
+        BusinessException error = assertThrows(BusinessException.class, () -> service.get(404L));
+        assertEquals(404, error.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", error.getCode());
+    }
+
+    /**
      * 两位工作人员各自打开同一条酒店资料、先后保存：后保存的人不该静默覆盖前一位的改动。
      *
      * <p>提交的版本比库内旧（对方已经改过一次，版本前进了）时必须 409，且不产生任何写入 ——

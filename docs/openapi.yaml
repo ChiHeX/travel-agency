@@ -1224,6 +1224,23 @@ paths:
   /admin/hotels/{hotelId}:
     parameters:
       - { $ref: '#/components/parameters/HotelId' }
+    get:
+      tags: [Admin Resources]
+      operationId: getAdminHotel
+      summary: 获取酒店资料详情
+      description: |
+        按主键读取单条酒店资料（含最新 `version`）。乐观锁冲突（`PUT` 返回 409）之后，
+        调用方必须拿到服务器最新版本才能决定"载入最新数据"或"保留我的修改并覆盖"；
+        用列表端点按名称检索做不到这一点 —— 对方可能已经改名（旧名称检索不到）、
+        同名资料也可能超过一页。
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 酒店资料详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Admin Resources]
       operationId: updateHotel

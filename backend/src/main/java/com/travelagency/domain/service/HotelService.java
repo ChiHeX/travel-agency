@@ -224,6 +224,24 @@ public class HotelService {
                 "删除酒店资料：" + hotel.name);
     }
 
+    /**
+     * 按主键读取单条酒店资料，对齐契约 {@code GET /admin/hotels/{hotelId}}（200 / 404）。
+     *
+     * <p>纯读路径：普通查询即可，不需要行锁，也不开事务（没有要保护的判定—写入窗口）。</p>
+     *
+     * <p><b>为什么必须有这个端点</b>：修改遇到乐观锁冲突（409 {@code HOTEL_VERSION_CONFLICT}）后，
+     * 前端要拿到服务器最新版本才能"载入最新数据"或"保留我的修改并覆盖"。用列表端点按名称检索
+     * 做不到：对方可能已经改过名称（旧名称检索不到），同名资料也可能超过一页 ——
+     * 结果是接口正确报了冲突，用户却没有任何补救路径。</p>
+     */
+    public HotelView get(Long hotelId) {
+        Hotel hotel = hotels.selectById(hotelId);
+        if (hotel == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在");
+        }
+        return HotelView.from(hotel);
+    }
+
     /** 把契约允许的字段写进实体；文本字段去掉首尾空白，避免"看起来同名"的重复酒店。 */
     private static void applyEditableFields(Hotel hotel, HotelCreateRequest request) {
         hotel.name = trim(request.name());

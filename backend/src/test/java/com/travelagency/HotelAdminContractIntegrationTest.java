@@ -179,6 +179,17 @@ class HotelAdminContractIntegrationTest {
                 "409 时不得写入任何字段");
         assertEquals(3, hotels.selectById(Long.parseLong(id)).version, "409 时版本不得前进");
 
+        // 详情端点：乐观锁冲突后前端靠它按主键取回服务器最新资料（含最新名称与版本号），
+        // 因此这里断言"409 之后立刻读详情能拿到冲突提示里那个版本"。
+        JsonNode latest = okData(get("/api/admin/hotels/" + id).header("Authorization", token));
+        assertEquals(id, latest.path("id").asString());
+        assertEquals(name + "-再次编辑", latest.path("name").asString());
+        assertEquals("DISABLED", latest.path("status").asString());
+        assertEquals(3, latest.path("version").asInt(), "详情必须给出最新版本号");
+        for (String required : new String[]{"id", "name", "status", "version", "createdAt", "updatedAt"}) {
+            assertNotNull(latest.get(required), "详情缺少契约必填字段：" + required);
+        }
+
         // 删除：未被任何行程引用 → 204 且无响应体
         MockHttpServletResponse deleted = mvc()
                 .perform(delete("/api/admin/hotels/" + id).header("Authorization", token))
@@ -189,6 +200,11 @@ class HotelAdminContractIntegrationTest {
 
         // 删除不存在的酒店：404（旧实现回 200，调用方会以为删掉了）
         mvc().perform(delete("/api/admin/hotels/999999999").header("Authorization", token))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+
+        // 详情不存在：404（冲突面板据此提示"资料可能已被删除"）
+        mvc().perform(get("/api/admin/hotels/999999999").header("Authorization", token))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
 

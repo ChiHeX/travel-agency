@@ -76,6 +76,17 @@ public class AdminHotelController {
     }
 
     /**
+     * 查询单条酒店资料，对齐契约 {@code GET /admin/hotels/{hotelId}}（200 / 404）。
+     *
+     * <p>乐观锁冲突之后前端必须能拿到服务器最新版本（含最新 {@code name}），
+     * 因此详情按主键读取，而不是让调用方去列表里按名称猜。</p>
+     */
+    @GetMapping("/hotels/{hotelId}")
+    public ApiResponse<HotelView> hotel(@PathVariable Long hotelId) {
+        return ApiResponse.ok(hotelService.get(hotelId));
+    }
+
+    /**
      * 创建酒店资料，对齐契约 {@code POST /admin/hotels}
      * （201 + {@code Location} + {@code HotelEnvelope}）。
      *

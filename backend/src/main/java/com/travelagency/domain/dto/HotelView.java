@@ -14,6 +14,9 @@ import java.time.LocalDateTime;
  * 保证列表、创建、修改三处的形状完全一致 —— 同一个资源在不同接口上给出不同口径，
  * 前端就得为每个端点各写一套解析。</p>
  *
+ * <p>{@code version} 用 {@code Integer} 而不是 {@code Long}：契约里它是 JSON number，
+ * 而全局序列化器会把 {@code Long} 写成字符串（那是给主键用的，避免 JS 精度丢失）。</p>
+ *
  * <p><b>为什么必须有这一层，不能直接返回实体</b>（{@code AdminController} 早期实现的做法）：</p>
  * <ul>
  *   <li>{@code status}：实体里是 {@code TINYINT} 1/0，契约是 {@code AccountStatus} 枚举
@@ -35,6 +38,7 @@ public record HotelView(
         String intro,
         String dataSource,
         String status,
+        Integer version,
         LocalDateTime createdAt,
         LocalDateTime updatedAt) {
 
@@ -44,7 +48,7 @@ public record HotelView(
         }
         return new HotelView(hotel.id, hotel.name, hotel.address, hotel.contactPhone,
                 number(hotel.longitude), number(hotel.latitude), hotel.intro,
-                hotel.dataSource, AccountStatus.of(hotel.status),
+                hotel.dataSource, AccountStatus.of(hotel.status), hotel.version,
                 hotel.createdAt, hotel.updatedAt);
     }
 

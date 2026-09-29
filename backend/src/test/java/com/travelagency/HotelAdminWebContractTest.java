@@ -61,6 +61,10 @@ class HotelAdminWebContractTest {
              "dataSource":"团队测试数据","status":"ACTIVE"}
             """;
 
+    /** 修改酒店的合法请求体：与建档相同，另带契约必填的乐观锁版本号。 */
+    private static final String VALID_UPDATE_BODY = VALID_BODY.replace(
+            "\"status\":\"ACTIVE\"}", "\"status\":\"ACTIVE\",\"version\":0}");
+
     @Test
     void adminHotelEndpointsRequireLogin() throws Exception {
         mvc().perform(get("/api/admin/hotels"))
@@ -70,7 +74,7 @@ class HotelAdminWebContractTest {
                         .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
                 .andExpect(status().isUnauthorized());
         mvc().perform(put("/api/admin/hotels/1")
-                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_UPDATE_BODY))
                 .andExpect(status().isUnauthorized());
         mvc().perform(delete("/api/admin/hotels/1"))
                 .andExpect(status().isUnauthorized());
@@ -87,20 +91,45 @@ class HotelAdminWebContractTest {
     }
 
     /**
-     * 契约 {@code HotelUpsertRequest} 里没有 {@code id} / {@code createdAt} / {@code updatedAt}，
-     * 也没有 {@code city}（城市是景点与地点指南的口径，酒店只有 {@code address}）：
+     * 契约 {@code HotelCreateRequest} 里没有 {@code id} / {@code createdAt} / {@code updatedAt} /
+     * {@code version}，也没有 {@code city}（城市是景点与地点指南的口径，酒店只有 {@code address}）：
      * 这些字段必须被严格模式拒绝（400），而不是被静默忽略或写进数据库。
+     *
+     * <p>{@code version} 尤其重要：建档的版本由服务端从 0 起算，客户端指定版本号没有意义，
+     * 放行只会让"创建时也参与版本决定"这种语义混进契约。</p>
      */
     @Test
     void rejectsFieldsOutsideTheContract() throws Exception {
         for (String extra : new String[]{"\"id\":\"1\"", "\"createdAt\":\"2026-01-01T00:00:00+08:00\"",
-                "\"updatedAt\":\"2026-01-01T00:00:00+08:00\"", "\"city\":\"昆明\"", "\"deleted\":0"}) {
+                "\"updatedAt\":\"2026-01-01T00:00:00+08:00\"", "\"city\":\"昆明\"", "\"deleted\":0",
+                "\"version\":0"}) {
             String body = VALID_BODY.replace("\"status\":\"ACTIVE\"", "\"status\":\"ACTIVE\"," + extra);
             mvc().perform(post("/api/admin/hotels").with(user("staff").roles("STAFF"))
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         }
+    }
+
+    /**
+     * 修改必须回传版本号：契约 {@code HotelUpdateRequest} 把 {@code version} 列为必填，
+     * 缺字段按 422 处理，不能静默当成 0 —— 静默按 0 会把"忘了回传版本"变成一次必然的冲突
+     * 或一次意外的覆盖。负数版本同样在库外被拒。
+     */
+    @Test
+    void updateRequiresVersion() throws Exception {
+        mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_BODY))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("version")));
+
+        mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_UPDATE_BODY.replace("\"version\":0", "\"version\":-1")))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("version")));
     }
 
     /** 酒店接口的路径与方法必须真实注册：请求体校验失败应返回 422 而不是 404/405。 */
@@ -228,7 +257,7 @@ class HotelAdminWebContractTest {
         // 修改端点同样校验：PUT 不是"写入即可"，非法坐标也要在库外被拒
         mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(VALID_BODY.replace("\"longitude\":102.832", "\"longitude\":-180.5")))
+                        .content(VALID_UPDATE_BODY.replace("\"longitude\":102.832", "\"longitude\":-180.5")))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")));
     }

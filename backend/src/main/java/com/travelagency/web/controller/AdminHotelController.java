@@ -4,7 +4,8 @@ import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
 import com.travelagency.common.validation.KeywordRules;
-import com.travelagency.domain.dto.HotelUpsertRequest;
+import com.travelagency.domain.dto.HotelCreateRequest;
+import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.dto.HotelView;
 import com.travelagency.domain.service.HotelService;
 import jakarta.validation.Valid;
@@ -77,10 +78,12 @@ public class AdminHotelController {
     /**
      * 创建酒店资料，对齐契约 {@code POST /admin/hotels}
      * （201 + {@code Location} + {@code HotelEnvelope}）。
+     *
+     * <p>请求体用 {@link HotelCreateRequest}：不含 {@code version}，版本由服务端从 0 起算。</p>
      */
     @PostMapping("/hotels")
     public ResponseEntity<ApiResponse<HotelView>> createHotel(
-            @Valid @RequestBody HotelUpsertRequest request) {
+            @Valid @RequestBody HotelCreateRequest request) {
         HotelView hotel = hotelService.create(request, CurrentUser.required().userId());
         return ResponseEntity.created(URI.create("/api/admin/hotels/" + hotel.id()))
                 .body(ApiResponse.ok(hotel));
@@ -89,10 +92,13 @@ public class AdminHotelController {
     /**
      * 修改酒店资料，对齐契约 {@code PUT /admin/hotels/{hotelId}}
      * （200 + 修改后的酒店；不存在为 404）。
+     *
+     * <p>请求体用 {@link HotelUpdateRequest}（比建档多一个必填的 {@code version}）：
+     * 提交的版本与库内不一致时返回 {@code 409 HOTEL_VERSION_CONFLICT}，本次修改不生效。</p>
      */
     @PutMapping("/hotels/{hotelId}")
     public ApiResponse<HotelView> updateHotel(
-            @PathVariable Long hotelId, @Valid @RequestBody HotelUpsertRequest request) {
+            @PathVariable Long hotelId, @Valid @RequestBody HotelUpdateRequest request) {
         return ApiResponse.ok(hotelService.update(hotelId, request, CurrentUser.required().userId()));
     }
 

@@ -5,7 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.exception.BusinessException;
-import com.travelagency.domain.dto.HotelUpsertRequest;
+import com.travelagency.domain.dto.HotelCreateRequest;
+import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.dto.HotelView;
 import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.mapper.HotelMapper;
@@ -147,7 +148,7 @@ class HotelServiceTest {
             return stored;
         });
 
-        HotelView created = service.create(new HotelUpsertRequest(
+        HotelView created = service.create(new HotelCreateRequest(
                 "  大理演示酒店  ", " 云南省大理市 ", " 0872-1234567 ", 100.165, 25.694,
                 "简介", " 团队测试数据 ", null), 7L);
 
@@ -175,7 +176,7 @@ class HotelServiceTest {
         });
         when(hotels.selectOne(any())).thenReturn(hotel(32L, 0));
 
-        HotelView created = service.create(new HotelUpsertRequest(
+        HotelView created = service.create(new HotelCreateRequest(
                 "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
 
         ArgumentCaptor<Hotel> inserted = ArgumentCaptor.forClass(Hotel.class);
@@ -192,7 +193,7 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(null);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(404L,
-                new HotelUpsertRequest("名称", null, null, null, null, null, "来源", null), 7L));
+                new HotelUpdateRequest("名称", null, null, null, null, null, "来源", null, 0), 7L));
 
         assertEquals(404, error.getStatus());
         assertEquals("RESOURCE_NOT_FOUND", error.getCode());
@@ -215,9 +216,9 @@ class HotelServiceTest {
     void concurrentDisableSurvivesAnEditThatDoesNotSubmitStatus() {
         when(hotels.selectOne(any())).thenReturn(hotel(41L, 0));
 
-        service.update(41L, new HotelUpsertRequest(
+        service.update(41L, new HotelUpdateRequest(
                 "改名后的酒店", "新地址", "0872-0000000", 100.2, 26.8, "新简介",
-                "团队测试数据", null), 7L);
+                "团队测试数据", null, 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertFalse(wrapper.getSqlSet().contains("status"),
@@ -239,8 +240,8 @@ class HotelServiceTest {
     void updateAppliesSubmittedStatus() {
         when(hotels.selectOne(any())).thenReturn(hotel(42L, 0));
 
-        service.update(42L, new HotelUpsertRequest(
-                "重新启用", null, null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
+        service.update(42L, new HotelUpdateRequest(
+                "重新启用", null, null, null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getSqlSet().contains("status"), "显式提交 status 时必须写入该列");
@@ -252,8 +253,8 @@ class HotelServiceTest {
     void updateAppliesSubmittedDisabledStatus() {
         when(hotels.selectOne(any())).thenReturn(hotel(45L, 1));
 
-        service.update(45L, new HotelUpsertRequest(
-                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
+        service.update(45L, new HotelUpdateRequest(
+                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED", 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getSqlSet().contains("status"));
@@ -269,11 +270,12 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：记录在写回之前被并发删除（0 行）时返回 404，不记成功日志")
     void updateFailsWhenTheRowIsDeletedBeforeTheWrite() {
-        when(hotels.selectOne(any())).thenReturn(hotel(44L, 1));
+        // 第一次读拿到行，UPDATE 之后的重读已经取不到了（记录被并发删除）。
+        when(hotels.selectOne(any())).thenReturn(hotel(44L, 1), null);
         when(hotels.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(44L,
-                new HotelUpsertRequest("酒店", null, null, null, null, null, "团队测试数据", null), 7L));
+                new HotelUpdateRequest("酒店", null, null, null, null, null, "团队测试数据", null, 0), 7L));
 
         assertEquals(404, error.getStatus());
         assertEquals("RESOURCE_NOT_FOUND", error.getCode());
@@ -285,8 +287,8 @@ class HotelServiceTest {
     void updateClearsNullableFields() {
         when(hotels.selectOne(any())).thenReturn(hotel(43L, 1));
 
-        service.update(43L, new HotelUpsertRequest(
-                "酒店", null, null, null, null, null, "团队测试数据", null), 7L);
+        service.update(43L, new HotelUpdateRequest(
+                "酒店", null, null, null, null, null, "团队测试数据", null, 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getParamNameValuePairs().containsValue(null),
@@ -303,8 +305,8 @@ class HotelServiceTest {
     void updateLogsStatusTransitionWhenStatusActuallyChanges() {
         when(hotels.selectOne(any())).thenReturn(hotel(46L, 1));
 
-        service.update(46L, new HotelUpsertRequest(
-                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
+        service.update(46L, new HotelUpdateRequest(
+                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED", 0), 7L);
 
         verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 46L, "修改酒店资料：停用酒店");
         verify(operationLog).record(7L, "酒店", "STATUS", "HOTEL", 46L,
@@ -317,13 +319,79 @@ class HotelServiceTest {
     void updateDoesNotLogStatusWhenTheStatusIsUnchanged() {
         when(hotels.selectOne(any())).thenReturn(hotel(47L, 1));
 
-        service.update(47L, new HotelUpsertRequest(
-                "状态未变酒店", null, null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
+        service.update(47L, new HotelUpdateRequest(
+                "状态未变酒店", null, null, null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
 
         // 日志里的名称是本次提交的名称（applyEditableFields 先写入实体再记录）
         verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 47L, "修改酒店资料：状态未变酒店");
         verify(operationLog, never()).record(any(), any(), ArgumentMatchers.eq("STATUS"),
                 any(), any(), any());
+    }
+
+    // ===================== 乐观锁 =====================
+
+    /**
+     * 两位工作人员各自打开同一条酒店资料、先后保存：后保存的人不该静默覆盖前一位的改动。
+     *
+     * <p>提交的版本比库内旧（对方已经改过一次，版本前进了）时必须 409，且不产生任何写入 ——
+     * 与团期 {@code DepartureService#update} 同一口径。</p>
+     */
+    @Test
+    @DisplayName("修改：提交过期版本返回 409 HOTEL_VERSION_CONFLICT，且不写库、不记日志")
+    void updateRejectsStaleVersion() {
+        Hotel stored = hotel(48L, 1);
+        stored.version = 2;
+        when(hotels.selectOne(any())).thenReturn(stored);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.update(48L,
+                new HotelUpdateRequest("改名", null, null, null, null, null, "团队测试数据", null, 1), 7L));
+
+        assertEquals(409, error.getStatus());
+        assertEquals("HOTEL_VERSION_CONFLICT", error.getCode());
+        assertTrue(error.getMessage().contains("当前版本 2") && error.getMessage().contains("你提交的是 1"),
+                "冲突提示要给出双方版本号，运营才知道应当重新载入：" + error.getMessage());
+        verify(hotels, never()).update(any(), any());
+        verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
+    }
+
+    /** 版本一致时正常写入：WHERE 带版本条件，SET 把版本推进 1。 */
+    @Test
+    @DisplayName("修改：版本一致时 WHERE 带版本条件、SET 推进版本号")
+    void updateAdvancesVersionWhenTheSubmittedVersionMatches() {
+        Hotel stored = hotel(49L, 1);
+        stored.version = 4;
+        when(hotels.selectOne(any())).thenReturn(stored);
+
+        service.update(49L, new HotelUpdateRequest(
+                "改名", null, null, null, null, null, "团队测试数据", null, 4), 7L);
+
+        UpdateWrapper<Hotel> wrapper = capturedUpdate();
+        assertTrue(wrapper.getSqlSet().contains("version"), "SET 必须推进版本号：" + wrapper.getSqlSet());
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(5), "版本应写回 提交版本 + 1");
+        assertTrue(wrapper.getSqlSegment().contains("version"),
+                "WHERE 必须带版本条件作为第二道防线：" + wrapper.getSqlSegment());
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(4), "WHERE 用提交的版本匹配");
+    }
+
+    /**
+     * 兜底：UPDATE 影响 0 行、但行仍在且版本已变时，必须报 409 版本冲突而不是 404 ——
+     * 把冲突说成"已不存在"会让调用方以为资料被删了，转而重新建一条重复资料。
+     */
+    @Test
+    @DisplayName("修改：0 行且行仍在时按版本冲突处理，不误报 404")
+    void updateReportsVersionConflictWhenNoRowMatchesButTheRowExists() {
+        Hotel stored = hotel(50L, 1);
+        stored.version = 0;
+        Hotel changed = hotel(50L, 1);
+        changed.version = 7;
+        when(hotels.selectOne(any())).thenReturn(stored, changed);
+        when(hotels.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.update(50L,
+                new HotelUpdateRequest("改名", null, null, null, null, null, "团队测试数据", null, 0), 7L));
+
+        assertEquals(409, error.getStatus());
+        assertEquals("HOTEL_VERSION_CONFLICT", error.getCode());
     }
 
     // ===================== 后台删除 =====================
@@ -417,6 +485,8 @@ class HotelServiceTest {
         hotel.intro = "演示简介";
         hotel.dataSource = "团队测试数据";
         hotel.status = status;
+        // 乐观锁版本号：修改请求必须回传读取时的版本，夹具与请求都按 0 对齐。
+        hotel.version = 0;
         hotel.createdAt = LocalDateTime.now();
         hotel.updatedAt = hotel.createdAt;
         return hotel;

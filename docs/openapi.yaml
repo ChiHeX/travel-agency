@@ -1210,7 +1210,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+            schema: { $ref: '#/components/schemas/HotelCreateRequest' }
       responses:
         '201':
           description: 酒店创建成功
@@ -1233,7 +1233,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+            schema: { $ref: '#/components/schemas/HotelUpdateRequest' }
       responses:
         '200':
           description: 修改后的酒店
@@ -1241,6 +1241,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HotelEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            版本冲突 `HOTEL_VERSION_CONFLICT`：提交的 `version` 与库内当前版本不一致，
+            说明这份资料在本次编辑期间已被他人修改，为避免覆盖对方的改动，本次修改不生效。
+            调用方应重新读取酒店资料（含最新 `version`）后再决定是否覆盖。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
@@ -2863,7 +2871,12 @@ components:
     Hotel:
       type: object
       additionalProperties: false
-      required: [id, name, status, createdAt, updatedAt]
+      description: |
+        酒店资料。`version` 是乐观锁版本号：修改请求（`PUT /admin/hotels/{hotelId}`）必须回传
+        读取时拿到的值，版本不一致说明资料已被他人修改，接口返回 `409 HOTEL_VERSION_CONFLICT`。
+        `Hotel` 只服务于后台酒店资料端点，因此版本号直接列在这里（景点 / 团期等同时被公开页面
+        复用的 schema 不这么做）。
+      required: [id, name, status, version, createdAt, updatedAt]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         name: { type: string, example: 昆明测试酒店 }
@@ -2880,11 +2893,22 @@ components:
         intro: { type: [string, 'null'], example: 仅用于课程演示的酒店资料。 }
         dataSource: { type: [string, 'null'], example: 团队测试数据 }
         status: { $ref: '#/components/schemas/AccountStatus' }
+        version:
+          type: integer
+          minimum: 0
+          description: |
+            乐观锁版本号，新建时为 0，每次成功修改（`PUT /admin/hotels/{hotelId}`）递增 1。
+            修改请求必须回传读取时的版本；不一致时返回 `409 HOTEL_VERSION_CONFLICT`，
+            调用方应重新读取资料后再决定是否覆盖。
+          example: 3
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
-    HotelUpsertRequest:
+    HotelCreateRequest:
       type: object
       additionalProperties: false
+      description: |
+        创建酒店资料。**不含 `version`**：新建由服务端从 0 起算，客户端不参与版本决定，
+        提交该字段会被严格反序列化拒绝（400）。
       required: [name, dataSource]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
@@ -2901,6 +2925,35 @@ components:
         intro: { type: [string, 'null'], maxLength: 10000 }
         dataSource: { type: string, minLength: 1, maxLength: 500 }
         status: { $ref: '#/components/schemas/AccountStatus' }
+    HotelUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        修改酒店资料。字段与 `HotelCreateRequest` 相同，另需回传读取时的 `version`（乐观锁）：
+        后端执行 `UPDATE ... WHERE id = ? AND version = ?`，成功后版本加一；
+        版本不一致说明资料已被他人修改，返回 `409 HOTEL_VERSION_CONFLICT`，本次修改不生效。
+        缺 `version` 按字段语义校验失败处理（422），不会静默当成 0。
+      required: [name, dataSource, version]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        address: { type: [string, 'null'], maxLength: 255 }
+        contactPhone: { type: [string, 'null'], maxLength: 20 }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], maxLength: 10000 }
+        dataSource: { type: string, minLength: 1, maxLength: 500 }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        version:
+          type: integer
+          minimum: 0
+          description: 读取酒店资料时拿到的 `version`；与库内当前值不一致即视为冲突。
+          example: 3
     PlaceGuidePlace:
       type: object
       additionalProperties: false

@@ -73,7 +73,7 @@ import static org.mockito.Mockito.when;
  *   <li>新建线路一律 DRAFT，客户端字段不参与状态决定；</li>
  *   <li>没有每日行程不允许上架（409）；已上架线路的行程结构冻结（409），文案仍可修改；</li>
  *   <li>同一线路 dayNumber 唯一、同一日 sortNo 唯一，非法值返回 422 而不是数据库报错 500；</li>
- *   <li>行程引用的酒店/景点必须存在（422）；项目未填坐标时继承景点坐标；</li>
+ *   <li>行程引用的酒店必须真实存在且未被停用（422），景点必须真实存在（422）；项目未填坐标时继承景点坐标；</li>
  *   <li>删除每日行程必须先删行程项目（外键与级联语义）；</li>
  *   <li>视图映射与契约一致（实体字段不外泄、可空联查键不触发 NPE）。</li>
  * </ul>
@@ -422,13 +422,63 @@ class AdminRouteServiceTest {
         verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
     }
 
+    /**
+     * 停用是"这家酒店不再使用"的唯一手段：被行程引用的酒店不允许删除
+     * （见 {@code HotelService#delete}）。若停用不拦新安排，它就只是一个没有任何效果的标记
+     * —— 后台写着"停止使用"，工作人员却仍能把这家酒店排进新行程。
+     */
+    @Test
+    @DisplayName("新增行程：已停用的酒店不能安排进新行程（422），且不写库")
+    void createDayRejectsDisabledHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(hotelMapper.selectById(6L)).thenReturn(hotel(6L, "已停用酒店", 0));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        assertTrue(ex.getMessage().contains("已停用"), "错误信息要点明是被「停用」挡住的：" + ex.getMessage());
+        verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
+    }
+
+    /**
+     * 修改行程时只有"换成另一家酒店"才拦：把已停用酒店原样留在原地必须放行，
+     * 否则某天的酒店被停用后，这条行程连改个餐食说明都要先把酒店换掉。
+     */
+    @Test
+    @DisplayName("修改行程：新指向停用酒店返回 422；已停用酒店原样保留则放行")
+    void updateDayOnlyRejectsNewlyAssigningDisabledHotel() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", 5L));
+        when(hotelMapper.selectById(6L)).thenReturn(hotel(6L, "已停用酒店", 0));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.updateDay(11L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(dayMapper, never()).update(any(), any());
+
+        // 同样的停用酒店，本来就挂在这一天上：只改文案必须成功，并回填酒店名。
+        when(dayMapper.selectById(12L)).thenReturn(day(12L, 21L, 1, "第一天", 6L));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(12L,
+                new ItineraryDayRequest(1, "第一天（改文案）", null, null, null, 6L), ACTOR);
+
+        // 回查走的是 Mapper 替身，标题仍是打桩时的旧值；这里断言的是"写入没有被拦下"与酒店名回填。
+        assertEquals("已停用酒店", view.hotelName(), "保留停用酒店时仍要回填酒店名");
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(6L), "酒店原样保留时应写入同一个 hotel_id");
+    }
+
     @Test
     @DisplayName("新增行程：成功时落库线路归属与文案，并回填酒店名")
     void createDayPersistsRouteBinding() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
-        Hotel hotel = new Hotel();
-        hotel.id = 5L;
-        hotel.name = "昆明测试酒店";
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
         when(hotelMapper.selectById(5L)).thenReturn(hotel);
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
@@ -804,6 +854,18 @@ class AdminRouteServiceTest {
         day.title = title;
         day.hotelId = hotelId;
         return day;
+    }
+
+    /**
+     * 酒店替身。{@code status} 必须显式给出：库内列是 {@code TINYINT NOT NULL DEFAULT 1}，
+     * 而行程写入口把"非 ACTIVE"一律当成停用（null 也会被判成停用），不设置会误拦用例。
+     */
+    private static Hotel hotel(Long id, String name, int status) {
+        Hotel hotel = new Hotel();
+        hotel.id = id;
+        hotel.name = name;
+        hotel.status = status;
+        return hotel;
     }
 
     private static RouteItineraryItem item(Long id, Long dayId, int sortNo, String type, String name) {

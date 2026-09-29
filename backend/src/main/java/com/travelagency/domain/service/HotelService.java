@@ -28,6 +28,11 @@ import java.util.List;
  * 没有对外的公开浏览端点 —— 用户端看到酒店信息的唯一入口是线路详情的每日行程
  * （{@code RouteItineraryDay.hotelName}，由 {@code RouteService} / {@code AdminRouteService} 联查）。</p>
  *
+ * <p><b>{@code status} 的语义（两个端点共同保证）</b>：{@code DISABLED} 表示这家酒店不再使用 ——
+ * 不能再被安排进新的每日行程（{@code AdminRouteService} 在写行程时以 422 拒绝），
+ * 已引用它的行程不受影响（不停用就是删除的替代品：被行程引用的酒店不允许删除，见 {@link #delete}）。
+ * 只写状态、不拦新安排会让"停用"退化成没有效果的标记。</p>
+ *
  * <p>写接口此前直接写在 {@code AdminController} 里用 Mapper 操作数据库，本次迁移到 Service 层，
  * Controller 只做参数接收与响应封装（见 docs/DEVELOPMENT_GUIDE.md §3）。</p>
  */

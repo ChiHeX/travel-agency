@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.audit.OperationLogRecorder;
+import com.travelagency.common.enums.AccountStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.DepartureView;
@@ -61,7 +62,10 @@ import java.util.stream.Collectors;
  *   <li>没有每日行程的线路不允许上架（409），避免出现不可销售的线路；</li>
  *   <li>已上架线路的行程结构不允许增删（409），需要先下架，避免销售中的产品被改动；</li>
  *   <li>同一线路的 dayNumber、同一日行程的 sortNo 都必须唯一；</li>
- *   <li>行程引用的酒店、景点必须真实存在，避免外键约束报错或产生脏数据。</li>
+ *   <li>行程引用的酒店、景点必须真实存在，避免外键约束报错或产生脏数据；</li>
+ *   <li>停用（{@code DISABLED}）的酒店不能再被安排进新行程（422）：停用是"这家酒店不再使用"
+ *       的唯一手段 —— 被行程引用的酒店不允许删除（见 {@code HotelService#delete}），
+ *       若停用不生效，已用过的酒店就永远无法退场。</li>
  * </ol></p>
  *
  * <p>写操作同时负责记录操作日志：业务数据与 {@code operation_log} 在同一个
@@ -258,7 +262,7 @@ public class AdminRouteService {
         if (RouteStatus.PUBLISHED.equals(route.status)) {
             throw new BusinessException(409, "ROUTE_STATE_CONFLICT", "线路已上架，请先下架再调整行程结构");
         }
-        Hotel hotel = requireHotel(request.hotelId());
+        Hotel hotel = requireActiveHotel(request.hotelId());
         if (dayNumberExists(routeId, request.dayNumber(), null)) {
             throw new BusinessException(409, "ROUTE_STATE_CONFLICT",
                     "第 " + request.dayNumber() + " 天行程已存在，同一线路的行程天数不能重复");
@@ -281,7 +285,7 @@ public class AdminRouteService {
     @Transactional
     public ItineraryDayView updateDay(Long dayId, ItineraryDayRequest request, Long operatorId) {
         RouteItineraryDay day = requireDay(dayId);
-        Hotel hotel = requireHotel(request.hotelId());
+        Hotel hotel = requireAssignableHotel(day.hotelId, request.hotelId());
         if (dayNumberExists(day.routeId, request.dayNumber(), dayId)) {
             // 契约为该端点只列出 200 / 404；同一线路内天数序号冲突属于字段语义校验失败，
             // 按 docs/API.md 第 7 节返回 422，而不是数据库唯一键报错后的 500。
@@ -549,6 +553,7 @@ public class AdminRouteService {
         return item;
     }
 
+    /** 按主键取酒店；未指定（null）返回 null，指定了但不存在则 422。 */
     private Hotel requireHotel(Long hotelId) {
         if (hotelId == null) {
             return null;
@@ -558,6 +563,47 @@ public class AdminRouteService {
             throw new BusinessException(422, "VALIDATION_ERROR", "指定的酒店不存在");
         }
         return hotel;
+    }
+
+    /**
+     * 新增每日行程要安排的酒店：必须存在，且处于启用状态。
+     *
+     * <p>{@code DISABLED} 不能安排进新行程：停用是"这家酒店不再使用"的唯一手段
+     * （被行程引用的酒店不允许删除，见 {@code HotelService#delete}），若这里放行，
+     * 停用就退化成一个没有任何效果的标记 —— 后台写着"停止使用"，实际仍能被安排、
+     * 用户端也照旧显示。停用不删除资料，也不改动已经引用它的行程。</p>
+     */
+    private Hotel requireActiveHotel(Long hotelId) {
+        Hotel hotel = requireHotel(hotelId);
+        if (hotel != null && !isActive(hotel)) {
+            throw disabledHotel(hotel);
+        }
+        return hotel;
+    }
+
+    /**
+     * 修改每日行程后要落库的酒店：只有"换成另一家酒店"才要求目标酒店启用。
+     *
+     * <p>把已停用酒店<b>原样留在原地</b>不算重新安排：某天的酒店被停用之后，工作人员仍要能
+     * 修改这一天的标题、餐食说明等其它字段；若这里一律拒绝，这条行程就卡死了 ——
+     * 必须先把酒店换掉才能改文案。因此只有新指向一家停用酒店（含从"不指定"改成停用酒店）时才拦。</p>
+     */
+    private Hotel requireAssignableHotel(Long currentHotelId, Long nextHotelId) {
+        Hotel hotel = requireHotel(nextHotelId);
+        if (hotel != null && !isActive(hotel) && !Objects.equals(hotel.id, currentHotelId)) {
+            throw disabledHotel(hotel);
+        }
+        return hotel;
+    }
+
+    /** 库内 status 是 TINYINT NOT NULL（1 启用 / 0 停用），口径与契约 AccountStatus 一致。 */
+    private static boolean isActive(Hotel hotel) {
+        return AccountStatus.ACTIVE.equals(AccountStatus.of(hotel.status));
+    }
+
+    private static BusinessException disabledHotel(Hotel hotel) {
+        return new BusinessException(422, "VALIDATION_ERROR",
+                "酒店「" + hotel.name + "」已停用，不能安排进行程；请先启用该酒店，或改选其它酒店");
     }
 
     private Attraction requireAttraction(Long attractionId) {

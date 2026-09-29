@@ -2678,6 +2678,7 @@ components:
           anyOf:
             - { $ref: '#/components/schemas/Id' }
             - { type: 'null' }
+          description: 当天安排的酒店（可选）。必须是已存在且启用（ACTIVE）的酒店：停用（DISABLED）的酒店不能再被安排进新行程，按 docs/API.md 第 7 节以 422 拒绝；已引用它的行程不受影响，酒店停用后仍可修改该天的其它字段。
     ItineraryItemRequest:
       type: object
       additionalProperties: false

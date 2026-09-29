@@ -38,6 +38,10 @@ import static org.mockito.Mockito.when;
  * <p>不需要数据库：DB 级往返（201/204/409 的真实落库行为）由
  * {@code HotelAdminContractIntegrationTest} 在 {@code TRAVEL_MYSQL_TEST=true} 时覆盖，
  * 字段校验与权限由 {@code HotelAdminWebContractTest} 覆盖。</p>
+ *
+ * <p>酒店读取统一走加锁当前读（{@code selectOne(... FOR UPDATE)}，见 {@code HotelService#lockHotel}），
+ * 因此打桩针对 {@code selectOne}；行锁本身与并发交错由
+ * {@code HotelStatusLogConcurrencyIntegrationTest} 在真实 MySQL 上验证。</p>
  */
 class HotelServiceTest {
 
@@ -136,7 +140,7 @@ class HotelServiceTest {
             inserted.id = 31L;
             return 1;
         });
-        when(hotels.selectById(31L)).thenAnswer(invocation -> {
+        when(hotels.selectOne(any())).thenAnswer(invocation -> {
             Hotel stored = hotel(31L, 1);
             stored.name = "大理演示酒店";
             stored.contactPhone = "0872-1234567";
@@ -169,7 +173,7 @@ class HotelServiceTest {
             invocation.getArgument(0, Hotel.class).id = 32L;
             return 1;
         });
-        when(hotels.selectById(32L)).thenReturn(hotel(32L, 0));
+        when(hotels.selectOne(any())).thenReturn(hotel(32L, 0));
 
         HotelView created = service.create(new HotelUpsertRequest(
                 "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
@@ -185,7 +189,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：目标不存在返回 404，且不产生任何写入")
     void updateReturnsNotFoundWhenMissing() {
-        when(hotels.selectById(404L)).thenReturn(null);
+        when(hotels.selectOne(any())).thenReturn(null);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(404L,
                 new HotelUpsertRequest("名称", null, null, null, null, null, "来源", null), 7L));
@@ -209,7 +213,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：未提交 status 时该列不进 SET，并发停用的结果不会被覆盖")
     void concurrentDisableSurvivesAnEditThatDoesNotSubmitStatus() {
-        when(hotels.selectById(41L)).thenReturn(hotel(41L, 0));
+        when(hotels.selectOne(any())).thenReturn(hotel(41L, 0));
 
         service.update(41L, new HotelUpsertRequest(
                 "改名后的酒店", "新地址", "0872-0000000", 100.2, 26.8, "新简介",
@@ -233,7 +237,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：显式提交 status 时才写该列，并按 ACTIVE(1) 落库")
     void updateAppliesSubmittedStatus() {
-        when(hotels.selectById(42L)).thenReturn(hotel(42L, 0));
+        when(hotels.selectOne(any())).thenReturn(hotel(42L, 0));
 
         service.update(42L, new HotelUpsertRequest(
                 "重新启用", null, null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
@@ -246,7 +250,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：显式提交 DISABLED 时按 0 落库")
     void updateAppliesSubmittedDisabledStatus() {
-        when(hotels.selectById(45L)).thenReturn(hotel(45L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(45L, 1));
 
         service.update(45L, new HotelUpsertRequest(
                 "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
@@ -265,7 +269,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：记录在写回之前被并发删除（0 行）时返回 404，不记成功日志")
     void updateFailsWhenTheRowIsDeletedBeforeTheWrite() {
-        when(hotels.selectById(44L)).thenReturn(hotel(44L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(44L, 1));
         when(hotels.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(44L,
@@ -279,7 +283,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：清空可选字段时写入 NULL，而不是保留旧值")
     void updateClearsNullableFields() {
-        when(hotels.selectById(43L)).thenReturn(hotel(43L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(43L, 1));
 
         service.update(43L, new HotelUpsertRequest(
                 "酒店", null, null, null, null, null, "团队测试数据", null), 7L);
@@ -297,7 +301,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：状态确实变化时另记一条 STATUS 追溯日志")
     void updateLogsStatusTransitionWhenStatusActuallyChanges() {
-        when(hotels.selectById(46L)).thenReturn(hotel(46L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(46L, 1));
 
         service.update(46L, new HotelUpsertRequest(
                 "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
@@ -311,7 +315,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("修改：重复提交与库内相同的状态时不记 STATUS 日志")
     void updateDoesNotLogStatusWhenTheStatusIsUnchanged() {
-        when(hotels.selectById(47L)).thenReturn(hotel(47L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(47L, 1));
 
         service.update(47L, new HotelUpsertRequest(
                 "状态未变酒店", null, null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
@@ -327,7 +331,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("删除：目标不存在返回 404")
     void deleteReturnsNotFoundWhenMissing() {
-        when(hotels.selectById(404L)).thenReturn(null);
+        when(hotels.selectOne(any())).thenReturn(null);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.delete(404L, 7L));
 
@@ -338,7 +342,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("删除：被线路行程引用返回 409，并且点名是被行程挡住的")
     void deleteRejectsHotelReferencedByItineraryDay() {
-        when(hotels.selectById(51L)).thenReturn(hotel(51L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(51L, 1));
         when(itineraryDays.selectCount(any())).thenReturn(1L);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.delete(51L, 7L));
@@ -358,7 +362,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("删除：记录在删除之前已被并发删除（0 行）时返回 404，不记成功日志")
     void deleteFailsWhenTheRowIsAlreadyGone() {
-        when(hotels.selectById(56L)).thenReturn(hotel(56L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(56L, 1));
         when(itineraryDays.selectCount(any())).thenReturn(0L);
         when(hotels.deleteById(56L)).thenReturn(0);
 
@@ -372,7 +376,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("删除：未被引用时真正删除并记录操作日志")
     void deleteRemovesUnreferencedHotel() {
-        when(hotels.selectById(54L)).thenReturn(hotel(54L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(54L, 1));
         when(itineraryDays.selectCount(any())).thenReturn(0L);
 
         service.delete(54L, 7L);
@@ -388,7 +392,7 @@ class HotelServiceTest {
     @Test
     @DisplayName("删除：并发插入行程引用导致外键拒绝时，翻译成 409 而不是 500")
     void deleteTranslatesForeignKeyViolationToConflict() {
-        when(hotels.selectById(55L)).thenReturn(hotel(55L, 1));
+        when(hotels.selectOne(any())).thenReturn(hotel(55L, 1));
         when(itineraryDays.selectCount(any())).thenReturn(0L);
         when(hotels.deleteById(55L))
                 .thenThrow(new DataIntegrityViolationException("foreign key constraint fails"));

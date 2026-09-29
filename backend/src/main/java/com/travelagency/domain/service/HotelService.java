@@ -127,10 +127,15 @@ public class HotelService {
      * 只记录笼统的"修改酒店资料"会让停用与改个电话在日志里长得一模一样。
      * 口径与 {@code DepartureService#updateStatus}、{@code AdminRouteService#updateStatus} 一致：
      * <b>状态确实发生变化时才记</b>，重复提交同一个状态不刷日志。</p>
+     *
+     * <p>"是否真的变化"的比较基准取自 {@link #lockHotel} 的当前读，并与本次写入同处一把行锁内：
+     * 两人同时显式提交状态时，后者读到的是前者已提交的结果（而不是自己事务开始时的旧值），
+     * 因此不会把"早已是 DISABLED"重复记成一次 ACTIVE → DISABLED（多记），
+     * 也不会把 DISABLED → ACTIVE 这种真实变化漏掉（漏记）。</p>
      */
     @Transactional
     public HotelView update(Long hotelId, HotelUpsertRequest request, Long operatorId) {
-        Hotel current = requireHotel(hotelId);
+        Hotel current = lockHotel(hotelId);
         applyEditableFields(current, request);
         UpdateWrapper<Hotel> update = new UpdateWrapper<Hotel>().eq("id", hotelId)
                 .set("name", current.name)
@@ -175,7 +180,9 @@ public class HotelService {
      */
     @Transactional
     public void delete(Long hotelId, Long operatorId) {
-        Hotel hotel = requireHotel(hotelId);
+        Hotel hotel = lockHotel(hotelId);
+        // 引用检查在酒店行锁内进行：行程安排（AdminRouteService#lockHotel）用的是同一把锁，
+        // 因此"检查引用"与"并发新增引用"不会交错，409 是可靠的而不是靠外键兜出来的。
         if (itineraryDays.selectCount(
                 new QueryWrapper<RouteItineraryDay>().eq("hotel_id", hotelId)) > 0) {
             throw new BusinessException(409, "HOTEL_STATE_CONFLICT",
@@ -222,16 +229,28 @@ public class HotelService {
         return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
     }
 
-    private Hotel requireHotel(Long hotelId) {
-        Hotel hotel = hotels.selectById(hotelId);
+    /**
+     * 按主键取酒店并加行锁（{@code SELECT ... FOR UPDATE} 当前读），不存在则 404。
+     *
+     * <p><b>写路径必须走当前读，不能用普通查询。</b>普通查询读的是本事务的一致性快照，
+     * 而快照在本事务第一次读时就固定了：另一位工作人员在此期间提交的状态变更（停用/启用）
+     * 对快照不可见，于是"读到的是哪个状态"与"实际写下去的是哪个状态"可能对不上 ——
+     * {@link #update} 的状态审计日志会因此多记一次并未发生的变化，或漏记确实发生的变化。</p>
+     *
+     * <p>加锁后，状态判定、写入与日志都发生在同一把行锁内，且与其它同样加锁的写路径
+     * （行程安排 {@code AdminRouteService#lockHotel}）串行化；锁随事务结束释放
+     * （{@link #create} / {@link #update} / {@link #delete} 都是 {@code @Transactional}）。</p>
+     */
+    private Hotel lockHotel(Long hotelId) {
+        Hotel hotel = hotels.selectOne(new QueryWrapper<Hotel>().eq("id", hotelId).last("FOR UPDATE"));
         if (hotel == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在");
         }
         return hotel;
     }
 
-    /** 写入后回查并转契约视图；行在本次事务中被并发删除时同样按 404 处理。 */
+    /** 写入后回查并转契约视图；此时本事务已持有该行锁，回查走同一把锁。 */
     private HotelView requireView(Long hotelId) {
-        return HotelView.from(requireHotel(hotelId));
+        return HotelView.from(lockHotel(hotelId));
     }
 }

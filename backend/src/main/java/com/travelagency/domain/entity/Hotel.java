@@ -15,4 +15,6 @@ public class Hotel extends BaseEntity {
     public String intro;
     public String dataSource;
     public Integer status;
+    /** 乐观锁版本号：新建为 0，每次成功修改递增 1（见 HotelService#update）。 */
+    public Integer version;
 }

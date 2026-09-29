@@ -59,6 +59,6 @@ npm run contract:validate
 
 ## 未处理（按评审决定安排）
 
-- **酒店资料并发编辑**（不接受的静默"最后保存覆盖"）：另开 PR，参照团期 `6d3ec91` 给 `HotelUpsertRequest` 加 `version` 并在响应里回版本、冲突回 409。涉及请求与响应契约，属于独立变更；#42 可先进 `dev`，但**该修复必须在发布到 `main` 前完成**。
+- **酒店资料并发编辑**（不接受的静默"最后保存覆盖"）：另开 PR，参照团期 `6d3ec91` 给酒店修改请求加 `version`（响应里回版本、冲突回 409）。涉及请求与响应契约，属于独立变更；#42 可先进 `dev`，但**该修复必须在发布到 `main` 前完成**。已在 `feat/hotel-version-lock` 实现：契约上把 `HotelUpsertRequest` 拆成 `HotelCreateRequest`（不含版本）与 `HotelUpdateRequest`（必填版本），并新增 409 `HOTEL_VERSION_CONFLICT`；实现口径见 `docs/HOTEL_VERSION_LOCK.md`。
 - 体验问题（后台列表不展示 `intro`、搜索框 `maxlength` 按 UTF-16 码元截断、保存失败时弹窗与拦截器各提示一次）：暂不阻断 #42，单独排期。
 - 范围外交给对应模块：`AdminRouteService#updateDay` 不校验线路是否已上架（线路模块）；行程项目的景点下拉不过滤停用景点（景点模块）。本 PR 不扩大范围。

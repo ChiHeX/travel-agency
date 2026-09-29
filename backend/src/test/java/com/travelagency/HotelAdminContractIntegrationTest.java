@@ -110,9 +110,10 @@ class HotelAdminContractIntegrationTest {
 
         // 响应字段形状：契约 Hotel 必填项齐全，status 是枚举、坐标是 JSON number
         JsonNode body = data(created);
-        for (String required : new String[]{"id", "name", "status", "createdAt", "updatedAt"}) {
+        for (String required : new String[]{"id", "name", "status", "version", "createdAt", "updatedAt"}) {
             assertNotNull(body.get(required), "响应缺少契约必填字段：" + required);
         }
+        assertEquals(0, body.path("version").asInt(), "新建的乐观锁版本号从 0 起算");
         assertTrue(body.get("longitude").isNumber(), "坐标必须是 JSON number，不能是 BigDecimal 字符串");
         assertEquals(102.832, body.get("longitude").asDouble(), 0.0000001);
         assertEquals(24.88, body.get("latitude").asDouble(), 0.0000001);
@@ -130,25 +131,28 @@ class HotelAdminContractIntegrationTest {
         assertNotNull(found, "keyword 应能检索到刚创建的酒店");
         assertEquals("ACTIVE", found.path("status").asString());
         assertEquals("087112345678", found.path("contactPhone").asString());
+        assertEquals(0, found.path("version").asInt(), "列表与创建响应必须给出同一个版本号");
 
         // 修改：200 + 修改后的酒店，且 status 未提交时保持 ACTIVE
         JsonNode updated = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"" + name + "-改名\",\"address\":null,\"contactPhone\":null,"
                         + "\"longitude\":102.733,\"latitude\":25.044,\"intro\":null,"
-                        + "\"dataSource\":\"团队测试数据\"}"));
+                        + "\"dataSource\":\"团队测试数据\",\"version\":0}"));
         assertEquals(name + "-改名", updated.path("name").asString());
         assertTrue(updated.get("address").isNull(), "PUT 需要能清空可选字段");
         assertTrue(updated.get("contactPhone").isNull(), "PUT 需要能清空可选字段");
         assertEquals("ACTIVE", updated.path("status").asString(), "未提交 status 时状态不应发生变化");
+        assertEquals(1, updated.path("version").asInt(), "修改成功后版本号必须推进到 1");
 
         // 停用：状态必须真的落库成 0
-        okData(put("/api/admin/hotels/" + id).header("Authorization", token)
+        JsonNode disabled = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"" + name + "-改名\",\"dataSource\":\"团队测试数据\","
-                        + "\"status\":\"DISABLED\"}"));
+                        + "\"status\":\"DISABLED\",\"version\":1}"));
         assertEquals(0, hotels.selectById(Long.parseLong(id)).status,
                 "停用必须真的落库成 0");
+        assertEquals(2, disabled.path("version").asInt());
 
         // 停用之后再提交一次不带 status 的资料编辑：状态必须原样留在 DISABLED。
         // 本用例证明不了并发下的丢失更新（那需要在本事务的读取与写回之间插入另一次提交，
@@ -156,11 +160,35 @@ class HotelAdminContractIntegrationTest {
         // 它挡的是另一类回归：把"未提交 status"当成"按 ACTIVE 建档"。
         JsonNode editedWhileDisabled = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"" + name + "-再次编辑\",\"dataSource\":\"团队测试数据\"}"));
+                .content("{\"name\":\"" + name + "-再次编辑\",\"dataSource\":\"团队测试数据\","
+                        + "\"version\":2}"));
         assertEquals("DISABLED", editedWhileDisabled.path("status").asString(),
                 "不带 status 的资料编辑不得改变已停用酒店的状态");
         assertEquals(0, hotels.selectById(Long.parseLong(id)).status,
                 "未提交 status 时必须连 status 列都不写，库内仍应是 0");
+        assertEquals(3, editedWhileDisabled.path("version").asInt());
+
+        // 乐观锁：拿旧版本再提交一次必须 409，且不改动任何数据（版本也不前进）。
+        mvc().perform(put("/api/admin/hotels/" + id).header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"陈旧表单提交\",\"dataSource\":\"团队测试数据\","
+                                + "\"version\":2}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("HOTEL_VERSION_CONFLICT"));
+        assertEquals(name + "-再次编辑", hotels.selectById(Long.parseLong(id)).name,
+                "409 时不得写入任何字段");
+        assertEquals(3, hotels.selectById(Long.parseLong(id)).version, "409 时版本不得前进");
+
+        // 详情端点：乐观锁冲突后前端靠它按主键取回服务器最新资料（含最新名称与版本号），
+        // 因此这里断言"409 之后立刻读详情能拿到冲突提示里那个版本"。
+        JsonNode latest = okData(get("/api/admin/hotels/" + id).header("Authorization", token));
+        assertEquals(id, latest.path("id").asString());
+        assertEquals(name + "-再次编辑", latest.path("name").asString());
+        assertEquals("DISABLED", latest.path("status").asString());
+        assertEquals(3, latest.path("version").asInt(), "详情必须给出最新版本号");
+        for (String required : new String[]{"id", "name", "status", "version", "createdAt", "updatedAt"}) {
+            assertNotNull(latest.get(required), "详情缺少契约必填字段：" + required);
+        }
 
         // 删除：未被任何行程引用 → 204 且无响应体
         MockHttpServletResponse deleted = mvc()
@@ -175,10 +203,15 @@ class HotelAdminContractIntegrationTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
 
+        // 详情不存在：404（冲突面板据此提示"资料可能已被删除"）
+        mvc().perform(get("/api/admin/hotels/999999999").header("Authorization", token))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
+
         // 修改不存在的酒店：404（旧实现是无条件 updateById，影响 0 行也回 200 + 请求体）
         mvc().perform(put("/api/admin/hotels/999999999").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"不存在\",\"dataSource\":\"团队测试数据\"}"))
+                        .content("{\"name\":\"不存在\",\"dataSource\":\"团队测试数据\",\"version\":0}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
     }
@@ -220,7 +253,7 @@ class HotelAdminContractIntegrationTest {
         okData(put("/api/admin/hotels/" + hotel.id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"" + hotel.name + "\",\"dataSource\":\"团队测试数据\","
-                        + "\"status\":\"DISABLED\"}"));
+                        + "\"status\":\"DISABLED\",\"version\":0}"));
 
         assertNotNull(hotels.selectById(hotel.id), "停用不得删除资料");
         assertEquals(0, hotels.selectById(hotel.id).status);
@@ -229,8 +262,8 @@ class HotelAdminContractIntegrationTest {
     }
 
     /**
-     * 冻结契约的 {@code HotelUpsertRequest} 给各文本字段写明了 maxLength，而库内的列宽是
-     * {@code VARCHAR(128/255/20/500)} 与 {@code TEXT}。两边必须一致：
+     * 冻结契约的 {@code HotelCreateRequest} / {@code HotelUpdateRequest} 给各文本字段写明了 maxLength，
+     * 而库内的列宽是 {@code VARCHAR(128/255/20/500)} 与 {@code TEXT}。两边必须一致：
      * 列比契约窄时，正好取到契约上限的合法请求会在写库阶段炸成 5xx ——
      * 那是"契约允许、实现拒绝"，调用方无从规避。这里按<b>上限值本身</b>创建并要求原样读回。
      */

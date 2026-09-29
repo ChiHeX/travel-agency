@@ -61,6 +61,10 @@ class HotelAdminWebContractTest {
              "dataSource":"团队测试数据","status":"ACTIVE"}
             """;
 
+    /** 修改酒店的合法请求体：与建档相同，另带契约必填的乐观锁版本号。 */
+    private static final String VALID_UPDATE_BODY = VALID_BODY.replace(
+            "\"status\":\"ACTIVE\"}", "\"status\":\"ACTIVE\",\"version\":0}");
+
     @Test
     void adminHotelEndpointsRequireLogin() throws Exception {
         mvc().perform(get("/api/admin/hotels"))
@@ -70,7 +74,7 @@ class HotelAdminWebContractTest {
                         .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
                 .andExpect(status().isUnauthorized());
         mvc().perform(put("/api/admin/hotels/1")
-                        .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY))
+                        .contentType(MediaType.APPLICATION_JSON).content(VALID_UPDATE_BODY))
                 .andExpect(status().isUnauthorized());
         mvc().perform(delete("/api/admin/hotels/1"))
                 .andExpect(status().isUnauthorized());
@@ -87,20 +91,45 @@ class HotelAdminWebContractTest {
     }
 
     /**
-     * 契约 {@code HotelUpsertRequest} 里没有 {@code id} / {@code createdAt} / {@code updatedAt}，
-     * 也没有 {@code city}（城市是景点与地点指南的口径，酒店只有 {@code address}）：
+     * 契约 {@code HotelCreateRequest} 里没有 {@code id} / {@code createdAt} / {@code updatedAt} /
+     * {@code version}，也没有 {@code city}（城市是景点与地点指南的口径，酒店只有 {@code address}）：
      * 这些字段必须被严格模式拒绝（400），而不是被静默忽略或写进数据库。
+     *
+     * <p>{@code version} 尤其重要：建档的版本由服务端从 0 起算，客户端指定版本号没有意义，
+     * 放行只会让"创建时也参与版本决定"这种语义混进契约。</p>
      */
     @Test
     void rejectsFieldsOutsideTheContract() throws Exception {
         for (String extra : new String[]{"\"id\":\"1\"", "\"createdAt\":\"2026-01-01T00:00:00+08:00\"",
-                "\"updatedAt\":\"2026-01-01T00:00:00+08:00\"", "\"city\":\"昆明\"", "\"deleted\":0"}) {
+                "\"updatedAt\":\"2026-01-01T00:00:00+08:00\"", "\"city\":\"昆明\"", "\"deleted\":0",
+                "\"version\":0"}) {
             String body = VALID_BODY.replace("\"status\":\"ACTIVE\"", "\"status\":\"ACTIVE\"," + extra);
             mvc().perform(post("/api/admin/hotels").with(user("staff").roles("STAFF"))
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
         }
+    }
+
+    /**
+     * 修改必须回传版本号：契约 {@code HotelUpdateRequest} 把 {@code version} 列为必填，
+     * 缺字段按 422 处理，不能静默当成 0 —— 静默按 0 会把"忘了回传版本"变成一次必然的冲突
+     * 或一次意外的覆盖。负数版本同样在库外被拒。
+     */
+    @Test
+    void updateRequiresVersion() throws Exception {
+        mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_BODY))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("version")));
+
+        mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_UPDATE_BODY.replace("\"version\":0", "\"version\":-1")))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("version")));
     }
 
     /** 酒店接口的路径与方法必须真实注册：请求体校验失败应返回 422 而不是 404/405。 */
@@ -122,11 +151,10 @@ class HotelAdminWebContractTest {
     }
 
     /**
-     * 契约只声明了 GET/POST {@code /admin/hotels} 与 PUT/DELETE {@code /admin/hotels/{hotelId}}，
-     * 既没有 {@code PATCH} 也没有单个酒店的 {@code GET}：
-     * 这些方法必须被框架挡下（405），而不是悄悄落到某个实现上。
+     * 契约声明的是 GET/POST {@code /admin/hotels} 与 GET/PUT/DELETE {@code /admin/hotels/{hotelId}}；
+     * {@code PATCH} 不在其中，必须被框架挡下（405），而不是悄悄落到某个实现上。
      *
-     * <p>反过来说，这两条也钉住了"迁移后没有残留旧映射"：若 {@code AdminController} 里那套
+     * <p>反过来说，这条也钉住了"迁移后没有残留旧映射"：若 {@code AdminController} 里那套
      * 遗留端点还在，同一路径上会存在重复映射，应用根本起不来。</p>
      */
     @Test
@@ -136,13 +164,30 @@ class HotelAdminWebContractTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"DISABLED\"}"))
                 .andExpect(status().isMethodNotAllowed());
 
-        // 契约里没有 GET /admin/hotels/{hotelId}（详情不单独提供）
-        mvc().perform(get("/api/admin/hotels/1").with(user("staff").roles("STAFF")))
-                .andExpect(status().isMethodNotAllowed());
-
         // 列表路径只接受 GET/POST
         mvc().perform(delete("/api/admin/hotels").with(user("staff").roles("STAFF")))
                 .andExpect(status().isMethodNotAllowed());
+    }
+
+    /**
+     * 详情端点（{@code GET /admin/hotels/{hotelId}}）：乐观锁冲突后前端必须能按主键取到
+     * 服务器最新资料（含最新名称与版本号）。权限与路径注册同样按契约校验。
+     */
+    @Test
+    void hotelDetailRequiresStaffAndIsRegistered() throws Exception {
+        mvc().perform(get("/api/admin/hotels/1"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+
+        mvc().perform(get("/api/admin/hotels/1").with(user("plain").roles("USER")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 路径已注册：非数字路径参数应在进入业务逻辑前被判为参数类型错误（400），
+        // 若未注册这里会是 404，因此该断言能真实区分"未注册"与"已注册"。
+        mvc().perform(get("/api/admin/hotels/abc").with(user("staff").roles("STAFF")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
     /** 字段语义错误必须在访问数据库之前返回 422，并给出可定位的 errors 列表。 */
@@ -228,7 +273,7 @@ class HotelAdminWebContractTest {
         // 修改端点同样校验：PUT 不是"写入即可"，非法坐标也要在库外被拒
         mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(VALID_BODY.replace("\"longitude\":102.832", "\"longitude\":-180.5")))
+                        .content(VALID_UPDATE_BODY.replace("\"longitude\":102.832", "\"longitude\":-180.5")))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")));
     }

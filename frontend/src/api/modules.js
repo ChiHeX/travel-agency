@@ -104,6 +104,7 @@ export const adminApi = {
   updateAttraction: (attractionId, payload) => request.put(`/admin/attractions/${attractionId}`, payload),
   deleteAttraction: (attractionId) => request.delete(`/admin/attractions/${attractionId}`),
   hotels: (params) => request.get('/admin/hotels', { params }),
+  hotel: (hotelId) => request.get(`/admin/hotels/${hotelId}`),
   createHotel: (payload) => request.post('/admin/hotels', payload),
   updateHotel: (hotelId, payload) => request.put(`/admin/hotels/${hotelId}`, payload),
   deleteHotel: (hotelId) => request.delete(`/admin/hotels/${hotelId}`),

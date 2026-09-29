@@ -7,7 +7,8 @@ import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.AccountStatus;
 import com.travelagency.common.exception.BusinessException;
-import com.travelagency.domain.dto.HotelUpsertRequest;
+import com.travelagency.domain.dto.HotelCreateRequest;
+import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.dto.HotelView;
 import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.entity.RouteItineraryDay;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * 酒店模块 Service：后台酒店资料维护（契约 {@code Admin Resources} 的 {@code /admin/hotels} 一组端点）。
@@ -32,6 +34,10 @@ import java.util.List;
  * 不能再被安排进新的每日行程（{@code AdminRouteService} 在写行程时以 422 拒绝），
  * 已引用它的行程不受影响（不停用就是删除的替代品：被行程引用的酒店不允许删除，见 {@link #delete}）。
  * 只写状态、不拦新安排会让"停用"退化成没有效果的标记。</p>
+ *
+ * <p><b>修改带乐观锁</b>：{@link #update} 要求回传读取时的 {@code version}，
+ * 与库内不一致时返回 {@code 409 HOTEL_VERSION_CONFLICT}，避免两位工作人员先后保存时
+ * 后保存的人静默覆盖前一位的改动（与团期 {@code DepartureService#update} 同一口径）。</p>
  *
  * <p>写接口此前直接写在 {@code AdminController} 里用 Mapper 操作数据库，本次迁移到 Service 层，
  * Controller 只做参数接收与响应封装（见 docs/DEVELOPMENT_GUIDE.md §3）。</p>
@@ -85,13 +91,16 @@ public class HotelService {
      * 创建酒店资料，对齐契约 {@code POST /admin/hotels}（201 + {@code Location}）。
      *
      * <p>未提交 {@code status} 时按 {@link AccountStatus#ACTIVE} 建档，与库内
-     * {@code status TINYINT NOT NULL DEFAULT 1} 的默认值一致；其它字段全部来自请求。</p>
+     * {@code status TINYINT NOT NULL DEFAULT 1} 的默认值一致；其它字段全部来自请求。
+     * {@code version} 由服务端从 0 起算（契约 {@code HotelCreateRequest} 不含该字段，
+     * 客户端提交会被严格反序列化拒绝）。</p>
      */
     @Transactional
-    public HotelView create(HotelUpsertRequest request, Long operatorId) {
+    public HotelView create(HotelCreateRequest request, Long operatorId) {
         Hotel hotel = new Hotel();
         applyEditableFields(hotel, request);
         hotel.status = statusValue(request.hasStatus() ? request.status() : AccountStatus.ACTIVE);
+        hotel.version = 0;
         hotels.insert(hotel);
         operationLog.record(operatorId, "酒店", "CREATE", "HOTEL", hotel.id,
                 "新增酒店资料：" + hotel.name);
@@ -116,11 +125,15 @@ public class HotelService {
      * <p>目标不存在时返回 404。旧实现是无条件 {@code updateById}：影响 0 行也照回 200 +
      * 请求体，调用方会以为一条不存在的酒店保存成功了。</p>
      *
-     * <p>UPDATE 影响 0 行同样按 404 处理：那说明这条记录在本事务读取之后被并发删除，
-     * 此时既不能记"修改成功"的操作日志，也不能靠随后的回查把旧快照当成修改结果返回。
-     * 0 行确实等价于"记录不存在"——MySQL 驱动默认回的是<b>匹配行数</b>而不是实际变更行数，
-     * 写入内容与库内完全相同也会算 1 行，所以这个判定不会把"没有实质改动"误判成 404
-     * （注意：若给 JDBC URL 加上 {@code useAffectedRows=true} 就会改成返回变更行数，该前提随之失效）。</p>
+     * <p><b>乐观锁</b>：提交的 {@code version} 与库内不一致说明这份资料已被他人修改，
+     * 直接返回 409 {@code HOTEL_VERSION_CONFLICT}，本次修改不生效 —— 两位工作人员各自
+     * 打开同一条资料、先后保存时，后保存的人不会静默覆盖前一位的改动。
+     * 版本判定用 {@link #lockHotel} 的当前读，与写入同处一把行锁内；
+     * UPDATE 的 {@code WHERE version = ?} 是第二道防线。</p>
+     *
+     * <p>{@code SET} 里始终包含 {@code version = 版本 + 1}：只要 WHERE 命中就必然改变至少一个
+     * 字段，"影响 0 行"因此不再有"字段没变化"这种歧义，也就不再依赖驱动的
+     * {@code useAffectedRows} 语义（这一点在加版本号之前是必须靠约定说明的）。</p>
      *
      * <p><b>停用/启用另外记一条 {@code STATUS} 日志</b>：酒店资料没有独立的 PATCH 状态端点
      * （契约里状态只能随 PUT 提交），而"谁把这家酒店停用了"正是最需要追溯的动作。
@@ -134,22 +147,29 @@ public class HotelService {
      * 也不会把 DISABLED → ACTIVE 这种真实变化漏掉（漏记）。</p>
      */
     @Transactional
-    public HotelView update(Long hotelId, HotelUpsertRequest request, Long operatorId) {
+    public HotelView update(Long hotelId, HotelUpdateRequest request, Long operatorId) {
+        // 锁内当前读是本方法唯一的判定基准：版本与状态比较都基于同一份最新已提交数据。
         Hotel current = lockHotel(hotelId);
-        applyEditableFields(current, request);
+        requireCurrentVersion(current, request.version());
+        applyEditableFields(current, request.editableFields());
         UpdateWrapper<Hotel> update = new UpdateWrapper<Hotel>().eq("id", hotelId)
+                // 乐观锁：版本不一致说明有人先改过，这条语句会匹配 0 行。
+                .eq("version", request.version())
                 .set("name", current.name)
                 .set("address", current.address)
                 .set("contact_phone", current.contactPhone)
                 .set("longitude", current.longitude)
                 .set("latitude", current.latitude)
                 .set("intro", current.intro)
-                .set("data_source", current.dataSource);
+                .set("data_source", current.dataSource)
+                .set("version", request.version() + 1);
         if (request.hasStatus()) {
             update.set("status", statusValue(request.status()));
         }
         if (hotels.update(null, update) == 0) {
-            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在或已被删除，修改未生效");
+            // 锁已在本事务内持有，理论上不会再被别人改动；这里只是兜底，
+            // 让"行不在了"与"版本对不上"各自得到正确的结论（404 / 409）。
+            throw updateConflict(hotelId, request.version());
         }
         operationLog.record(operatorId, "酒店", "UPDATE", "HOTEL", hotelId,
                 "修改酒店资料：" + current.name);
@@ -204,8 +224,26 @@ public class HotelService {
                 "删除酒店资料：" + hotel.name);
     }
 
+    /**
+     * 按主键读取单条酒店资料，对齐契约 {@code GET /admin/hotels/{hotelId}}（200 / 404）。
+     *
+     * <p>纯读路径：普通查询即可，不需要行锁，也不开事务（没有要保护的判定—写入窗口）。</p>
+     *
+     * <p><b>为什么必须有这个端点</b>：修改遇到乐观锁冲突（409 {@code HOTEL_VERSION_CONFLICT}）后，
+     * 前端要拿到服务器最新版本才能"载入最新数据"或"保留我的修改并覆盖"。用列表端点按名称检索
+     * 做不到：对方可能已经改过名称（旧名称检索不到），同名资料也可能超过一页 ——
+     * 结果是接口正确报了冲突，用户却没有任何补救路径。</p>
+     */
+    public HotelView get(Long hotelId) {
+        Hotel hotel = hotels.selectById(hotelId);
+        if (hotel == null) {
+            throw new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在");
+        }
+        return HotelView.from(hotel);
+    }
+
     /** 把契约允许的字段写进实体；文本字段去掉首尾空白，避免"看起来同名"的重复酒店。 */
-    private static void applyEditableFields(Hotel hotel, HotelUpsertRequest request) {
+    private static void applyEditableFields(Hotel hotel, HotelCreateRequest request) {
         hotel.name = trim(request.name());
         hotel.address = trim(request.address());
         hotel.contactPhone = trim(request.contactPhone());
@@ -252,5 +290,38 @@ public class HotelService {
     /** 写入后回查并转契约视图；此时本事务已持有该行锁，回查走同一把锁。 */
     private HotelView requireView(Long hotelId) {
         return HotelView.from(lockHotel(hotelId));
+    }
+
+    /**
+     * 乐观锁早判：提交版本与库内不一致时立即返回 409，不让后面的写入先跑起来。
+     *
+     * <p>传入的必须是 {@link #lockHotel} 锁内当前读拿到的那一行，不能是普通读的快照：
+     * 版本可能在"普通读"与"加锁读"之间被改掉，用快照判会得出过期结论。</p>
+     */
+    private void requireCurrentVersion(Hotel current, Integer submittedVersion) {
+        if (!Objects.equals(current.version, submittedVersion)) {
+            throw versionConflict(current.version, submittedVersion);
+        }
+    }
+
+    /**
+     * UPDATE 影响 0 行时的兜底判定：行不在了按 404，版本对不上按 409。
+     *
+     * <p>正常情况下本事务持有该行锁，这两种情况都不会发生；保留它是为了让
+     * "0 行"永远不会被误解释成"修改成功"，也不会把版本冲突报成 404。</p>
+     */
+    private BusinessException updateConflict(Long hotelId, Integer submittedVersion) {
+        Hotel latest = hotels.selectOne(new QueryWrapper<Hotel>().eq("id", hotelId).last("FOR UPDATE"));
+        if (latest == null) {
+            return new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在或已被删除，修改未生效");
+        }
+        return versionConflict(latest.version, submittedVersion);
+    }
+
+    /** 版本冲突的统一构造：早判与 0 行判定共用，保证同一原因在所有路径上文案与结果码一致。 */
+    private static BusinessException versionConflict(Integer currentVersion, Integer submittedVersion) {
+        return new BusinessException(409, "HOTEL_VERSION_CONFLICT",
+                "酒店资料已被他人修改（当前版本 " + currentVersion + "，你提交的是 "
+                        + submittedVersion + "），请查看最新数据后再决定是否覆盖");
     }
 }

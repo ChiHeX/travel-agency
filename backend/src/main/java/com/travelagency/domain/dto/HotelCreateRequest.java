@@ -7,14 +7,17 @@ import jakarta.validation.constraints.Pattern;
 import org.hibernate.validator.constraints.CodePointLength;
 
 /**
- * 酒店新增/修改请求，对齐契约 {@code HotelUpsertRequest}（{@code additionalProperties: false}，
+ * 酒店建档请求，对齐契约 {@code HotelCreateRequest}（{@code additionalProperties: false}，
  * 必填 {@code name/dataSource}）。
  *
- * <p>只声明契约允许客户端提交的字段：主键由 URL 路径参数决定，{@code createdAt} /
- * {@code updatedAt} 由数据库维护。此前 {@code AdminController} 直接把 {@code Hotel} 实体当作请求体，
- * 客户端可以提交 {@code id}、{@code createdAt} 等契约外字段并指定主键与审计时间；
- * 改成独立 DTO 后这些字段会被全局 {@code FAIL_ON_UNKNOWN_PROPERTIES} 按契约的
- * {@code additionalProperties: false} 拒绝（400）。</p>
+ * <p>只声明契约允许客户端提交的字段：主键由服务端生成，{@code createdAt} / {@code updatedAt}
+ * 由数据库维护，{@code version} 由服务端从 0 起算。此前 {@code AdminController} 直接把
+ * {@code Hotel} 实体当作请求体，客户端可以提交 {@code id}、{@code createdAt} 等契约外字段
+ * 并指定主键与审计时间；改成独立 DTO 后这些字段会被全局 {@code FAIL_ON_UNKNOWN_PROPERTIES}
+ * 按契约的 {@code additionalProperties: false} 拒绝（400）。</p>
+ *
+ * <p>修改走 {@link HotelUpdateRequest}（比本文多一个必填的 {@code version}），
+ * 两者刻意分开定义：创建也要传版本号会变成语义不清的契约（版本由服务端决定）。</p>
  *
  * <p>酒店资料不含 {@code city}：契约 {@code Hotel} 只有 {@code name/address/contactPhone}，
  * 城市信息属于景点（{@code Attraction}）与地点指南（{@code PlaceGuide}）的口径，
@@ -35,7 +38,7 @@ import org.hibernate.validator.constraints.CodePointLength;
  * 它在契约里<b>不是必填</b>：新增时缺省按 {@code ACTIVE} 建档，修改时缺省表示
  * "保持库内当前状态"，避免漏传字段就把一家已停用的酒店悄悄重新启用。</p>
  */
-public record HotelUpsertRequest(
+public record HotelCreateRequest(
         @NotBlank(message = "酒店名称不能为空")
         @CodePointLength(max = 128, message = "酒店名称最多 128 个字符") String name,
 

@@ -50,6 +50,7 @@ DEALLOCATE PREPARE stmt;
 | `005-add-order-created-at-index.sql` | 为 `travel_order.created_at` 补索引，支撑后台工作台的今日订单数与订单趋势查询 |
 | `006-add-order-traveler-type.sql` | 补齐存量库的出行人类型快照列，恢复历史儿童类型，修复下单时的 500 错误 |
 | `007-add-place-guides.sql` | 新增多地点指南及景点关联表 |
+| `008-add-hotel-version.sql` | 补齐存量库的 `hotel.version` 乐观锁版本号列。**升级应用前必须先执行**：`Hotel` 实体的列清单包含该列，未执行时酒店列表、详情、创建、修改全部报 `Unknown column 'version' in 'field list'`（已实测复现 —— 不只是修改接口受影响）。执行两次安全（幂等） |
 
 中文 SQL 文件须以 UTF-8 保存并原样传给客户端。`test-data.sql` 显式使用 `SET NAMES utf8mb4`，避免客户端默认字符集将 UTF-8 字节误当成 latin1；它不能修复在文件传输之前已被错误转码的文本。
 存量乱码使用 `002` 定向修复，不要重新导入整套演示数据。脚本不会改动订单、游客快照、账号或正常中文；第二次执行不会再次转换已修复内容。

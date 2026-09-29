@@ -1,7 +1,7 @@
 package com.travelagency;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.travelagency.domain.dto.HotelUpsertRequest;
+import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.SysUser;
@@ -166,10 +166,16 @@ class HotelStatusLogConcurrencyIntegrationTest {
     // 辅助
     // ------------------------------------------------------------------
 
-    /** 只提交状态、其余字段保持不变的修改请求（name / dataSource 是契约必填）。 */
-    private HotelUpsertRequest upsert(String status) {
-        return new HotelUpsertRequest("状态日志回归酒店", null, null, null, null, null,
-                "团队测试数据", status);
+    /**
+     * 只提交状态、其余字段保持不变的修改请求（name / dataSource 是契约必填）。
+     *
+     * <p>夹具酒店新建后版本号就是 0，两个用例里都没有其它请求改过它（并发方只写 {@code status}，
+     * 不碰版本号），因此这里固定回传 {@code version = 0}；版本不一致会先被乐观锁拦成 409，
+     * 那样测的就不是状态审计日志了。</p>
+     */
+    private HotelUpdateRequest upsert(String status) {
+        return new HotelUpdateRequest("状态日志回归酒店", null, null, null, null, null,
+                "团队测试数据", status, 0);
     }
 
     /** 本次操作人对该酒店写的 {@code STATUS} 日志明细。 */

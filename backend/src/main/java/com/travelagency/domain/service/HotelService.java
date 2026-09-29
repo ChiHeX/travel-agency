@@ -116,6 +116,12 @@ public class HotelService {
      * 0 行确实等价于"记录不存在"——MySQL 驱动默认回的是<b>匹配行数</b>而不是实际变更行数，
      * 写入内容与库内完全相同也会算 1 行，所以这个判定不会把"没有实质改动"误判成 404
      * （注意：若给 JDBC URL 加上 {@code useAffectedRows=true} 就会改成返回变更行数，该前提随之失效）。</p>
+     *
+     * <p><b>停用/启用另外记一条 {@code STATUS} 日志</b>：酒店资料没有独立的 PATCH 状态端点
+     * （契约里状态只能随 PUT 提交），而"谁把这家酒店停用了"正是最需要追溯的动作。
+     * 只记录笼统的"修改酒店资料"会让停用与改个电话在日志里长得一模一样。
+     * 口径与 {@code DepartureService#updateStatus}、{@code AdminRouteService#updateStatus} 一致：
+     * <b>状态确实发生变化时才记</b>，重复提交同一个状态不刷日志。</p>
      */
     @Transactional
     public HotelView update(Long hotelId, HotelUpsertRequest request, Long operatorId) {
@@ -137,6 +143,10 @@ public class HotelService {
         }
         operationLog.record(operatorId, "酒店", "UPDATE", "HOTEL", hotelId,
                 "修改酒店资料：" + current.name);
+        if (request.hasStatus() && !AccountStatus.of(current.status).equals(request.status())) {
+            operationLog.record(operatorId, "酒店", "STATUS", "HOTEL", hotelId,
+                    "酒店状态由 " + AccountStatus.of(current.status) + " 变更为 " + request.status());
+        }
         return requireView(hotelId);
     }
 

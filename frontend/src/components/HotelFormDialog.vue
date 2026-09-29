@@ -73,6 +73,17 @@ function optional(value) {
   return text === '' ? null : text
 }
 
+/**
+ * 按 Unicode 码点计数。
+ *
+ * 契约的 `maxLength` 是 JSON Schema 口径，数的是字符（码点），后端的
+ * `@CodePointLength` 也是这个口径；而 JS 的 `String#length` 数的是 UTF-16 码元，
+ * 一个 emoji 会被算成 2。用 `.length` 做校验会把契约允许的内容误判成超长
+ * （例如 100 个 emoji 的酒店名：码点 100 ≤ 128 合法，码元却是 200）。
+ * 输入框上的 maxlength 属性只是打字时的便利用户体验，最终以上面的口径为准。
+ */
+const codePointLength = (value) => [...String(value ?? '')].length
+
 /** 坐标必须是契约允许范围内的数字；未填写返回 null。 */
 function coordinate(value, min, max, label) {
   const text = String(value ?? '').trim()
@@ -91,12 +102,12 @@ function validate() {
   const name = form.name.trim()
   const dataSource = form.dataSource.trim()
   if (!name) return '请填写酒店名称'
-  if (name.length > 128) return '酒店名称最多 128 个字符'
-  if (form.address.trim().length > 255) return '酒店地址最多 255 个字符'
-  if (form.contactPhone.trim().length > 20) return '联系电话最多 20 个字符'
-  if (form.intro.length > 10000) return '酒店简介最多 10000 个字符'
+  if (codePointLength(name) > 128) return '酒店名称最多 128 个字符'
+  if (codePointLength(form.address.trim()) > 255) return '酒店地址最多 255 个字符'
+  if (codePointLength(form.contactPhone.trim()) > 20) return '联系电话最多 20 个字符'
+  if (codePointLength(form.intro) > 10000) return '酒店简介最多 10000 个字符'
   if (!dataSource) return '请填写数据来源说明'
-  if (dataSource.length > 500) return '数据来源说明最多 500 个字符'
+  if (codePointLength(dataSource) > 500) return '数据来源说明最多 500 个字符'
   const longitude = coordinate(form.longitude, -180, 180, '经度')
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')

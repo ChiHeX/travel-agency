@@ -20,11 +20,14 @@ import HotelFormDialog from '../HotelFormDialog.vue'
 
 const createHotel = vi.fn()
 const updateHotel = vi.fn()
+const fetchHotels = vi.fn()
 
 vi.mock('@/api/modules', () => ({
   adminApi: {
     createHotel: (...args) => createHotel(...args),
-    updateHotel: (...args) => updateHotel(...args)
+    updateHotel: (...args) => updateHotel(...args),
+    // 版本冲突面板用列表端点的 keyword 检索取服务器最新资料（契约没有单条酒店详情端点）
+    hotels: (...args) => fetchHotels(...args)
   }
 }))
 
@@ -43,6 +46,7 @@ const disabledHotel = {
   intro: '演示简介',
   dataSource: '团队测试数据',
   status: 'DISABLED',
+  version: 3,
   createdAt: '2026-09-01T10:00:00+08:00',
   updatedAt: '2026-09-02T10:00:00+08:00'
 }
@@ -54,8 +58,11 @@ function mountDialog(hotel = null) {
   return mount(HotelFormDialog, {
     props: { modelValue: true, hotel },
     global: {
-      // el-dialog 由应用全局注册，测试里只保留插槽内容。
-      stubs: { 'el-dialog': { template: '<div><slot /><slot name="footer" /></div>' } }
+      // el-dialog 由应用全局注册，测试里只保留插槽内容；冲突面板里的 el-skeleton 同样跳过。
+      stubs: {
+        'el-dialog': { template: '<div><slot /><slot name="footer" /></div>' },
+        'el-skeleton': true
+      }
     }
   })
 }
@@ -81,6 +88,7 @@ function buttonByText(wrapper, text) {
 beforeEach(() => {
   createHotel.mockReset()
   updateHotel.mockReset()
+  fetchHotels.mockReset().mockResolvedValue({ items: [], total: 0, totalPages: 0 })
 })
 
 describe('HotelFormDialog', () => {
@@ -142,6 +150,8 @@ describe('HotelFormDialog', () => {
     })
     // 未动过状态就不提交它：后端据此保留库内现值，酒店不会被"编辑一下"就启用回来。
     expect(updateHotel.mock.calls[0][1]).not.toHaveProperty('status')
+    // 修改必须回传读取时的版本号（契约 HotelUpdateRequest 的乐观锁）。
+    expect(updateHotel.mock.calls[0][1].version).toBe(3)
     // 修改走的是 PUT：记录位置不变，调用方不该把列表刷回第 1 页。
     expect(wrapper.emitted('saved')[0][0]).toEqual({
       hotel: { ...disabledHotel, name: '苍山脚下的演示酒店（改名）' },
@@ -203,6 +213,121 @@ describe('HotelFormDialog', () => {
 
     expect(createHotel).toHaveBeenCalledTimes(1)
     expect(createHotel.mock.calls[0][0].status).toBe('DISABLED')
+    // 建档请求不得带 version（契约 HotelCreateRequest 不含该字段，版本由服务端从 0 起算）。
+    expect(createHotel.mock.calls[0][0]).not.toHaveProperty('version')
+  })
+
+  // ===================== 乐观锁与版本冲突 =====================
+
+  /**
+   * 版本冲突：另一位工作人员在本次编辑期间改过这份资料。
+   *
+   * <p>关键点是**不丢用户输入**：表单不重载、不清空，只把服务器最新值与差异字段摆在旁边，
+   * 由用户决定是采用服务器数据还是覆盖。后端已保证这次提交没有写入任何字段。</p>
+   */
+  it('版本冲突：409 时就地展示冲突面板，保留用户输入并列出差异字段', async () => {
+    updateHotel.mockRejectedValue(Object.assign(
+      new Error('酒店资料已被他人修改（当前版本 5，你提交的是 3），请查看最新数据后再决定是否覆盖'),
+      { status: 409, code: 'HOTEL_VERSION_CONFLICT' }
+    ))
+    const latest = { ...activeHotel, address: '浙江省杭州市西湖区（他人改过）', version: 5 }
+    fetchHotels.mockResolvedValue({ items: [latest], total: 1, totalPages: 1 })
+
+    const wrapper = mountDialog(activeHotel)
+    await flushPromises()
+
+    await field(wrapper, '详细地址').setValue('我填的地址')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    // 用列表端点的 keyword 检索取服务器最新资料（契约没有单条酒店详情端点）
+    expect(fetchHotels).toHaveBeenCalledWith({ page: 1, size: 100, keyword: '杭州湖畔演示酒店' })
+    expect(wrapper.text()).toContain('已被他人修改')
+    expect(wrapper.text()).toContain('你填写的内容已保留')
+    expect(wrapper.text()).toContain('详细地址')
+    expect(wrapper.text()).toContain('服务器当前版本 5')
+    expect(wrapper.text()).toContain('浙江省杭州市西湖区（他人改过）')
+    // 用户填写的内容仍在表单里，没有被服务器数据覆盖
+    expect(field(wrapper, '详细地址').element.value).toBe('我填的地址')
+    // 冲突时不算保存成功，调用方不应刷新成"已保存"
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  /** 「载入服务器最新数据」：表单换成服务器版本，之后的保存以最新版本号为基准。 */
+  it('版本冲突：载入服务器最新数据后，保存使用服务器最新版本号', async () => {
+    updateHotel
+      .mockRejectedValueOnce(Object.assign(new Error('酒店资料已被他人修改'), {
+        status: 409, code: 'HOTEL_VERSION_CONFLICT'
+      }))
+      .mockImplementation(async (id, payload) => ({ ...activeHotel, ...payload }))
+    const latest = { ...activeHotel, address: '服务器地址', version: 5 }
+    fetchHotels.mockResolvedValue({ items: [latest], total: 1, totalPages: 1 })
+
+    const wrapper = mountDialog(activeHotel)
+    await flushPromises()
+
+    await field(wrapper, '详细地址').setValue('我填的地址')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    await buttonByText(wrapper, '载入服务器最新数据').trigger('click')
+    await flushPromises()
+
+    expect(field(wrapper, '详细地址').element.value).toBe('服务器地址')
+
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    const payload = updateHotel.mock.calls.at(-1)[1]
+    expect(payload.version).toBe(5)
+    expect(payload.address).toBe('服务器地址')
+  })
+
+  /** 「保留我的修改并覆盖」：用服务器最新版本号重新提交用户填写的值。 */
+  it('版本冲突：保留我的修改并覆盖时，用最新版本号重新提交我填写的内容', async () => {
+    updateHotel
+      .mockRejectedValueOnce(Object.assign(new Error('酒店资料已被他人修改'), {
+        status: 409, code: 'HOTEL_VERSION_CONFLICT'
+      }))
+      .mockImplementation(async (id, payload) => ({ ...activeHotel, ...payload, version: 6 }))
+    const latest = { ...activeHotel, address: '服务器地址', version: 5 }
+    fetchHotels.mockResolvedValue({ items: [latest], total: 1, totalPages: 1 })
+
+    const wrapper = mountDialog(activeHotel)
+    await flushPromises()
+
+    await field(wrapper, '详细地址').setValue('我填的地址')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    await buttonByText(wrapper, '保留我的修改并覆盖').trigger('click')
+    await flushPromises()
+
+    expect(updateHotel).toHaveBeenCalledTimes(2)
+    const payload = updateHotel.mock.calls.at(-1)[1]
+    expect(payload.version).toBe(5)
+    expect(payload.address).toBe('我填的地址')
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  /** 取不到最新资料时不能假装同步过：给出提示，且不提供"盲目覆盖"入口。 */
+  it('版本冲突：取不到服务器最新资料时给出提示，且不允许覆盖', async () => {
+    updateHotel.mockRejectedValue(Object.assign(new Error('酒店资料已被他人修改'), {
+      status: 409, code: 'HOTEL_VERSION_CONFLICT'
+    }))
+    fetchHotels.mockResolvedValue({ items: [], total: 0, totalPages: 0 })
+
+    const wrapper = mountDialog(activeHotel)
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂时取不到服务器最新资料')
+    const overwrite = buttonByText(wrapper, '保留我的修改并覆盖')
+    expect(overwrite.attributes('disabled')).toBeDefined()
+    expect(buttonByText(wrapper, '载入服务器最新数据').attributes('disabled')).toBeDefined()
   })
 
   it('编辑：清空坐标、地址与联系方式时提交 null，PUT 才能真正清空库内字段', async () => {

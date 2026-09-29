@@ -1,13 +1,16 @@
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import { CONTRACT_MAX_PAGE_SIZE } from '@/utils/paging'
 
 /**
  * 酒店资料新增 / 修改表单弹窗（对应契约 POST /admin/hotels 与 PUT /admin/hotels/{hotelId}）。
  *
- * 只提交契约 HotelUpsertRequest 允许的字段：`id`、`createdAt`、`updatedAt` 都不在前端提交范围内
- * —— 主键由后端生成，审计时间由数据库维护。提交这些字段会被后端严格模式直接拒绝（400）。
+ * 只提交契约字段：新增走 `HotelCreateRequest`（**不含** `version`，版本由服务端从 0 起算），
+ * 修改走 `HotelUpdateRequest`（**必填** `version`，回传读取时拿到的版本号）；
+ * `id`、`createdAt`、`updatedAt` 都不在前端提交范围内 —— 主键由后端生成，审计时间由数据库维护，
+ * 提交这些字段会被后端严格模式直接拒绝（400）。
  *
  * 字段口径与后端一致：
  * - `status` 是契约 AccountStatus 枚举 `ACTIVE` / `DISABLED`（后端映射成库内 1/0），
@@ -23,7 +26,11 @@ import { adminApi } from '@/api/modules'
  *
  * 页面校验只用于改善交互，最终由后端裁定；后端返回的 message 会就地展示。
  *
- * 保存成功后 emit `saved`，载荷是 `{ hotel, created }`：`hotel` 是后端返回的酒店，
+ * **版本冲突**（409 `HOTEL_VERSION_CONFLICT`）：另一位工作人员在本次编辑期间改过这份资料。
+ * 表单不会丢弃用户填写的内容，而是就地展示冲突面板：拉取服务器最新资料、列出有差异的字段，
+ * 由用户选择「载入服务器最新数据」或「保留我的修改并覆盖」（用服务器最新版本号重新提交）。
+ *
+ * 保存成功后 emit `saved`，载荷是 `{ hotel, created }`：`hotel` 是后端返回的酒店（含最新 `version`），
  * `created` 表示这次走的是 POST（新建）还是 PUT（修改），由调用方决定刷新哪一页。
  */
 const props = defineProps({
@@ -41,6 +48,31 @@ const formError = ref('')
  */
 const originalStatus = ref('ACTIVE')
 
+/**
+ * 本次修改要提交的乐观锁版本号：以服务端确认的状态为准。
+ * - 打开弹窗时取 `props.hotel.version`；
+ * - 保存成功后更新为响应里的新版本（否则第二次保存会拿着过期版本必然冲突）；
+ * - 冲突面板里"覆盖"时更新为服务器最新版本。
+ * 新建时为 `null`，请求体不带该字段。
+ */
+const baseVersion = ref(null)
+
+/** 冲突面板状态：服务端最新资料、加载中、以及是否已经取到。 */
+const conflictMessage = ref('')
+const conflictLatest = ref(null)
+const conflictLoading = ref(false)
+
+const EDITABLE_FIELD_LABELS = {
+  name: '酒店名称',
+  address: '详细地址',
+  contactPhone: '联系电话',
+  status: '运营状态',
+  longitude: '经度',
+  latitude: '纬度',
+  intro: '酒店简介',
+  dataSource: '数据来源说明'
+}
+
 const form = reactive({
   name: '',
   address: '',
@@ -53,30 +85,16 @@ const form = reactive({
 })
 
 function reset() {
-  const source = props.hotel || {}
-  const status = source.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
-  Object.assign(form, {
-    name: source.name || '',
-    address: source.address || '',
-    contactPhone: source.contactPhone || '',
-    // 坐标按契约是 number：null 时留空，由用户决定是否填写。
-    longitude: source.longitude === null || source.longitude === undefined ? '' : String(source.longitude),
-    latitude: source.latitude === null || source.latitude === undefined ? '' : String(source.latitude),
-    intro: source.intro || '',
-    dataSource: source.dataSource || '',
-    status
-  })
-  originalStatus.value = status
+  applyHotel(props.hotel || {})
   formError.value = ''
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  conflictLoading.value = false
 }
 
 watch(() => [props.modelValue, props.hotel], () => {
   if (props.modelValue) reset()
 }, { immediate: true })
-
-function close() {
-  emit('update:modelValue', false)
-}
 
 /** 空串与纯空白一律按"未填写"处理，提交 null 而不是空字符串。 */
 function optional(value) {
@@ -106,7 +124,7 @@ function coordinate(value, min, max, label) {
 }
 
 /**
- * 页面侧校验：与后端 HotelUpsertRequest 的约束保持一致
+ * 页面侧校验：与后端 HotelCreateRequest / HotelUpdateRequest 的约束保持一致
  * （必填、长度上限、坐标范围），让运营在提交前就看到问题，而不是等接口回一个 422。
  */
 function validate() {
@@ -142,12 +160,109 @@ function shouldSubmitStatus() {
   return form.status !== originalStatus.value
 }
 
+function close() {
+  emit('update:modelValue', false)
+}
+
+/** 冲突面板要展示的差异字段（只列真正不一样的部分，避免整屏都是"服务器 vs 你填写"）。 */
+const conflictDifferences = computed(() => {
+  const latest = conflictLatest.value
+  if (!latest) return []
+  const server = {
+    name: latest.name || '',
+    address: latest.address || '',
+    contactPhone: latest.contactPhone || '',
+    status: latest.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+    longitude: latest.longitude === null || latest.longitude === undefined ? '' : String(latest.longitude),
+    latitude: latest.latitude === null || latest.latitude === undefined ? '' : String(latest.latitude),
+    intro: latest.intro || '',
+    dataSource: latest.dataSource || ''
+  }
+  const mine = {
+    name: form.name.trim(),
+    address: form.address.trim(),
+    contactPhone: form.contactPhone.trim(),
+    status: form.status,
+    longitude: String(form.longitude ?? '').trim(),
+    latitude: String(form.latitude ?? '').trim(),
+    intro: form.intro,
+    dataSource: form.dataSource.trim()
+  }
+  return Object.keys(EDITABLE_FIELD_LABELS).filter((key) => server[key] !== mine[key])
+})
+
+const differs = (key) => conflictDifferences.value.includes(key)
+
+/**
+ * 取回服务器最新资料。
+ *
+ * <p>契约里没有"单个酒店详情"端点（GET /admin/hotels/{hotelId} 不存在），
+ * 因此用列表端点的 keyword 精确检索拿最新行：关键字取打开弹窗时的名称，
+ * 定位仍然按 id 匹配。取不到时面板会提示重新打开表单，不会假装已同步。</p>
+ */
+async function loadLatest() {
+  const hotelId = props.hotel?.id
+  if (!hotelId) return
+  conflictLoading.value = true
+  try {
+    const page = await adminApi.hotels({ page: 1, size: CONTRACT_MAX_PAGE_SIZE, keyword: props.hotel.name })
+    const items = page?.items || []
+    conflictLatest.value = items.find((item) => String(item.id) === String(hotelId)) || null
+  } catch {
+    conflictLatest.value = null
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+/** 采用服务器最新数据：表单回到服务器状态，之后的保存以最新版本号为基准。 */
+function adoptLatest() {
+  if (!conflictLatest.value) return
+  const latest = conflictLatest.value
+  applyHotel(latest)
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  ElMessage.success('已载入服务器最新资料，请确认后再保存')
+}
+
+/**
+ * 保留我的修改并覆盖：把基准版本换成服务器最新版本号后重新提交。
+ *
+ * <p>这是用户明确选择的覆盖动作 —— 版本号只负责发现"基于过期数据提交"，
+ * 不阻止用户在知情后覆盖；本次覆盖同样会记入操作日志。</p>
+ */
+async function overwriteLatest() {
+  if (!conflictLatest.value) return
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  await save()
+}
+
+/** 用一份酒店数据回填表单（打开弹窗与"载入服务器最新数据"共用）。 */
+function applyHotel(source) {
+  const status = source?.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
+  Object.assign(form, {
+    name: source?.name || '',
+    address: source?.address || '',
+    contactPhone: source?.contactPhone || '',
+    longitude: source?.longitude === null || source?.longitude === undefined ? '' : String(source.longitude),
+    latitude: source?.latitude === null || source?.latitude === undefined ? '' : String(source.latitude),
+    intro: source?.intro || '',
+    dataSource: source?.dataSource || '',
+    status
+  })
+  originalStatus.value = status
+  baseVersion.value = source?.id ? source.version ?? baseVersion.value : null
+}
+
 async function save() {
   if (submitting.value) return
   formError.value = ''
   const invalid = validate()
   if (invalid) return ElMessage.warning(invalid)
 
+  const editing = Boolean(props.hotel?.id)
   const payload = {
     name: form.name.trim(),
     address: optional(form.address),
@@ -157,19 +272,23 @@ async function save() {
     intro: optional(form.intro),
     dataSource: form.dataSource.trim(),
     // 未改状态时不带这个字段，交给后端保留库内现值（并发停用不会被覆盖）。
-    ...(shouldSubmitStatus() ? { status: form.status } : {})
+    ...(shouldSubmitStatus() ? { status: form.status } : {}),
+    // 修改必填 version（契约 HotelUpdateRequest 的乐观锁）；新建不带（版本由服务端从 0 起算）。
+    ...(editing ? { version: baseVersion.value } : {})
   }
 
   submitting.value = true
-  const editing = Boolean(props.hotel?.id)
   try {
     const saved = editing
       ? await adminApi.updateHotel(props.hotel.id, payload)
       : await adminApi.createHotel(payload)
-    // 保存成功后，"原始值"要以服务端确认的状态为准：否则"先停用保存、再改回启用保存"的
-    // 第二次保存会因为值等于打开弹窗时的旧值而漏掉 status —— 界面显示启用，库内却仍是停用。
+    // 保存成功后，"原始值"与基准版本都要以服务端确认的结果为准：否则"先停用保存、再改回启用保存"
+    // 的第二次保存会因为值等于打开弹窗时的旧值而漏掉 status，第二次提交也会拿着过期版本必冲突。
     if (saved?.status === 'ACTIVE' || saved?.status === 'DISABLED') {
       originalStatus.value = saved.status
+    }
+    if (saved?.version !== null && saved?.version !== undefined) {
+      baseVersion.value = saved.version
     }
     ElMessage.success(editing ? '酒店资料已更新' : '酒店资料已新增')
     // 带上 created：POST 和 PUT 对列表的影响不同 —— 新建的记录排在第一页，
@@ -177,6 +296,13 @@ async function save() {
     emit('saved', { hotel: saved, created: !editing })
     close()
   } catch (cause) {
+    if (editing && cause.status === 409 && cause.code === 'HOTEL_VERSION_CONFLICT') {
+      // 另一位工作人员在本次编辑期间改过这份资料：不丢弃用户输入，交给冲突面板处理。
+      conflictMessage.value = cause.message || '这份酒店资料已被他人修改'
+      conflictLatest.value = null
+      await loadLatest()
+      return
+    }
     // 后端 422（字段语义）与 404（记录已被删除）的 message 都可读，就地展示。
     formError.value = cause.message || '酒店资料保存失败，请稍后重试'
   } finally {
@@ -198,6 +324,70 @@ async function save() {
   >
     <div class="dialog-form-grid">
       <p v-if="formError" class="form-error wide" role="alert">{{ formError }}</p>
+
+      <!--
+        版本冲突（409 HOTEL_VERSION_CONFLICT）：另一位工作人员在本次编辑期间改过这份资料。
+        不丢弃用户已经填写的内容：先列出服务器最新值与差异字段，再由用户决定采用哪一份。
+      -->
+      <div v-if="conflictMessage" class="conflict-panel wide" role="alert">
+        <p class="conflict-title">{{ conflictMessage }}</p>
+        <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
+        <el-skeleton v-if="conflictLoading" :rows="3" animated />
+        <template v-else-if="conflictLatest">
+          <p v-if="conflictDifferences.length" class="conflict-note conflict-diff">
+            与服务器不一致的字段：
+            <strong>{{ conflictDifferences.map((key) => EDITABLE_FIELD_LABELS[key]).join('、') }}</strong>；
+            服务器当前版本 {{ conflictLatest.version }}。
+          </p>
+          <p v-else class="conflict-note conflict-diff">你填写的各项与服务器当前值一致。</p>
+          <dl class="conflict-grid">
+            <div :class="{ 'conflict-row-differs': differs('name') }">
+              <dt>酒店名称</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.name }}</span>
+                <span class="conflict-mine">你填写：{{ form.name.trim() || '（空）' }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('status') }">
+              <dt>运营状态</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.status === 'DISABLED' ? '停用' : '启用' }}</span>
+                <span class="conflict-mine">你填写：{{ form.status === 'DISABLED' ? '停用' : '启用' }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('address') }">
+              <dt>详细地址</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.address || '（空）' }}</span>
+                <span class="conflict-mine">你填写：{{ form.address.trim() || '（空）' }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('contactPhone') }">
+              <dt>联系电话</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.contactPhone || '（空）' }}</span>
+                <span class="conflict-mine">你填写：{{ form.contactPhone.trim() || '（空）' }}</span>
+              </dd>
+            </div>
+          </dl>
+        </template>
+        <p v-else class="conflict-note">
+          暂时取不到服务器最新资料（可能已被他人删除，或列表检索不到），请关闭后重新打开表单再试。
+        </p>
+        <div class="conflict-actions">
+          <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">
+            载入服务器最新数据
+          </button>
+          <button
+            type="button"
+            class="primary-button"
+            :disabled="!conflictLatest || submitting"
+            @click="overwriteLatest"
+          >
+            保留我的修改并覆盖
+          </button>
+        </div>
+      </div>
 
       <div class="form-field wide">
         <label>酒店名称 <span class="req">*</span></label>
@@ -281,6 +471,70 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* 版本冲突面板：与团期表单同一套视觉口径，避免同一个系统里出现两种冲突提示。 */
+.conflict-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--status-orange, #f59e0b);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg-warning-subtle, #fffbeb);
+}
+
+.conflict-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--status-orange-strong, #b45309);
+}
+
+.conflict-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.conflict-diff strong {
+  color: var(--danger-red);
+}
+
+.conflict-grid {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.conflict-grid dt {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-grid dd {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.conflict-row-differs dt {
+  color: var(--danger-red);
+  font-weight: 700;
+}
+
+.conflict-server {
+  color: var(--text-primary);
+}
+
+.conflict-mine {
+  color: var(--text-secondary);
+}
+
+.conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 640px) {

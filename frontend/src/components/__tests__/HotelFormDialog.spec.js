@@ -198,6 +198,67 @@ describe('HotelFormDialog', () => {
     expect(createHotel).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * 页面校验的边界必须与契约 maxLength 对齐：恰好到上限要放行，多一个字符才拦下。
+   * 边界差一位（`>=` 写成 `>` 或反之）会让运营要么永远提交不上、要么把必然 422 的请求发出去。
+   */
+  it('校验边界与契约 maxLength 一致：恰好到上限放行，超一个字符拦下', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('名'.repeat(128))
+    await field(wrapper, '联系电话').setValue('1'.repeat(20))
+    await field(wrapper, '数据来源说明').setValue('源'.repeat(500))
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+
+    // 名称多一个字符：必须拦在本地，不再发第二次请求
+    await field(wrapper, '酒店名称').setValue('名'.repeat(129))
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+
+    // 数据来源说明多一个字符同样拦下
+    await field(wrapper, '酒店名称').setValue('名'.repeat(128))
+    await field(wrapper, '数据来源说明').setValue('源'.repeat(501))
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 长度上限按 Unicode 码点算（契约 maxLength 的口径，与后端 @CodePointLength 一致），
+   * 不是 JS 的 UTF-16 码元：用 String#length 会把 100 个 emoji 的酒店名算成 200 而误拦。
+   */
+  it('长度校验按码点计数：码元超限但码点合法的内容不会被误拦', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const emojiName = '😀'.repeat(100) // 100 码点 / 200 码元
+    const emojiIntro = '😀'.repeat(6000) // 6000 码点 / 12000 码元
+    expect(emojiName.length).toBeGreaterThan(128)
+    expect(emojiIntro.length).toBeGreaterThan(10000)
+
+    await field(wrapper, '酒店名称').setValue(emojiName)
+    await field(wrapper, '酒店简介').setValue(emojiIntro)
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(createHotel).toHaveBeenCalledTimes(1)
+    expect(createHotel.mock.calls[0][0].name).toBe(emojiName)
+    expect(createHotel.mock.calls[0][0].intro).toBe(emojiIntro)
+
+    // 超出码点上限（129 > 128）仍然要拦下，别把"按码点算"做成"不校验"
+    await field(wrapper, '酒店名称').setValue('😀'.repeat(129))
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+  })
+
   it('后端校验失败时就地展示 message，且不关闭弹窗、不丢用户输入', async () => {
     createHotel.mockRejectedValue(
       Object.assign(new Error('数据来源说明不能为空'), { status: 422, code: 'VALIDATION_ERROR' })

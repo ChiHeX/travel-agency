@@ -15,6 +15,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -120,6 +121,30 @@ class HotelAdminWebContractTest {
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
     }
 
+    /**
+     * 契约只声明了 GET/POST {@code /admin/hotels} 与 PUT/DELETE {@code /admin/hotels/{hotelId}}，
+     * 既没有 {@code PATCH} 也没有单个酒店的 {@code GET}：
+     * 这些方法必须被框架挡下（405），而不是悄悄落到某个实现上。
+     *
+     * <p>反过来说，这两条也钉住了"迁移后没有残留旧映射"：若 {@code AdminController} 里那套
+     * 遗留端点还在，同一路径上会存在重复映射，应用根本起不来。</p>
+     */
+    @Test
+    void methodsOutsideTheContractAreNotMapped() throws Exception {
+        // 契约里没有 PATCH /admin/hotels/{hotelId}（酒店状态通过 PUT 提交 status 修改）
+        mvc().perform(patch("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"DISABLED\"}"))
+                .andExpect(status().isMethodNotAllowed());
+
+        // 契约里没有 GET /admin/hotels/{hotelId}（详情不单独提供）
+        mvc().perform(get("/api/admin/hotels/1").with(user("staff").roles("STAFF")))
+                .andExpect(status().isMethodNotAllowed());
+
+        // 列表路径只接受 GET/POST
+        mvc().perform(delete("/api/admin/hotels").with(user("staff").roles("STAFF")))
+                .andExpect(status().isMethodNotAllowed());
+    }
+
     /** 字段语义错误必须在访问数据库之前返回 422，并给出可定位的 errors 列表。 */
     @Test
     void fieldValidationFailsBeforeAnyDatabaseAccess() throws Exception {
@@ -141,6 +166,14 @@ class HotelAdminWebContractTest {
         mvc().perform(post("/api/admin/hotels").with(user("staff").roles("STAFF"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY.replace("\"契约测试酒店\"", "\"" + "长".repeat(129) + "\"")))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].field").value(endsWith("name")));
+
+        // 长度按 Unicode 码点计数：129 个 emoji 是 129 个码点（258 个码元），同样必须被拒。
+        // 反向的"码元超限但码点合法必须放行"由 HotelAdminContractIntegrationTest 覆盖。
+        mvc().perform(post("/api/admin/hotels").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_BODY.replace("\"契约测试酒店\"", "\"" + "😀".repeat(129) + "\"")))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("name")));
 

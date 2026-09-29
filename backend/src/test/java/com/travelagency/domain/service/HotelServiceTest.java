@@ -289,6 +289,39 @@ class HotelServiceTest {
                 "契约允许 address/contactPhone/longitude/latitude/intro 为 null，PUT 必须能清空它们");
     }
 
+    /**
+     * 酒店资料没有独立的状态端点（契约里状态只能随 PUT 提交），因此"谁把这家酒店停用了"
+     * 只能靠操作日志追溯。只记一条笼统的"修改酒店资料"会让停用和改个电话在日志里长得一样。
+     * 这里钉住：状态确实变化时要另记一条 {@code STATUS}，口径与团期/线路的状态变更一致。
+     */
+    @Test
+    @DisplayName("修改：状态确实变化时另记一条 STATUS 追溯日志")
+    void updateLogsStatusTransitionWhenStatusActuallyChanges() {
+        when(hotels.selectById(46L)).thenReturn(hotel(46L, 1));
+
+        service.update(46L, new HotelUpsertRequest(
+                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
+
+        verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 46L, "修改酒店资料：停用酒店");
+        verify(operationLog).record(7L, "酒店", "STATUS", "HOTEL", 46L,
+                "酒店状态由 ACTIVE 变更为 DISABLED");
+    }
+
+    /** 编辑资料时把状态原样提交回来（表单回填后保存）不算状态变更，不能在日志里刷出噪声。 */
+    @Test
+    @DisplayName("修改：重复提交与库内相同的状态时不记 STATUS 日志")
+    void updateDoesNotLogStatusWhenTheStatusIsUnchanged() {
+        when(hotels.selectById(47L)).thenReturn(hotel(47L, 1));
+
+        service.update(47L, new HotelUpsertRequest(
+                "状态未变酒店", null, null, null, null, null, "团队测试数据", "ACTIVE"), 7L);
+
+        // 日志里的名称是本次提交的名称（applyEditableFields 先写入实体再记录）
+        verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 47L, "修改酒店资料：状态未变酒店");
+        verify(operationLog, never()).record(any(), any(), ArgumentMatchers.eq("STATUS"),
+                any(), any(), any());
+    }
+
     // ===================== 后台删除 =====================
 
     @Test

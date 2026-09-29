@@ -341,4 +341,78 @@ describe('AdminResourcesView（酒店资料库）', () => {
     await flushPromises()
     expect(deleteHotel).toHaveBeenCalledTimes(1)
   })
+
+  /**
+   * 删除失败（例如被线路行程引用时后端回 409）也必须重新拉列表。
+   *
+   * <p>失败提示由 axios 拦截器统一弹出，页面自己不再提示；但若失败路径不刷新，
+   * 页面会停在一个与库内不符的状态上——工作人员会对着一条"看起来还在"的记录反复点击。
+   * 因此刷新放在 finally 里。</p>
+   */
+  it('删除失败（409 引用冲突）时仍然刷新列表，页面不停留在过期状态', async () => {
+    deleteHotel.mockRejectedValue(
+      Object.assign(new Error('该酒店已被线路行程引用，不能删除'), { status: 409, code: 'HOTEL_STATE_CONFLICT' })
+    )
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    await buttonByText(wrapper, '删除').trigger('click')
+    await flushPromises()
+
+    expect(deleteHotel).toHaveBeenCalledWith('31')
+    expect(fetchHotels).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('杭州湖畔演示酒店')
+  })
+
+  it('停用的酒店显示「停用」标签，而不是把库内的枚举直接抛给运营', async () => {
+    fetchHotels.mockResolvedValue({
+      items: [{ ...activeHotel, status: 'DISABLED' }],
+      total: 1,
+      totalPages: 1
+    })
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('停用')
+    expect(wrapper.text()).not.toContain('DISABLED')
+  })
+
+  it('筛选无命中时给出针对酒店的提示，而不是笼统的空状态', async () => {
+    fetchHotels.mockResolvedValue({ items: [], total: 0, totalPages: 0 })
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂无相关资料数据')
+
+    await wrapper.find('.resource-search input').setValue('不存在的酒店')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('没有匹配「不存在的酒店」的酒店资料')
+  })
+})
+
+/**
+ * 景点与酒店共用同一个页面组件（{@code AdminResourcesView} 通过 {@code resource} 切换）。
+ * 切换时必须清掉上一个资源的筛选词与页码，否则会把景点的 keyword/页码带到酒店列表上，
+ * 直接落到一个空的酒店页。
+ */
+describe('AdminResourcesView（资源切换）', () => {
+  it('从景点切到酒店：清空筛选词与页码，改用酒店接口并带上酒店自己的分页参数', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('.resource-search input').setValue('西湖')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenLastCalledWith({ page: 1, size: 20, keyword: '西湖' })
+
+    await wrapper.setProps({ resource: 'hotels' })
+    await flushPromises()
+
+    expect(fetchHotels).toHaveBeenLastCalledWith({ page: 1, size: 20 })
+    expect(wrapper.find('.resource-search input').element.value).toBe('')
+    expect(wrapper.findComponent({ name: 'HotelFormDialog' }).exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'AttractionFormDialog' }).exists()).toBe(false)
+  })
 })

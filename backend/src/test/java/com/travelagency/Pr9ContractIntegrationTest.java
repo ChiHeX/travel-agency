@@ -196,24 +196,30 @@ class Pr9ContractIntegrationTest {
     }
 
     /**
-     * 导游姓名的长度按 Unicode 码点算，不是 UTF-16 码元。
+     * 导游姓名的长度按 Unicode 码点算，不是 UTF-16 码元；且 64 个字符的姓名必须能真的落库。
      *
-     * <p>契约的 {@code maxLength} 是 JSON Schema 口径（字符 = 码点），{@code guide.name} 又是
-     * {@code VARCHAR(64)}（utf8mb4 下同样数字符）。用 {@code @Size(max = 64)} 校验时，
-     * 64 个 emoji 的姓名会被算成 128 个码元而误判超长 —— 这份资料契约允许、数据库也存得下，
-     * 后端却回 422。酒店资料（{@code HotelCreateRequest}）已有同类用例，导游这一档此前漏掉了。</p>
+     * <p>契约的 {@code maxLength} 是 JSON Schema 口径（字符 = 码点）。用 {@code @Size(max = 64)}
+     * 校验时，64 个 emoji 的姓名会被算成 128 个码元而误判超长 —— 这份资料契约允许、
+     * 数据库也存得下，后端却回 422。</p>
+     *
+     * <p>光放长校验还不够：账号侧 {@code sys_user.nickname} 是 {@code VARCHAR(32)}，
+     * 而导游姓名允许 64 个字符。把姓名同时写进 nickname 就会在 MySQL 严格模式
+     * （默认 {@code STRICT_TRANS_TABLES}）下报 "Data too long for column 'nickname'"，
+     * 于是 33–64 个字符的合法姓名照样建不出导游。因此这里连带断言账号侧两个列：
+     * 昵称落账号名（必然 ≤ 32），完整姓名落 {@code real_name}（{@code VARCHAR(64)}）。</p>
      */
     @Test
     void guideLengthLimitsCountUnicodeCodePointsNotUtf16Units() throws Exception {
         String name = "😀".repeat(64);        // 64 码点 / 128 码元，恰好到契约上限
         String phone = "😀".repeat(20);       // 20 码点 / 40 码元
         String intro = "😀".repeat(1000);     // 1000 码点 / 2000 码元
+        String username = "cp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         assertTrue(name.codePointCount(0, name.length()) <= 64, "前提：码点数在契约上限之内");
         assertTrue(name.length() > 64, "前提：码元数已超过上限，@Size 会误拒");
 
         Guide created = createGuideWith(String.format("""
                 {"username":"%s","password":"Regression123!","name":"%s","phone":"%s","intro":"%s"}""",
-                "cp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12), name, phone, intro));
+                username, name, phone, intro));
 
         assertEquals(name, created.name, "姓名必须原样落库，不能在写库时被截断");
         assertEquals(64, created.name.codePointCount(0, created.name.length()), "库内应是 64 个码点");
@@ -221,11 +227,41 @@ class Pr9ContractIntegrationTest {
         assertEquals(intro, created.intro, "简介必须原样落库");
         assertEquals(2000, created.intro.length(), "2000 个码元说明 1000 个 emoji 全部落库");
 
+        // 账号侧：昵称必须落在 VARCHAR(32) 之内，完整姓名由 real_name 承载
+        SysUser account = users.selectOne(new QueryWrapper<SysUser>().eq("username", username));
+        assertNotNull(account, "导游登录账号应已创建");
+        assertEquals(username, account.nickname,
+                "昵称写导游姓名会撑爆 VARCHAR(32)，33–64 个字符的姓名将无法建档");
+        assertTrue(account.nickname.codePointCount(0, account.nickname.length()) <= 32,
+                "昵称必须能装进 VARCHAR(32)");
+        assertEquals(name, account.realName, "完整姓名保存在 real_name（VARCHAR(64)）");
+
         mvc.perform(put("/api/admin/guides/" + created.id).header("Authorization", staffToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"" + "😀".repeat(65) + "\",\"phone\":\"" + phone + "\"}"))
                 .andExpect(status().isUnprocessableContent());
         assertEquals(name, guides.selectById(created.id).name, "65 码点被拒后原资料不变");
+    }
+
+    /**
+     * 33–64 个字符的普通姓名（非 emoji）同样必须建档成功。
+     *
+     * <p>这是 nickname 列宽问题最直接的复现：姓名本身没有任何特殊字符，只是「比 32 长」，
+     * 旧实现会把它写进 {@code VARCHAR(32)} 的 nickname 而在严格模式下失败。</p>
+     */
+    @Test
+    void guideNameLongerThanAccountNicknameColumnStillCreatesAccount() throws Exception {
+        String name = "李".repeat(64);
+        String username = "long_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+        Guide created = createGuideWith(String.format("""
+                {"username":"%s","password":"Regression123!","name":"%s","phone":"13800138000"}""",
+                username, name));
+
+        assertEquals(name, created.name);
+        SysUser account = users.selectOne(new QueryWrapper<SysUser>().eq("username", username));
+        assertEquals(username, account.nickname);
+        assertEquals(name, account.realName);
     }
 
     /** 建一个导游账号并断言返回 201；返回库内落下的那条资料，供长度断言用。 */

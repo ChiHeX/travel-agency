@@ -60,6 +60,24 @@ function optional(value) {
   return trimmed === '' ? null : trimmed
 }
 
+/**
+ * 按 Unicode 码点计数。契约的 maxLength 是 JSON Schema 口径，数的是字符（码点），
+ * 后端的 @CodePointLength 也是这个口径；JS 的 String#length 数的是 UTF-16 码元，
+ * 一个 emoji 会被算成 2，用 `.length` 会把契约允许的内容误判成超长。
+ *
+ * <p>同理，模板里的输入框<b>不设 maxlength</b>：HTML 的 maxlength 数的也是 UTF-16 码元，
+ * 一个 emoji 线路名（码点合法、列宽也存得下）会在输入阶段被静默截断，用户拿不到解释。
+ * 改为「不截断 + 计数器 + 提交时校验」。</p>
+ */
+const codePointLength = (value) => [...String(value ?? '')].length
+
+/** 各字段的码点上限，与契约 RouteUpsertRequest 和后端 @CodePointLength 一致。 */
+const NAME_MAX = 200
+const DEPARTURE_CITY_MAX = 64
+const DESTINATION_MAX = 255
+const COVER_URL_MAX = 500
+const LONG_TEXT_MAX = 10000
+
 async function save() {
   if (submitting.value) return
   submitError.value = ''
@@ -67,11 +85,27 @@ async function save() {
   const departureCity = form.departureCity.trim()
   const destination = form.destination.trim()
   const durationDays = Number(form.durationDays)
-  if (name.length < 2 || name.length > 200) return ElMessage.warning('线路名称长度应为 2-200 个字符')
-  if (!departureCity || departureCity.length > 64) return ElMessage.warning('请填写出发城市（不超过 64 个字符）')
-  if (!destination || destination.length > 255) return ElMessage.warning('请填写目的地（不超过 255 个字符）')
+  if (codePointLength(name) < 2 || codePointLength(name) > NAME_MAX) {
+    return ElMessage.warning(`线路名称长度应为 2-${NAME_MAX} 个字符`)
+  }
+  if (!departureCity || codePointLength(departureCity) > DEPARTURE_CITY_MAX) {
+    return ElMessage.warning(`请填写出发城市（不超过 ${DEPARTURE_CITY_MAX} 个字符）`)
+  }
+  if (!destination || codePointLength(destination) > DESTINATION_MAX) {
+    return ElMessage.warning(`请填写目的地（不超过 ${DESTINATION_MAX} 个字符）`)
+  }
   if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 365) {
     return ElMessage.warning('行程天数应为 1-365 之间的整数')
+  }
+  const longTexts = [
+    ['封面图地址', form.coverUrl, COVER_URL_MAX],
+    ['线路简介', form.description, LONG_TEXT_MAX],
+    ['费用包含', form.included, LONG_TEXT_MAX],
+    ['费用不含', form.excluded, LONG_TEXT_MAX],
+    ['报名须知', form.bookingNotice, LONG_TEXT_MAX]
+  ]
+  for (const [label, value, max] of longTexts) {
+    if (codePointLength(value) > max) return ElMessage.warning(`${label}最多 ${max} 个字符`)
   }
 
   const payload = {
@@ -118,17 +152,26 @@ async function save() {
 
       <div class="form-field wide">
         <label>线路名称 <span class="req">*</span></label>
-        <input v-model="form.name" maxlength="200" placeholder="例如：昆明·大理·丽江 6 日跟团游" />
+        <input v-model="form.name" placeholder="例如：昆明·大理·丽江 6 日跟团游" />
+        <p class="form-counter" :class="{ over: codePointLength(form.name) > NAME_MAX }">
+          {{ codePointLength(form.name) }} / {{ NAME_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
         <label>出发城市 <span class="req">*</span></label>
-        <input v-model="form.departureCity" maxlength="64" placeholder="例如：上海" />
+        <input v-model="form.departureCity" placeholder="例如：上海" />
+        <p class="form-counter" :class="{ over: codePointLength(form.departureCity) > DEPARTURE_CITY_MAX }">
+          {{ codePointLength(form.departureCity) }} / {{ DEPARTURE_CITY_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
         <label>目的地 <span class="req">*</span></label>
-        <input v-model="form.destination" maxlength="255" placeholder="例如：云南" />
+        <input v-model="form.destination" placeholder="例如：云南" />
+        <p class="form-counter" :class="{ over: codePointLength(form.destination) > DESTINATION_MAX }">
+          {{ codePointLength(form.destination) }} / {{ DESTINATION_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
@@ -138,27 +181,42 @@ async function save() {
 
       <div class="form-field">
         <label>封面图地址</label>
-        <input v-model="form.coverUrl" maxlength="500" placeholder="https://..." />
+        <input v-model="form.coverUrl" placeholder="https://..." />
+        <p class="form-counter" :class="{ over: codePointLength(form.coverUrl) > COVER_URL_MAX }">
+          {{ codePointLength(form.coverUrl) }} / {{ COVER_URL_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>线路简介</label>
-        <textarea v-model="form.description" rows="3" maxlength="10000" placeholder="线路亮点与整体说明"></textarea>
+        <textarea v-model="form.description" rows="3" placeholder="线路亮点与整体说明"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.description) > LONG_TEXT_MAX }">
+          {{ codePointLength(form.description) }} / {{ LONG_TEXT_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>费用包含</label>
-        <textarea v-model="form.included" rows="2" maxlength="10000" placeholder="交通、住宿、门票等"></textarea>
+        <textarea v-model="form.included" rows="2" placeholder="交通、住宿、门票等"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.included) > LONG_TEXT_MAX }">
+          {{ codePointLength(form.included) }} / {{ LONG_TEXT_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>费用不含</label>
-        <textarea v-model="form.excluded" rows="2" maxlength="10000" placeholder="个人消费、单房差等"></textarea>
+        <textarea v-model="form.excluded" rows="2" placeholder="个人消费、单房差等"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.excluded) > LONG_TEXT_MAX }">
+          {{ codePointLength(form.excluded) }} / {{ LONG_TEXT_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>报名须知</label>
-        <textarea v-model="form.bookingNotice" rows="2" maxlength="10000" placeholder="集合方式、证件要求等"></textarea>
+        <textarea v-model="form.bookingNotice" rows="2" placeholder="集合方式、证件要求等"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.bookingNotice) > LONG_TEXT_MAX }">
+          {{ codePointLength(form.bookingNotice) }} / {{ LONG_TEXT_MAX }}
+        </p>
       </div>
 
       <p class="form-hint wide">
@@ -194,6 +252,19 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* 实时码点计数：超过契约上限时变红，用户不用等提交才知道超了 */
+.form-counter {
+  margin: 4px 0 0;
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-tertiary);
+}
+
+.form-counter.over {
+  color: var(--danger-red);
+  font-weight: 700;
 }
 
 @media (max-width: 640px) {

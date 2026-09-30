@@ -56,11 +56,20 @@ async function load() {
   }
 }
 
+/**
+ * 按 Unicode 码点计数，与契约（RefundCreateRequest / ReviewCreateRequest 的 maxLength
+ * 是 JSON Schema 口径）和后端 @CodePointLength 一致；用 String#length 数的是 UTF-16 码元，
+ * 会把契约允许的 emoji 内容误判成超长。
+ */
+const codePointLength = (value) => [...String(value ?? '')].length
+
 async function submitRefund() {
   if (refundSubmitting.value) return
   actionError.value = ''
   const reason = refund.reason.trim()
-  if (reason.length < 2 || reason.length > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
+  if (codePointLength(reason) < 2 || codePointLength(reason) > 500) {
+    return ElMessage.warning('退款原因需填写 2–500 个字符')
+  }
   refundSubmitting.value = true
   try {
     await orderApi.refund(currentRoute.params.orderNo, { reason }, refundKey)
@@ -81,7 +90,7 @@ async function submitReview() {
   actionError.value = ''
   const content = review.content.trim()
   if (!Number.isInteger(review.rating) || review.rating < 1 || review.rating > 5) return ElMessage.warning('请选择 1–5 星评分')
-  if (!content || content.length > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
+  if (!content || codePointLength(content) > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
   reviewSubmitting.value = true
   try {
     const saved = await orderApi.review(currentRoute.params.orderNo, { rating: review.rating, content })

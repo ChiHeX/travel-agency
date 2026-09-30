@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import AttractionFormDialog from '../AttractionFormDialog.vue'
 
 /**
@@ -207,5 +208,75 @@ describe('AttractionFormDialog', () => {
     expect(wrapper.text()).toContain('数据来源说明不能为空')
     expect(wrapper.emitted('saved')).toBeUndefined()
     expect(field(wrapper, '景点名称').element.value).toBe('西湖')
+  })
+
+  /**
+   * 长度上限按 Unicode 码点算（契约 maxLength 的 JSON Schema 口径，与后端 @CodePointLength 一致），
+   * 不是 JS 的 UTF-16 码元：用 `.length` 会把 128 个 emoji 的景点名算成 256 而误拦。
+   */
+  it('长度校验按码点计数：码元超限但码点合法的内容不被误拦，码点超限才拦下', async () => {
+    createAttraction.mockResolvedValue({ id: '1' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const emojiName = '😀'.repeat(128) // 128 码点 / 256 码元
+    expect(emojiName.length).toBeGreaterThan(128)
+
+    await field(wrapper, '景点名称').setValue(emojiName)
+    await field(wrapper, '所属城市').setValue('杭州')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+
+    expect(createAttraction).toHaveBeenCalledTimes(1)
+    expect(createAttraction.mock.calls[0][0].name).toBe(emojiName)
+
+    // 129 码点超限，必须拦下
+    await field(wrapper, '景点名称').setValue('😀'.repeat(129))
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+    expect(createAttraction).toHaveBeenCalledTimes(1)
+    expect(ElMessage.warning).toHaveBeenCalledWith('景点名称最多 128 个字符')
+  })
+
+  /**
+   * 输入框不能设 maxlength：HTML 的 maxlength 数的是 UTF-16 码元，
+   * 128 个 emoji（契约允许）会在输入阶段被静默截断成 64 个，校验函数永远看不到真实内容。
+   */
+  it('文本输入框不设 maxlength，长内容不被静默截断', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    expect(field(wrapper, '景点名称').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '所属城市').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '详细地址').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '数据来源说明').attributes('maxlength')).toBeUndefined()
+
+    const tooLong = '😀'.repeat(129)
+    await field(wrapper, '景点名称').setValue(tooLong)
+    expect(field(wrapper, '景点名称').element.value).toBe(tooLong)
+  })
+
+  it('码点计数器按字符显示，超限时标红', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const counter = (label) => {
+      const group = wrapper.findAll('.form-field')
+        .find((item) => item.find('label').text().startsWith(label))
+      return group.find('.form-counter')
+    }
+
+    await field(wrapper, '景点名称').setValue('杭'.repeat(128))
+    expect(counter('景点名称').text()).toBe('128 / 128')
+    expect(counter('景点名称').classes()).not.toContain('over')
+
+    await field(wrapper, '景点名称').setValue('杭'.repeat(129))
+    expect(counter('景点名称').text()).toBe('129 / 128')
+    expect(counter('景点名称').classes()).toContain('over')
+
+    // emoji 按码点算：100 个 emoji 显示 100，而不是 200
+    await field(wrapper, '景点简介').setValue('😀'.repeat(100))
+    expect(counter('景点简介').text()).toBe('100 / 10000')
   })
 })

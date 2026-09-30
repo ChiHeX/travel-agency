@@ -1,7 +1,7 @@
 package com.travelagency.domain.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 
 /**
  * 退款审核请求，对齐契约 RefundDecisionRequest。
@@ -15,5 +15,5 @@ import jakarta.validation.constraints.Size;
  */
 public record RefundDecisionRequest(
         @NotBlank(message = "审核意见不能为空")
-        @Size(max = 500, message = "审核意见不能超过 500 字") String comment) {
+        @CodePointLength(max = 500, message = "审核意见不能超过 500 字") String comment) {
 }

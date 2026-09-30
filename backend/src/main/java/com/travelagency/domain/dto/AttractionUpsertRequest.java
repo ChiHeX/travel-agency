@@ -4,7 +4,7 @@ import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 
 /**
  * 景点新增/修改请求，对齐契约 {@code AttractionUpsertRequest}（{@code additionalProperties: false}，
@@ -26,12 +26,12 @@ import jakarta.validation.constraints.Size;
  */
 public record AttractionUpsertRequest(
         @NotBlank(message = "景点名称不能为空")
-        @Size(max = 128, message = "景点名称最多 128 个字符") String name,
+        @CodePointLength(max = 128, message = "景点名称最多 128 个字符") String name,
 
         @NotBlank(message = "所属城市不能为空")
-        @Size(max = 64, message = "所属城市最多 64 个字符") String city,
+        @CodePointLength(max = 64, message = "所属城市最多 64 个字符") String city,
 
-        @Size(max = 255, message = "景点地址最多 255 个字符") String address,
+        @CodePointLength(max = 255, message = "景点地址最多 255 个字符") String address,
 
         @DecimalMin(value = "-180", message = "经度应在 -180 到 180 之间")
         @DecimalMax(value = "180", message = "经度应在 -180 到 180 之间") Double longitude,
@@ -39,10 +39,10 @@ public record AttractionUpsertRequest(
         @DecimalMin(value = "-90", message = "纬度应在 -90 到 90 之间")
         @DecimalMax(value = "90", message = "纬度应在 -90 到 90 之间") Double latitude,
 
-        @Size(max = 10000, message = "景点简介最多 10000 个字符") String intro,
+        @CodePointLength(max = 10000, message = "景点简介最多 10000 个字符") String intro,
 
         @NotBlank(message = "数据来源说明不能为空")
-        @Size(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
+        @CodePointLength(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
 
         @Pattern(regexp = "ACTIVE|DISABLED", message = "景点状态只能是 ACTIVE 或 DISABLED") String status) {
 

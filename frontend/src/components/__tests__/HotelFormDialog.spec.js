@@ -510,6 +510,25 @@ describe('HotelFormDialog', () => {
     expect(createHotel).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * 输入框不能设 maxlength：HTML 的 maxlength 数的是 UTF-16 码元，
+   * 100 个 emoji 的酒店名（契约允许）会在输入阶段被静默截断成 64 个，
+   * 校验函数永远看不到真实内容，用户也拿不到任何解释。
+   */
+  it('文本输入框不设 maxlength，长内容不被静默截断', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    expect(field(wrapper, '酒店名称').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '联系电话').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '详细地址').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '数据来源说明').attributes('maxlength')).toBeUndefined()
+
+    const tooLong = '😀'.repeat(129)
+    await field(wrapper, '酒店名称').setValue(tooLong)
+    expect(field(wrapper, '酒店名称').element.value).toBe(tooLong)
+  })
+
   it('后端校验失败时就地展示 message，且不关闭弹窗、不丢用户输入', async () => {
     createHotel.mockRejectedValue(
       Object.assign(new Error('数据来源说明不能为空'), { status: 422, code: 'VALIDATION_ERROR' })

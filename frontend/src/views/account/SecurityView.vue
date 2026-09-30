@@ -12,20 +12,28 @@ const submitting = ref(false)
 const error = ref('')
 // 后端（BCrypt）的口令上限是 72 个 UTF-8 字节，不是 72 个字符：25 个汉字只有 25 个字符却占
 // 75 字节，服务端会以 422 拒绝。这里按同一口径先拦一次，避免让用户白等一次请求。
+// 字符数与后端的 @CodePointLength 同口径（Unicode 码点）：用 String#length 会把 72 个 emoji
+// 的密码算成 144 而误拦契约允许的内容。
+const PASSWORD_MIN_CHARS = 8
+const PASSWORD_MAX_CHARS = 72
 const PASSWORD_MAX_BYTES = 72
 const utf8Bytes = (value) => new TextEncoder().encode(value).length
-const passwordTooLong = (value) => value.length > 72 || utf8Bytes(value) > PASSWORD_MAX_BYTES
+const codePointLength = (value) => [...String(value ?? '')].length
+const passwordTooLong = (value) =>
+  codePointLength(value) > PASSWORD_MAX_CHARS || utf8Bytes(value) > PASSWORD_MAX_BYTES
+const passwordTooShort = (value) => codePointLength(value) < PASSWORD_MIN_CHARS
 const strength = computed(() => {
   const value = form.newPassword
   if (!value) return ''
   const groups = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((rule) => rule.test(value)).length
-  return value.length < 8 ? '不足 8 位' : value.length >= 12 && groups >= 3 ? '强' : groups >= 2 ? '中' : '弱'
+  const length = codePointLength(value)
+  return length < 8 ? '不足 8 位' : length >= 12 && groups >= 3 ? '强' : groups >= 2 ? '中' : '弱'
 })
 
 async function submit() {
   if (submitting.value) return
   error.value = ''
-  if ([form.currentPassword, form.newPassword].some((value) => value.length < 8)) {
+  if ([form.currentPassword, form.newPassword].some(passwordTooShort)) {
     error.value = '原密码和新密码长度应为 8–72 位'
     return
   }

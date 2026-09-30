@@ -81,6 +81,24 @@ function coordinate(value, min, max, label) {
 }
 
 /**
+ * 按 Unicode 码点计数。契约的 maxLength 是 JSON Schema 口径，数的是字符（码点），
+ * 后端的 @CodePointLength 也是这个口径；而 JS 的 String#length 数的是 UTF-16 码元，
+ * 一个 emoji 会被算成 2。用 `.length` 会把契约允许的内容误判成超长。
+ *
+ * <p>同理，模板里的输入框<b>不设 maxlength</b>：HTML 的 maxlength 数的也是 UTF-16 码元，
+ * 128 个 emoji 的景点名（128 码点 / 256 码元，契约允许、列宽也存得下）会在输入阶段
+ * 被静默截断成 64 个，用户拿不到任何解释。改为「不截断 + 计数器 + 提交时校验」。</p>
+ */
+const codePointLength = (value) => [...String(value ?? '')].length
+
+/** 各字段的码点上限，与契约 AttractionUpsertRequest 和后端 @CodePointLength 一致。 */
+const NAME_MAX = 128
+const CITY_MAX = 64
+const ADDRESS_MAX = 255
+const INTRO_MAX = 10000
+const DATA_SOURCE_MAX = 500
+
+/**
  * 页面侧校验：与后端 AttractionUpsertRequest 的约束保持一致
  * （必填、长度上限、坐标范围），让运营在提交前就看到问题，而不是等接口回一个 422。
  */
@@ -89,13 +107,13 @@ function validate() {
   const city = form.city.trim()
   const dataSource = form.dataSource.trim()
   if (!name) return '请填写景点名称'
-  if (name.length > 128) return '景点名称最多 128 个字符'
+  if (codePointLength(name) > NAME_MAX) return `景点名称最多 ${NAME_MAX} 个字符`
   if (!city) return '请填写所属城市'
-  if (city.length > 64) return '所属城市最多 64 个字符'
-  if (form.address.trim().length > 255) return '景点地址最多 255 个字符'
-  if (form.intro.length > 10000) return '景点简介最多 10000 个字符'
+  if (codePointLength(city) > CITY_MAX) return `所属城市最多 ${CITY_MAX} 个字符`
+  if (codePointLength(form.address.trim()) > ADDRESS_MAX) return `景点地址最多 ${ADDRESS_MAX} 个字符`
+  if (codePointLength(form.intro) > INTRO_MAX) return `景点简介最多 ${INTRO_MAX} 个字符`
   if (!dataSource) return '请填写数据来源说明'
-  if (dataSource.length > 500) return '数据来源说明最多 500 个字符'
+  if (codePointLength(dataSource) > DATA_SOURCE_MAX) return `数据来源说明最多 ${DATA_SOURCE_MAX} 个字符`
   const longitude = coordinate(form.longitude, -180, 180, '经度')
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
@@ -156,12 +174,18 @@ async function save() {
 
       <div class="form-field wide">
         <label>景点名称 <span class="req">*</span></label>
-        <input v-model="form.name" maxlength="128" placeholder="例如：大理古城" />
+        <input v-model="form.name" placeholder="例如：大理古城" />
+        <p class="form-counter" :class="{ over: codePointLength(form.name) > NAME_MAX }">
+          {{ codePointLength(form.name) }} / {{ NAME_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
         <label>所属城市 <span class="req">*</span></label>
-        <input v-model="form.city" maxlength="64" placeholder="例如：大理" />
+        <input v-model="form.city" placeholder="例如：大理" />
+        <p class="form-counter" :class="{ over: codePointLength(form.city) > CITY_MAX }">
+          {{ codePointLength(form.city) }} / {{ CITY_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
@@ -174,7 +198,10 @@ async function save() {
 
       <div class="form-field wide">
         <label>详细地址</label>
-        <input v-model="form.address" maxlength="255" placeholder="例如：云南省大理白族自治州大理市" />
+        <input v-model="form.address" placeholder="例如：云南省大理白族自治州大理市" />
+        <p class="form-counter" :class="{ over: codePointLength(form.address) > ADDRESS_MAX }">
+          {{ codePointLength(form.address) }} / {{ ADDRESS_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
@@ -190,11 +217,17 @@ async function save() {
       <div class="form-field wide">
         <label>景点简介</label>
         <textarea v-model="form.intro" rows="3" placeholder="用于用户端景点详情的介绍文字"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.intro) > INTRO_MAX }">
+          {{ codePointLength(form.intro) }} / {{ INTRO_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>数据来源说明 <span class="req">*</span></label>
-        <input v-model="form.dataSource" maxlength="500" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
+        <input v-model="form.dataSource" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
+        <p class="form-counter" :class="{ over: codePointLength(form.dataSource) > DATA_SOURCE_MAX }">
+          {{ codePointLength(form.dataSource) }} / {{ DATA_SOURCE_MAX }}
+        </p>
         <p class="form-hint">
           资料必须可追溯：来源说明会随景点一起保存，供后台核对与展示，不得留空。
         </p>
@@ -234,6 +267,19 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* 实时码点计数：超过契约上限时变红，用户不用等提交才知道超了 */
+.form-counter {
+  margin: 4px 0 0;
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-tertiary);
+}
+
+.form-counter.over {
+  color: var(--danger-red);
+  font-weight: 700;
 }
 
 @media (max-width: 640px) {

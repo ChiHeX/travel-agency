@@ -108,7 +108,8 @@ function optional(value) {
  * `@CodePointLength` 也是这个口径；而 JS 的 `String#length` 数的是 UTF-16 码元，
  * 一个 emoji 会被算成 2。用 `.length` 做校验会把契约允许的内容误判成超长
  * （例如 100 个 emoji 的酒店名：码点 100 ≤ 128 合法，码元却是 200）。
- * 输入框上的 maxlength 属性只是打字时的便利用户体验，最终以上面的口径为准。
+ * 输入框因此<b>不设 maxlength</b>：HTML 的 maxlength 同样按 UTF-16 码元截断，
+ * 会让这类内容在输入阶段就被静默截掉，最终以上面的口径为准。
  */
 const codePointLength = (value) => [...String(value ?? '')].length
 
@@ -389,12 +390,13 @@ async function save() {
 
       <div class="form-field wide">
         <label>酒店名称 <span class="req">*</span></label>
-        <input v-model="form.name" maxlength="128" placeholder="例如：大理古城演示酒店" />
+        <!-- 不设 maxlength：HTML 数的是 UTF-16 码元，会把契约允许的 emoji 名称静默截断 -->
+        <input v-model="form.name" placeholder="例如：大理古城演示酒店" />
       </div>
 
       <div class="form-field">
         <label>联系电话</label>
-        <input v-model="form.contactPhone" maxlength="20" placeholder="例如：0872-1234567" />
+        <input v-model="form.contactPhone" placeholder="例如：0872-1234567" />
       </div>
 
       <div class="form-field">
@@ -407,7 +409,7 @@ async function save() {
 
       <div class="form-field wide">
         <label>详细地址</label>
-        <input v-model="form.address" maxlength="255" placeholder="例如：云南省大理白族自治州大理市" />
+        <input v-model="form.address" placeholder="例如：云南省大理白族自治州大理市" />
       </div>
 
       <div class="form-field">
@@ -427,7 +429,7 @@ async function save() {
 
       <div class="form-field wide">
         <label>数据来源说明 <span class="req">*</span></label>
-        <input v-model="form.dataSource" maxlength="500" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
+        <input v-model="form.dataSource" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
         <p class="form-hint">
           资料必须可追溯：来源说明会随酒店一起保存，供后台核对与展示，不得留空。
         </p>

@@ -30,10 +30,19 @@ async function load() {
 }
 onMounted(load)
 
+/**
+ * 按 Unicode 码点计数，与契约 ProfileUpdateRequest 的 maxLength（JSON Schema 口径）
+ * 和后端 @CodePointLength 一致；用 String#length 会把 32 个 emoji 的昵称算成 64 而误拦。
+ */
+const codePointLength = (value) => [...String(value ?? '')].length
+
 async function submit() {
   if (loading.value) return
   submitError.value = ''
-  if (!form.nickname.trim() || form.nickname.length > 32) { submitError.value = '昵称应为 1–32 个字符'; return }
+  if (!form.nickname.trim() || codePointLength(form.nickname) > 32) { submitError.value = '昵称应为 1–32 个字符'; return }
+  if (form.realName && codePointLength(form.realName) > 64) { submitError.value = '真实姓名不能超过 64 个字符'; return }
+  if (form.avatarUrl && codePointLength(form.avatarUrl) > 500) { submitError.value = '头像地址不能超过 500 个字符'; return }
+  if (form.email && codePointLength(form.email) > 128) { submitError.value = '邮箱不能超过 128 个字符'; return }
   if (form.phone && !/^1[3-9]\d{9}$/.test(form.phone)) { submitError.value = '请输入有效手机号'; return }
   loading.value = true
   try {

@@ -38,6 +38,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -404,6 +405,37 @@ class AdminAccountsContractIntegrationTest {
         assertEquals(Set.of(STAFF), roleCodesOf(created.id), "新账号必须带 STAFF 角色");
         login(username, PASSWORD).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.user.roles[0]").value(STAFF));
+    }
+
+    @Test
+    @DisplayName("POST /admin/staff：姓名长于账号昵称列宽（VARCHAR(32)）时仍能建档")
+    void staffCreationAcceptsRealNameLongerThanNicknameColumn() throws Exception {
+        String username = newUsername();
+        String employeeNo = newEmployeeNo();
+        String realName = "李".repeat(64);   // 契约 realName 上限 64，但 nickname 列只有 32
+
+        var response = mvc.perform(post("/api/admin/staff").header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + PASSWORD + "\","
+                                + "\"realName\":\"" + realName + "\",\"phone\":\"13800138009\","
+                                + "\"employeeNo\":\"" + employeeNo + "\",\"department\":\"运营部\","
+                                + "\"position\":\"行程顾问\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse();
+
+        JsonNode data = json.readTree(body(response)).get("data");
+        assertEquals(realName, data.get("realName").asString(), "完整姓名必须原样落库，不能被截断");
+
+        // 昵称列只有 VARCHAR(32)：把 64 个字符的姓名写进去会在 MySQL 严格模式下直接失败，
+        // 因此昵称固定用账号名（username 正则上限 32 位），完整姓名只落 real_name。
+        SysUser created = users.selectOne(new QueryWrapper<SysUser>().eq("username", username));
+        assertNotNull(created, "员工登录账号应已创建");
+        assertEquals(realName, created.realName, "完整姓名保存在 real_name（VARCHAR(64)）");
+        assertEquals(username, created.nickname,
+                "昵称写姓名会撑爆 VARCHAR(32)，33-64 个字符的姓名将无法建档");
+        assertTrue(created.nickname.length() <= 32, "昵称必须能装进 VARCHAR(32)");
+
+        login(username, PASSWORD).andExpect(status().isOk());
     }
 
     @Test

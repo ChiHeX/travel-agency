@@ -528,8 +528,10 @@ public class AdminController {
         UpdateWrapper<SysUser> accountUpdate = new UpdateWrapper<SysUser>().eq("id", account.id)
                 .set("real_name", request.realName())
                 .set("phone", request.phone());
-        // 创建账号时昵称被初始化成姓名（见 createAccount）。只有当昵称还是那个初始值、
-        // 或本来就为空时才跟着改，避免把用户自己在「个人资料」里改过的昵称覆盖掉。
+        // 昵称跟着姓名走，只在昵称还是「账号初始化时那个值」时生效，避免把用户自己在
+        // 「个人资料」里改过的昵称覆盖掉。注意 createAccount 现在把昵称初始化成账号名
+        // （不是姓名，见那里的说明），所以这条分支只对改动前建的旧账号
+        // （nickname == realName）仍然成立；新建的账号昵称保持账号名不变。
         if (account.nickname == null || account.nickname.isBlank() || account.nickname.equals(account.realName)) {
             accountUpdate.set("nickname", request.realName());
         }
@@ -597,8 +599,15 @@ public class AdminController {
         SysUser user = new SysUser();
         user.username = username;
         user.passwordHash = passwordEncoder.encode(password);
+        // 昵称用账号名，不用真实姓名：sys_user.nickname 是 VARCHAR(32)，而姓名按契约
+        // 允许 64 个字符（StaffAccountRequest.realName 是 @Size(max = 64)，sys_user.real_name
+        // 也是 VARCHAR(64)）。把姓名同时当昵称写进 nickname，33–64 个字符的姓名能过校验，
+        // 却会在 MySQL 严格模式（默认 STRICT_TRANS_TABLES）下报
+        // "Data too long for column 'nickname'" —— 一次合法的员工建档变成 500。
+        // 与 GuideService#create 同口径：昵称只是展示用的短名（username 正则上限 32 位，
+        // 必然不超宽），完整姓名保存在 real_name 里。
         user.realName = realName;
-        user.nickname = realName;
+        user.nickname = username;
         user.phone = phone;
         user.status = 1;
         user.deleted = 0;

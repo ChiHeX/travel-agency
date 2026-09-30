@@ -21,6 +21,8 @@ const fetchAttractions = vi.fn()
 const deleteAttraction = vi.fn()
 const fetchHotels = vi.fn()
 const deleteHotel = vi.fn()
+const fetchGuides = vi.fn()
+const updateGuideStatus = vi.fn()
 const confirmMock = vi.fn()
 
 vi.mock('@/api/modules', () => ({
@@ -29,10 +31,20 @@ vi.mock('@/api/modules', () => ({
     deleteAttraction: (...args) => deleteAttraction(...args),
     hotels: (...args) => fetchHotels(...args),
     deleteHotel: (...args) => deleteHotel(...args),
-    guides: vi.fn(),
+    guides: (...args) => fetchGuides(...args),
+    updateGuideStatus: (...args) => updateGuideStatus(...args),
     departures: vi.fn(),
     refunds: vi.fn()
   }
+}))
+
+/**
+ * 角色用可变状态驱动：契约里 POST /admin/guides 与 PATCH /admin/guides/{id}/status 只对 ADMIN 开放，
+ * 页面据此决定是否渲染「新增导游」「停用」按钮，因此测试要能分别以 ADMIN / STAFF 身份挂载。
+ */
+const { authState } = vi.hoisted(() => ({ authState: { roles: ['ADMIN'] } }))
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ hasRole: (role) => authState.roles.includes(role) })
 }))
 
 vi.mock('element-plus', () => ({
@@ -69,6 +81,19 @@ const activeHotel = {
   updatedAt: '2026-09-01T10:00:00+08:00'
 }
 
+/** 契约 Guide 的字段形状：含 username 与 AccountStatus 状态。 */
+const activeGuide = {
+  id: '7',
+  userId: '3',
+  username: 'guide_lee',
+  name: '李导',
+  phone: '13800138001',
+  intro: '具有云南线路带团经验。',
+  status: 'ACTIVE',
+  createdAt: '2026-09-01T10:00:00+08:00',
+  updatedAt: '2026-09-01T10:00:00+08:00'
+}
+
 function mountView() {
   return mount(AdminResourcesView, {
     props: { title: '景点管理', resource: 'attractions' },
@@ -88,6 +113,15 @@ function mountHotelView() {
   })
 }
 
+function mountGuideView() {
+  return mount(AdminResourcesView, {
+    props: { title: '导游管理', resource: 'guides' },
+    global: {
+      stubs: { 'el-skeleton': true, GuideFormDialog: true }
+    }
+  })
+}
+
 function buttonByText(wrapper, text) {
   const button = wrapper.findAll('button').find((item) => item.text().includes(text))
   if (!button) {
@@ -97,10 +131,17 @@ function buttonByText(wrapper, text) {
 }
 
 beforeEach(() => {
+  authState.roles = ['ADMIN']
   fetchAttractions.mockReset().mockResolvedValue({ items: [activeAttraction], total: 1, totalPages: 1 })
   deleteAttraction.mockReset().mockResolvedValue(undefined)
   fetchHotels.mockReset().mockResolvedValue({ items: [activeHotel], total: 1, totalPages: 1 })
   deleteHotel.mockReset().mockResolvedValue(undefined)
+  // 每次调用都返回一份拷贝：组件会就地改写行对象（状态切换 / 回滚），
+  // 共用同一个 fixture 会让上一个用例的改动泄漏到下一个用例。
+  fetchGuides.mockReset().mockImplementation(() =>
+    Promise.resolve({ items: [{ ...activeGuide }], total: 1, totalPages: 1 })
+  )
+  updateGuideStatus.mockReset()
   confirmMock.mockReset().mockResolvedValue('confirm')
 })
 
@@ -414,5 +455,192 @@ describe('AdminResourcesView（资源切换）', () => {
     expect(wrapper.find('.resource-search input').element.value).toBe('')
     expect(wrapper.findComponent({ name: 'HotelFormDialog' }).exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'AttractionFormDialog' }).exists()).toBe(false)
+  })
+})
+
+/**
+ * 后台导游管理（契约 {@code Admin Resources} 的 {@code /admin/guides}）。
+ *
+ * <p>改动前该资源走的是只读的通用表格分支：「新增」按钮只弹一句
+ * 「新增表单已对接对应后端 CRUD API」的占位提示，行内没有编辑/启停入口，
+ * 状态列恒为绿色 {@code success} 标签（把库内枚举直接抛给运营），
+ * 契约里的 POST/PUT/PATCH 在前端没有任何调用方。这里钉住接入后的行为。</p>
+ */
+describe('AdminResourcesView（导游管理）', () => {
+  it('按契约分页参数拉取导游列表，显示账号与中文枚举状态，且不再有任何占位提示按钮', async () => {
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    expect(fetchGuides).toHaveBeenCalledTimes(1)
+    expect(fetchGuides).toHaveBeenCalledWith({ page: 1, size: 20 })
+    expect(wrapper.text()).toContain('李导')
+    expect(wrapper.text()).toContain('guide_lee')
+    expect(wrapper.text()).toContain('13800138001')
+    // 状态要显示成中文，而不是把库内的 ACTIVE/DISABLED 直接抛给运营
+    expect(wrapper.text()).toContain('启用')
+    expect(wrapper.text()).not.toContain('ACTIVE')
+    // 占位按钮必须消失：ADMIN 看到的是真正可用的「+ 新增导游」
+    expect(wrapper.text()).not.toContain('新增表单已对接对应后端 CRUD API')
+    expect(buttonByText(wrapper, '新增导游').exists()).toBe(true)
+  })
+
+  it('停用的导游显示「停用」标签，并给停用行渲染「启用」操作', async () => {
+    fetchGuides.mockResolvedValue({
+      items: [{ ...activeGuide, status: 'DISABLED' }],
+      total: 1,
+      totalPages: 1
+    })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('停用')
+    expect(wrapper.text()).not.toContain('DISABLED')
+    expect(buttonByText(wrapper, '启用').exists()).toBe(true)
+  })
+
+  it('导游列表有 page/size 分页，且不发送契约未声明的 keyword 参数', async () => {
+    fetchGuides.mockResolvedValue({ items: [activeGuide], total: 45, totalPages: 3 })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    // 第 21 条之后必须还能在界面上管理
+    expect(wrapper.text()).toContain('第 1 / 3 页，共 45 条')
+    // 契约 GET /admin/guides 没有 keyword 参数，因此不渲染搜索框
+    expect(wrapper.find('.resource-search').exists()).toBe(false)
+
+    await buttonByText(wrapper, '下一页').trigger('click')
+    await flushPromises()
+    expect(fetchGuides).toHaveBeenLastCalledWith({ page: 2, size: 20 })
+  })
+
+  it('新增与编辑分别以空行/当前行打开表单弹窗，保存后按 POST/PUT 决定刷新哪一页', async () => {
+    fetchGuides.mockResolvedValue({ items: [activeGuide], total: 45, totalPages: 3 })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    const dialog = () => wrapper.findComponent({ name: 'GuideFormDialog' })
+    expect(dialog().props('modelValue')).toBe(false)
+
+    await buttonByText(wrapper, '新增导游').trigger('click')
+    await flushPromises()
+    expect(dialog().props('modelValue')).toBe(true)
+    expect(dialog().props('guide')).toBeNull()
+
+    await buttonByText(wrapper, '编辑').trigger('click')
+    await flushPromises()
+    expect(dialog().props('guide')).toMatchObject({ id: '7', name: '李导' })
+
+    // 修改（PUT）：记录位置不变，留在当前页
+    await buttonByText(wrapper, '下一页').trigger('click')
+    await flushPromises()
+    expect(fetchGuides).toHaveBeenLastCalledWith({ page: 2, size: 20 })
+    dialog().vm.$emit('saved', { guide: activeGuide, created: false })
+    await flushPromises()
+    expect(fetchGuides).toHaveBeenLastCalledWith({ page: 2, size: 20 })
+
+    // 新增（POST）：新记录排在第一页
+    dialog().vm.$emit('saved', { guide: activeGuide, created: true })
+    await flushPromises()
+    expect(fetchGuides).toHaveBeenLastCalledWith({ page: 1, size: 20 })
+  })
+
+  it('停用导游：确认后调用契约端点并更新行状态', async () => {
+    updateGuideStatus.mockResolvedValue({ ...activeGuide, status: 'DISABLED' })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    await buttonByText(wrapper, '停用').trigger('click')
+    await flushPromises()
+
+    expect(updateGuideStatus).toHaveBeenCalledWith('7', 'DISABLED')
+    expect(wrapper.text()).toContain('停用')
+  })
+
+  it('停用失败时把本地状态回滚，页面不停留在未落库的状态上', async () => {
+    updateGuideStatus.mockRejectedValue(
+      Object.assign(new Error('导游尚未关联有效账号'), { status: 409, code: 'GUIDE_ACCOUNT_CONFLICT' })
+    )
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    await buttonByText(wrapper, '停用').trigger('click')
+    await flushPromises()
+
+    expect(updateGuideStatus).toHaveBeenCalledWith('7', 'DISABLED')
+    // 回滚成 ACTIVE：界面显示"启用"，与库内一致
+    expect(wrapper.text()).toContain('启用')
+    expect(buttonByText(wrapper, '停用').exists()).toBe(true)
+  })
+
+  /**
+   * 同一导游的启停必须串行。
+   *
+   * <p>状态是「乐观改写 + 失败回滚」，按钮文案又由 `row.status` 反推。若允许第二个请求
+   * 在第一个还没回来时就发出，两个请求都失败时按后进先出回滚：后发的把状态写回
+   * `DISABLED`，而库内其实仍是 `ACTIVE`（第一次请求从未落库），页面停在与数据库相反的状态上。</p>
+   */
+  it('启停在途时按钮禁用，连点不会发出第二个请求，失败后回滚到库内真实状态', async () => {
+    let rejectFirst
+    updateGuideStatus
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockRejectedValue(Object.assign(new Error('conflict'), { status: 409, code: 'GUIDE_ACCOUNT_CONFLICT' }))
+
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    // 第一次点击：请求在途，按钮进入禁用态并显示"提交中…"
+    await buttonByText(wrapper, '停用').trigger('click')
+
+    const toggling = buttonByText(wrapper, '提交中')
+    expect(toggling.attributes('disabled')).toBeDefined()
+
+    // 在途期间连点：无论是隔着禁用态点原按钮，还是直接再触发一次点击，都不得发出第二个请求
+    await toggling.trigger('click')
+    expect(updateGuideStatus).toHaveBeenCalledTimes(1)
+
+    rejectFirst(Object.assign(new Error('conflict'), { status: 409, code: 'GUIDE_ACCOUNT_CONFLICT' }))
+    await flushPromises()
+
+    // 回滚到 ACTIVE —— 与库内一致，而不是停在"停用"
+    expect(wrapper.text()).toContain('启用')
+    expect(buttonByText(wrapper, '停用').exists()).toBe(true)
+    expect(buttonByText(wrapper, '停用').attributes('disabled')).toBeUndefined()
+  })
+
+  it('两个导游可以各自独立启停，互不阻塞', async () => {
+    fetchGuides.mockResolvedValue({
+      items: [{ ...activeGuide }, { ...activeGuide, id: '8', username: 'guide_wang', name: '王导' }],
+      total: 2,
+      totalPages: 1
+    })
+    updateGuideStatus.mockResolvedValue({ ...activeGuide, status: 'DISABLED' })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    const stops = wrapper.findAll('button').filter((item) => item.text() === '停用')
+    expect(stops).toHaveLength(2)
+    await stops[0].trigger('click')
+    await stops[1].trigger('click')
+    await flushPromises()
+
+    expect(updateGuideStatus).toHaveBeenCalledTimes(2)
+    expect(updateGuideStatus.mock.calls.map((call) => call[0])).toEqual(['7', '8'])
+  })
+
+  /**
+
+  /**
+   * 契约把「创建导游账号」与「启用/停用」都限制为 ADMIN，而「修改资料」对 STAFF 开放。
+   * 页面必须按同一口径渲染，否则 STAFF 会点进一个必然 403 的操作。
+   */
+  it('STAFF：不显示「新增导游」与「停用」，但保留「编辑」', async () => {
+    authState.roles = ['STAFF']
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    expect(fetchGuides).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('button').some((item) => item.text().includes('新增导游'))).toBe(false)
+    expect(wrapper.findAll('button').some((item) => item.text().includes('停用'))).toBe(false)
+    expect(buttonByText(wrapper, '编辑').exists()).toBe(true)
   })
 })

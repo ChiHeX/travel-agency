@@ -49,7 +49,13 @@ public class GuideService {
         SysUser user = new SysUser();
         user.username = request.username();
         user.passwordHash = passwords.encode(request.password());
-        user.nickname = request.name();
+        // 昵称用账号名，不用导游姓名：sys_user.nickname 是 VARCHAR(32)，而导游姓名按契约可到
+        // 64 个字符（guide.name 也是 VARCHAR(64)）。把姓名塞进 nickname，33–64 个字符的姓名
+        // 能过校验，却会在 MySQL 严格模式（默认 STRICT_TRANS_TABLES）下因
+        // "Data too long for column 'nickname'" 直接失败 —— 一次合法的创建变成 500。
+        // 昵称只是展示用的短名，用账号名既不会超宽，也不丢信息：完整姓名保存在下面的
+        // real_name（同为 VARCHAR(64)，与该列口径一致）与 guide.name 里。
+        user.nickname = request.username();
         user.realName = request.name();
         user.phone = request.phone();
         user.status = 1;

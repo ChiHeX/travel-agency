@@ -2,8 +2,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import { useAuthStore } from '@/stores/auth'
 import AttractionFormDialog from '@/components/AttractionFormDialog.vue'
 import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
+import GuideFormDialog from '@/components/GuideFormDialog.vue'
 import HotelFormDialog from '@/components/HotelFormDialog.vue'
 
 const props = defineProps({
@@ -11,10 +13,25 @@ const props = defineProps({
   resource: { type: String, required: true }
 })
 
+const auth = useAuthStore()
+
+/**
+ * 只有 ADMIN 能创建导游账号、启用/停用导游：契约里 POST /admin/guides 与
+ * PATCH /admin/guides/{guideId}/status 的 x-roles 都是 [ADMIN]，
+ * 而 PUT /admin/guides/{guideId}（改资料）对 STAFF 开放。
+ * 这里按同一口径决定按钮是否出现，避免 STAFF 点进一个必然 403 的操作。
+ */
+const isAdmin = computed(() => auth.hasRole('ADMIN'))
+
 const rows = ref([])
 const loading = ref(false)
 /** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
 const pending = ref(null)
+/**
+ * 正在提交启停的导游 id 集合，用 `Set` 而不是单个标量：两个导游可以各点一次，
+ * 各自独立地在途，互不阻塞。
+ */
+const pendingGuideStatus = ref(new Set())
 
 /**
  * 团期新增/编辑弹窗状态。线路与导游候选项由弹窗自己分页加载
@@ -31,12 +48,17 @@ const editingAttraction = ref(null)
 const hotelDialogVisible = ref(false)
 const editingHotel = ref(null)
 
+/** 导游新增/编辑弹窗状态，对应契约 /admin/guides 的写入端点。 */
+const guideDialogVisible = ref(false)
+const editingGuide = ref(null)
+
 /** 景点与酒店列表共用的 keyword 筛选（契约两者的 GET 端点都声明了 keyword 参数）。 */
 const keyword = ref('')
 
 /**
- * 契约 AccountStatus：景点与酒店共用同一套枚举，停用即停止对外使用
- * （景点从用户端列表与详情撤下；酒店不再被安排进新的每日行程，后端在写行程时以 422 拒绝）。
+ * 契约 AccountStatus：景点 / 酒店 / 导游共用同一套枚举，停用即停止使用
+ * （景点从用户端列表与详情撤下；酒店不再被安排进新的每日行程，后端在写行程时以 422 拒绝；
+ * 导游的账号同步被冻结，无法登录）。
  */
 const ACCOUNT_STATUS_LABEL = { ACTIVE: '启用', DISABLED: '停用' }
 
@@ -113,9 +135,22 @@ const PAGE_SIZE = 20
 const total = ref(0)
 const totalPages = ref(0)
 
-/** 契约里声明了 page / size / keyword 的资源：两者的列表行为完全一致，共用一套分页与筛选。 */
-const PAGED_RESOURCES = ['attractions', 'hotels']
+/**
+ * 契约里声明了 page / size 的资源：列表按页取，并且必须有翻页控件 ——
+ * 不传分页参数时后端按 page=1、size=20 返回，第 21 条之后就无法在界面上管理。
+ */
+const PAGED_RESOURCES = ['attractions', 'hotels', 'guides']
+/**
+ * 其中又声明了 keyword 参数的资源。契约 GET /admin/guides 只有 page/size/status、
+ * 没有 keyword，因此导游列表不做关键字筛选，避免把契约外的查询参数打给后端。
+ */
+const SEARCHABLE_RESOURCES = ['attractions', 'hotels']
+
 const pagedResource = computed(() => PAGED_RESOURCES.includes(props.resource))
+const searchable = computed(() => SEARCHABLE_RESOURCES.includes(props.resource))
+
+/** 列表标题与空状态文案用的资源名。 */
+const RESOURCE_LABEL = { attractions: '景点', hotels: '酒店', guides: '导游' }
 
 /**
  * 拉取列表。
@@ -125,10 +160,15 @@ const pagedResource = computed(() => PAGED_RESOURCES.includes(props.resource))
 async function load(retryOnEmptyPage = true) {
   loading.value = true
   try {
-    // 只有契约里有分页与 keyword 的资源才传查询参数；其它资源不传，避免拼出后端不认识的查询串。
+    // 只有契约里有分页参数的资源才传查询参数；其它资源不传，避免拼出后端不认识的查询串。
     const searching = keyword.value.trim()
     const params = pagedResource.value
-      ? { page: page.value, size: PAGE_SIZE, ...(searching ? { keyword: searching } : {}) }
+      ? {
+          page: page.value,
+          size: PAGE_SIZE,
+          // keyword 只发给契约里声明了它的资源（景点 / 酒店）。
+          ...(searchable.value && searching ? { keyword: searching } : {})
+        }
       : undefined
     const result = await loaders[props.resource](params)
     rows.value = result?.items || []
@@ -204,6 +244,53 @@ function openHotelDialog(row) {
 function onHotelSaved(payload) {
   if (payload?.created) reloadFirstPage()
   else load()
+}
+
+/** 打开导游新增/编辑弹窗；row 为空表示新增。 */
+function openGuideDialog(row) {
+  editingGuide.value = row || null
+  guideDialogVisible.value = true
+}
+
+/** 导游保存成功后的刷新策略与景点/酒店同口径：新增回第 1 页，修改留在当前页。 */
+function onGuideSaved(payload) {
+  if (payload?.created) reloadFirstPage()
+  else load()
+}
+
+/**
+ * 启用 / 停用导游，走契约 PATCH /admin/guides/{guideId}/status（仅 ADMIN，成功 200 + 更新后的导游）。
+ *
+ * <p>停用只是把导游标记为不可用：不删除资料，也不改动已经分配给该导游的历史团期；
+ * 导游账号同步被冻结（后端把 sys_user.status 一起改掉），登录会被拒绝。</p>
+ *
+ * <p><b>同一导游必须串行</b>：状态是「乐观改写 + 失败回滚」，而按钮的文案又由
+ * `row.status` 反推 —— 只要同一导游还有一次启停在途，第二次点击就必须被拦掉。
+ * 否则快速点「停用 → 启用」会发出两个请求，两个都失败时按「后进先出」回滚：
+ * 后发的把 `row.status` 写回 `DISABLED`，而库内其实仍是 `ACTIVE`
+ * （第一次请求从未落库），页面就此停在一个与数据库相反的状态上，
+ * 运营还会照着这个错状态继续操作。`pendingGuideStatus` 既是请求中的标记，
+ * 也是按钮 `:disabled` 的依据（导航空中不会出现第二个 `changeGuideStatus` 调用）。</p>
+ *
+ * <p>失败时把本地状态回滚为改动前的值；错误提示由 axios 拦截器统一弹出，这里不重复提示。</p>
+ */
+async function changeGuideStatus(row, next) {
+  if (!next || next === row.status) return
+  if (pendingGuideStatus.value.has(row.id)) return
+  const previous = row.status
+  pendingGuideStatus.value.add(row.id)
+  row.status = next
+  try {
+    const updated = await adminApi.updateGuideStatus(row.id, next)
+    if (updated) Object.assign(row, updated)
+    ElMessage.success(next === 'ACTIVE' ? '导游已启用' : '导游已停用')
+  } catch {
+    // 只回滚这一行：期间列表可能已被重新拉取（换成了新的行对象），
+    // 但对旧对象的赋值不会影响界面，因此不会覆盖新数据。
+    row.status = previous
+  } finally {
+    pendingGuideStatus.value.delete(row.id)
+  }
 }
 
 /**
@@ -352,16 +439,16 @@ onMounted(load)
         + 新增酒店资料
       </button>
       <button
-        v-else-if="resource !== 'refunds'"
+        v-else-if="resource === 'guides' && isAdmin"
         class="primary-button"
-        @click="ElMessage.info('新增表单已对接对应后端 CRUD API')"
+        @click="openGuideDialog(null)"
       >
-        + 新增{{ title.replace('管理', '').replace('资料', '') }}
+        + 新增导游
       </button>
     </div>
 
-    <!-- 景点与酒店资料的 keyword 筛选，对应契约 GET 端点的 keyword 参数 -->
-    <form v-if="pagedResource" class="resource-search" @submit.prevent="search">
+    <!-- 景点与酒店资料的 keyword 筛选，对应契约 GET 端点的 keyword 参数（导游列表没有该参数） -->
+    <form v-if="searchable" class="resource-search" @submit.prevent="search">
       <input
         v-model="keyword"
         maxlength="100"
@@ -411,9 +498,11 @@ onMounted(load)
           </tr>
           <tr v-else-if="resource === 'guides'">
             <th>导游姓名</th>
+            <th>登录账号</th>
             <th>联系电话</th>
-            <th>个人专长简介</th>
+            <th>个人简介</th>
             <th>状态</th>
+            <th style="text-align: right;">操作</th>
           </tr>
           <tr v-else-if="resource === 'attractions'">
             <th>景点名称</th>
@@ -515,10 +604,35 @@ onMounted(load)
             </tr>
 
             <tr v-else-if="resource === 'guides'">
-              <td><strong>{{ row.name }}</strong></td>
+              <td>
+                <strong>{{ row.name }}</strong>
+                <div class="muted-text">导游 #{{ row.id }}</div>
+              </td>
+              <td>{{ row.username || '—' }}</td>
               <td>{{ row.phone || '—' }}</td>
               <td>{{ row.intro || '—' }}</td>
-              <td><span class="tag success">{{ row.status }}</span></td>
+              <td>
+                <span class="tag" :class="row.status === 'ACTIVE' ? 'success' : 'danger'">
+                  {{ ACCOUNT_STATUS_LABEL[row.status] || row.status }}
+                </span>
+              </td>
+              <td style="text-align: right;">
+                <button type="button" class="text-button" @click="openGuideDialog(row)">编辑</button>
+                <template v-if="isAdmin">
+                  <span class="divider">|</span>
+                  <button
+                    type="button"
+                    class="text-button"
+                    :class="row.status === 'ACTIVE' ? 'text-danger' : 'text-success'"
+                    :disabled="pendingGuideStatus.has(row.id)"
+                    @click="changeGuideStatus(row, row.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE')"
+                  >
+                    {{ pendingGuideStatus.has(row.id)
+                      ? '提交中…'
+                      : row.status === 'ACTIVE' ? '停用' : '启用' }}
+                  </button>
+                </template>
+              </td>
             </tr>
 
             <tr v-else-if="resource === 'attractions'">
@@ -585,12 +699,12 @@ onMounted(load)
       </table>
 
       <div v-else class="empty-box">
-        {{ pagedResource && keyword.trim()
-          ? `没有匹配「${keyword.trim()}」的${resource === 'hotels' ? '酒店' : '景点'}资料，可清空筛选后重试。`
-          : '暂无相关资料数据。' }}
+        {{ searchable && keyword.trim()
+          ? `没有匹配「${keyword.trim()}」的${RESOURCE_LABEL[resource] || ''}资料，可清空筛选后重试。`
+          : resource === 'guides' ? '暂无导游数据。' : '暂无相关资料数据。' }}
       </div>
 
-      <!-- 景点 / 酒店资料分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
+      <!-- 景点 / 酒店 / 导游列表分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
       <div v-if="pagedResource" class="resource-pager">
         <button
           type="button"
@@ -626,6 +740,13 @@ onMounted(load)
       v-model="hotelDialogVisible"
       :hotel="editingHotel"
       @saved="onHotelSaved"
+    />
+
+    <GuideFormDialog
+      v-if="resource === 'guides'"
+      v-model="guideDialogVisible"
+      :guide="editingGuide"
+      @saved="onGuideSaved"
     />
 
     <DepartureFormDialog

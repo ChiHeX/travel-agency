@@ -1,5 +1,6 @@
 package com.travelagency;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.*;
 import com.travelagency.domain.mapper.*;

@@ -573,6 +573,63 @@ describe('AdminResourcesView（导游管理）', () => {
   })
 
   /**
+   * 同一导游的启停必须串行。
+   *
+   * <p>状态是「乐观改写 + 失败回滚」，按钮文案又由 `row.status` 反推。若允许第二个请求
+   * 在第一个还没回来时就发出，两个请求都失败时按后进先出回滚：后发的把状态写回
+   * `DISABLED`，而库内其实仍是 `ACTIVE`（第一次请求从未落库），页面停在与数据库相反的状态上。</p>
+   */
+  it('启停在途时按钮禁用，连点不会发出第二个请求，失败后回滚到库内真实状态', async () => {
+    let rejectFirst
+    updateGuideStatus
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockRejectedValue(Object.assign(new Error('conflict'), { status: 409, code: 'GUIDE_ACCOUNT_CONFLICT' }))
+
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    // 第一次点击：请求在途，按钮进入禁用态并显示"提交中…"
+    await buttonByText(wrapper, '停用').trigger('click')
+
+    const toggling = buttonByText(wrapper, '提交中')
+    expect(toggling.attributes('disabled')).toBeDefined()
+
+    // 在途期间连点：无论是隔着禁用态点原按钮，还是直接再触发一次点击，都不得发出第二个请求
+    await toggling.trigger('click')
+    expect(updateGuideStatus).toHaveBeenCalledTimes(1)
+
+    rejectFirst(Object.assign(new Error('conflict'), { status: 409, code: 'GUIDE_ACCOUNT_CONFLICT' }))
+    await flushPromises()
+
+    // 回滚到 ACTIVE —— 与库内一致，而不是停在"停用"
+    expect(wrapper.text()).toContain('启用')
+    expect(buttonByText(wrapper, '停用').exists()).toBe(true)
+    expect(buttonByText(wrapper, '停用').attributes('disabled')).toBeUndefined()
+  })
+
+  it('两个导游可以各自独立启停，互不阻塞', async () => {
+    fetchGuides.mockResolvedValue({
+      items: [{ ...activeGuide }, { ...activeGuide, id: '8', username: 'guide_wang', name: '王导' }],
+      total: 2,
+      totalPages: 1
+    })
+    updateGuideStatus.mockResolvedValue({ ...activeGuide, status: 'DISABLED' })
+    const wrapper = mountGuideView()
+    await flushPromises()
+
+    const stops = wrapper.findAll('button').filter((item) => item.text() === '停用')
+    expect(stops).toHaveLength(2)
+    await stops[0].trigger('click')
+    await stops[1].trigger('click')
+    await flushPromises()
+
+    expect(updateGuideStatus).toHaveBeenCalledTimes(2)
+    expect(updateGuideStatus.mock.calls.map((call) => call[0])).toEqual(['7', '8'])
+  })
+
+  /**
+
+  /**
    * 契约把「创建导游账号」与「启用/停用」都限制为 ADMIN，而「修改资料」对 STAFF 开放。
    * 页面必须按同一口径渲染，否则 STAFF 会点进一个必然 403 的操作。
    */

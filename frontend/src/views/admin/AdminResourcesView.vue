@@ -27,6 +27,11 @@ const rows = ref([])
 const loading = ref(false)
 /** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
 const pending = ref(null)
+/**
+ * 正在提交启停的导游 id 集合，用 `Set` 而不是单个标量：两个导游可以各点一次，
+ * 各自独立地在途，互不阻塞。
+ */
+const pendingGuideStatus = ref(new Set())
 
 /**
  * 团期新增/编辑弹窗状态。线路与导游候选项由弹窗自己分页加载
@@ -259,19 +264,32 @@ function onGuideSaved(payload) {
  * <p>停用只是把导游标记为不可用：不删除资料，也不改动已经分配给该导游的历史团期；
  * 导游账号同步被冻结（后端把 sys_user.status 一起改掉），登录会被拒绝。</p>
  *
- * <p>失败时把本地状态回滚为改动前的值，避免页面停留在一个并未落库的状态上；
- * 错误提示由 axios 拦截器统一弹出，这里不重复提示。</p>
+ * <p><b>同一导游必须串行</b>：状态是「乐观改写 + 失败回滚」，而按钮的文案又由
+ * `row.status` 反推 —— 只要同一导游还有一次启停在途，第二次点击就必须被拦掉。
+ * 否则快速点「停用 → 启用」会发出两个请求，两个都失败时按「后进先出」回滚：
+ * 后发的把 `row.status` 写回 `DISABLED`，而库内其实仍是 `ACTIVE`
+ * （第一次请求从未落库），页面就此停在一个与数据库相反的状态上，
+ * 运营还会照着这个错状态继续操作。`pendingGuideStatus` 既是请求中的标记，
+ * 也是按钮 `:disabled` 的依据（导航空中不会出现第二个 `changeGuideStatus` 调用）。</p>
+ *
+ * <p>失败时把本地状态回滚为改动前的值；错误提示由 axios 拦截器统一弹出，这里不重复提示。</p>
  */
 async function changeGuideStatus(row, next) {
   if (!next || next === row.status) return
+  if (pendingGuideStatus.value.has(row.id)) return
   const previous = row.status
+  pendingGuideStatus.value.add(row.id)
   row.status = next
   try {
     const updated = await adminApi.updateGuideStatus(row.id, next)
     if (updated) Object.assign(row, updated)
     ElMessage.success(next === 'ACTIVE' ? '导游已启用' : '导游已停用')
   } catch {
+    // 只回滚这一行：期间列表可能已被重新拉取（换成了新的行对象），
+    // 但对旧对象的赋值不会影响界面，因此不会覆盖新数据。
     row.status = previous
+  } finally {
+    pendingGuideStatus.value.delete(row.id)
   }
 }
 
@@ -606,9 +624,12 @@ onMounted(load)
                     type="button"
                     class="text-button"
                     :class="row.status === 'ACTIVE' ? 'text-danger' : 'text-success'"
+                    :disabled="pendingGuideStatus.has(row.id)"
                     @click="changeGuideStatus(row, row.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE')"
                   >
-                    {{ row.status === 'ACTIVE' ? '停用' : '启用' }}
+                    {{ pendingGuideStatus.has(row.id)
+                      ? '提交中…'
+                      : row.status === 'ACTIVE' ? '停用' : '启用' }}
                   </button>
                 </template>
               </td>

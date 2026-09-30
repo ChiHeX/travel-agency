@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import GuideFormDialog from '../GuideFormDialog.vue'
 
 /**
@@ -235,6 +236,58 @@ describe('GuideFormDialog（新增导游）', () => {
     expect(createGuide).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * 输入框不能设 maxlength。
+   *
+   * <p>HTML 的 maxlength 数的是 UTF-16 码元，而契约的 maxLength 数的是码点：64 个 emoji 的姓名
+   * 只有 64 个码点（契约允许），却有 128 个码元，会在输入阶段被浏览器静默截断成 32 个 emoji ——
+   * 校验函数永远看不到真实内容，用户也拿不到任何解释。</p>
+   */
+  it('姓名与简介输入框不设 maxlength，长文本不被静默截断，改由校验拦下', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    expect(field(wrapper, '导游姓名').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '个人简介').attributes('maxlength')).toBeUndefined()
+    expect(field(wrapper, '初始密码').attributes('maxlength')).toBeUndefined()
+
+    // 65 个 emoji 的姓名（65 码点 / 130 码元）能被完整输入，而不是被砍到 32 个
+    const tooLong = '😀'.repeat(65)
+    await field(wrapper, '登录账号').setValue('guide_lee')
+    await field(wrapper, '初始密码').setValue('guidePass123')
+    await field(wrapper, '导游姓名').setValue(tooLong)
+    await field(wrapper, '联系电话').setValue('13800138001')
+    await buttonByText(wrapper, '保存导游').trigger('click')
+    await flushPromises()
+
+    expect(field(wrapper, '导游姓名').element.value).toBe(tooLong)
+    expect(createGuide).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('导游姓名最多 64 个字符')
+  })
+
+  it('码点计数器按字符显示，超限时标红', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const counter = (label) => {
+      const group = wrapper.findAll('.form-field')
+        .find((item) => item.find('label').text().startsWith(label))
+      return group.find('.form-counter')
+    }
+
+    await field(wrapper, '导游姓名').setValue('李'.repeat(64))
+    expect(counter('导游姓名').text()).toBe('64 / 64')
+    expect(counter('导游姓名').classes()).not.toContain('over')
+
+    await field(wrapper, '导游姓名').setValue('李'.repeat(65))
+    expect(counter('导游姓名').text()).toBe('65 / 64')
+    expect(counter('导游姓名').classes()).toContain('over')
+
+    // emoji 按码点算：100 个 emoji 是 100 个码点（200 个码元），显示 100 而不是 200
+    await field(wrapper, '个人简介').setValue('😀'.repeat(100))
+    expect(counter('个人简介').text()).toBe('100 / 1000')
+  })
+
   it('后端校验失败时就地展示 message，且不关闭弹窗、不丢用户输入', async () => {
     createGuide.mockRejectedValue(
       Object.assign(new Error('账号已存在'), { status: 409, code: 'USERNAME_ALREADY_EXISTS' })
@@ -311,6 +364,24 @@ describe('GuideFormDialog（编辑导游）', () => {
     expect(updateGuide).not.toHaveBeenCalled()
 
     await field(wrapper, '联系电话').setValue('13800138001')
+    await buttonByText(wrapper, '保存导游').trigger('click')
+    await flushPromises()
+    expect(updateGuide).toHaveBeenCalledTimes(1)
+  })
+
+  /** 编辑态同样不能截断：姓名上限 64 与后端 @CodePointLength 同口径。 */
+  it('编辑：emoji 姓名按码点放行到 64，第 65 个码点才拦下', async () => {
+    updateGuide.mockResolvedValue(activeGuide)
+    const wrapper = mountDialog(activeGuide)
+    await flushPromises()
+
+    const name = '😀'.repeat(64)
+    await field(wrapper, '导游姓名').setValue(name)
+    await buttonByText(wrapper, '保存导游').trigger('click')
+    await flushPromises()
+    expect(updateGuide.mock.calls[0][1].name).toBe(name)
+
+    await field(wrapper, '导游姓名').setValue('😀'.repeat(65))
     await buttonByText(wrapper, '保存导游').trigger('click')
     await flushPromises()
     expect(updateGuide).toHaveBeenCalledTimes(1)

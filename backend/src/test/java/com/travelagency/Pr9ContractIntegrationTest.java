@@ -195,6 +195,50 @@ class Pr9ContractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * 导游姓名的长度按 Unicode 码点算，不是 UTF-16 码元。
+     *
+     * <p>契约的 {@code maxLength} 是 JSON Schema 口径（字符 = 码点），{@code guide.name} 又是
+     * {@code VARCHAR(64)}（utf8mb4 下同样数字符）。用 {@code @Size(max = 64)} 校验时，
+     * 64 个 emoji 的姓名会被算成 128 个码元而误判超长 —— 这份资料契约允许、数据库也存得下，
+     * 后端却回 422。酒店资料（{@code HotelCreateRequest}）已有同类用例，导游这一档此前漏掉了。</p>
+     */
+    @Test
+    void guideLengthLimitsCountUnicodeCodePointsNotUtf16Units() throws Exception {
+        String name = "😀".repeat(64);        // 64 码点 / 128 码元，恰好到契约上限
+        String phone = "😀".repeat(20);       // 20 码点 / 40 码元
+        String intro = "😀".repeat(1000);     // 1000 码点 / 2000 码元
+        assertTrue(name.codePointCount(0, name.length()) <= 64, "前提：码点数在契约上限之内");
+        assertTrue(name.length() > 64, "前提：码元数已超过上限，@Size 会误拒");
+
+        Guide created = createGuideWith(String.format("""
+                {"username":"%s","password":"Regression123!","name":"%s","phone":"%s","intro":"%s"}""",
+                "cp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12), name, phone, intro));
+
+        assertEquals(name, created.name, "姓名必须原样落库，不能在写库时被截断");
+        assertEquals(64, created.name.codePointCount(0, created.name.length()), "库内应是 64 个码点");
+        assertEquals(phone, created.phone);
+        assertEquals(intro, created.intro, "简介必须原样落库");
+        assertEquals(2000, created.intro.length(), "2000 个码元说明 1000 个 emoji 全部落库");
+
+        mvc.perform(put("/api/admin/guides/" + created.id).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + "😀".repeat(65) + "\",\"phone\":\"" + phone + "\"}"))
+                .andExpect(status().isUnprocessableContent());
+        assertEquals(name, guides.selectById(created.id).name, "65 码点被拒后原资料不变");
+    }
+
+    /** 建一个导游账号并断言返回 201；返回库内落下的那条资料，供长度断言用。 */
+    private Guide createGuideWith(String body) throws Exception {
+        var response = mvc.perform(post("/api/admin/guides").header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse();
+        Long id = json.readTree(response.getContentAsString()).get("data").get("id").asLong();
+        Guide guide = guides.selectById(id);
+        assertNotNull(guide, "导游资料应已落库");
+        return guide;
+    }
+
     @Test
     void articleEditRetainsPublicationAndClearsNullableFields() throws Exception {
         TravelGuideArticle article = new TravelGuideArticle();

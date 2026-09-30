@@ -90,8 +90,26 @@ const codePointLength = (value) => [...String(value ?? '')].length
 const utf8Bytes = (value) => new TextEncoder().encode(String(value ?? '')).length
 
 /**
+ * 各字段的码点上限，与契约（GuideCreateRequest / GuideUpdateRequest）和后端
+ * @CodePointLength 一致。模板里的计数器直接读这里，避免同一个上限在模板与校验里各写一遍。
+ */
+const NAME_MAX = 64
+const PHONE_MAX = 20
+const INTRO_MAX = 1000
+
+/** 密码是否同时满足字符数与 UTF-8 字节数两个上限；计数器据此变色。 */
+const passwordWithinLimits = computed(() =>
+  codePointLength(form.password) <= PASSWORD_MAX_CHARS
+  && utf8Bytes(form.password) <= PASSWORD_MAX_BYTES)
+
+/**
  * 页面侧校验：与后端 GuideAccountRequest / GuideUpdateRequest 的约束保持一致
  * （必填、用户名正则、密码字符与字节两个上限、文本长度上限）。
+ *
+ * <p>文本长度按 Unicode 码点（与契约 maxLength 同口径），因此模板里的输入框
+ * <b>不设 maxlength</b>：HTML 的 maxlength 数的是 UTF-16 码元，会把契约允许的
+ * 64 个 emoji 姓名在输入阶段就静默截断成 32 个 —— 用户看到自己的名字被打断，
+ * 却拿不到任何解释。改为「不截断 + 实时计数 + 提交时校验」。</p>
  */
 function validate() {
   const name = form.name.trim()
@@ -102,16 +120,17 @@ function validate() {
       return '登录账号应为 3–32 位，只能包含字母、数字与下划线'
     }
     if (!form.password) return '请设置初始密码'
-    if (form.password.length < PASSWORD_MIN_CHARS) return '密码至少 8 位'
-    if (form.password.length > PASSWORD_MAX_CHARS || utf8Bytes(form.password) > PASSWORD_MAX_BYTES) {
+    // 下限也是码点口径：8 个 emoji 是 8 个码点（32 字节），契约允许。
+    if (codePointLength(form.password) < PASSWORD_MIN_CHARS) return '密码至少 8 位'
+    if (codePointLength(form.password) > PASSWORD_MAX_CHARS || utf8Bytes(form.password) > PASSWORD_MAX_BYTES) {
       return '密码过长：不超过 72 个字符，且 UTF-8 编码不超过 72 字节（中文、emoji 每个字符约占 3–4 字节）'
     }
   }
   if (!name) return '请填写导游姓名'
-  if (codePointLength(name) > 64) return '导游姓名最多 64 个字符'
+  if (codePointLength(name) > NAME_MAX) return `导游姓名最多 ${NAME_MAX} 个字符`
   if (!phone) return '请填写联系电话'
-  if (codePointLength(phone) < 3 || codePointLength(phone) > 20) return '联系电话长度应为 3–20 个字符'
-  if (codePointLength(form.intro) > 1000) return '个人简介最多 1000 个字符'
+  if (codePointLength(phone) < 3 || codePointLength(phone) > PHONE_MAX) return '联系电话长度应为 3–20 个字符'
+  if (codePointLength(form.intro) > INTRO_MAX) return `个人简介最多 ${INTRO_MAX} 个字符`
   return ''
 }
 
@@ -173,13 +192,18 @@ async function save() {
 
         <div class="form-field">
           <label>初始密码 <span class="req">*</span></label>
+          <!-- 同样不设 maxlength：72 个 UTF-16 码元对汉字/emoji 密码只有 24–36 个字符，
+               而真正的硬上限是 72 UTF-8 字节，用码元数去截断会悄悄改短用户的密码。 -->
           <input
             v-model="form.password"
             type="password"
-            maxlength="72"
             autocomplete="new-password"
             placeholder="8–72 位，UTF-8 不超过 72 字节"
           />
+          <p class="form-counter" :class="{ over: !passwordWithinLimits }">
+            {{ codePointLength(form.password) }} / {{ PASSWORD_MAX_CHARS }} 字符 ·
+            {{ utf8Bytes(form.password) }} / {{ PASSWORD_MAX_BYTES }} 字节
+          </p>
         </div>
       </template>
 
@@ -190,19 +214,29 @@ async function save() {
         <p class="form-hint">账号名是登录凭据，创建后不可修改；登录密码由导游本人在账号安全中自行修改。</p>
       </div>
 
-      <div class="form-field">
+      <div class="form-field wide">
         <label>导游姓名 <span class="req">*</span></label>
-        <input v-model="form.name" maxlength="64" placeholder="例如：李导" />
+        <!-- 不设 maxlength：HTML 数的是 UTF-16 码元（见 validate 的说明） -->
+        <input v-model="form.name" placeholder="例如：李导" />
+        <p class="form-counter" :class="{ over: codePointLength(form.name) > NAME_MAX }">
+          {{ codePointLength(form.name) }} / {{ NAME_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
         <label>联系电话 <span class="req">*</span></label>
-        <input v-model="form.phone" maxlength="20" placeholder="例如：13800138001" />
+        <input v-model="form.phone" placeholder="例如：13800138001" />
+        <p class="form-counter" :class="{ over: codePointLength(form.phone) > PHONE_MAX }">
+          {{ codePointLength(form.phone) }} / {{ PHONE_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>个人简介</label>
-        <textarea v-model="form.intro" rows="3" maxlength="1000" placeholder="带团经验、擅长线路等，供后台核对与参考"></textarea>
+        <textarea v-model="form.intro" rows="3" placeholder="带团经验、擅长线路等，供后台核对与参考"></textarea>
+        <p class="form-counter" :class="{ over: codePointLength(form.intro) > INTRO_MAX }">
+          {{ codePointLength(form.intro) }} / {{ INTRO_MAX }}
+        </p>
       </div>
 
       <p class="form-hint wide">
@@ -239,6 +273,19 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* 实时码点计数：超过契约上限时变红，用户不用等提交才知道超了 */
+.form-counter {
+  margin: 4px 0 0;
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-tertiary);
+}
+
+.form-counter.over {
+  color: var(--danger-red);
+  font-weight: 700;
 }
 
 @media (max-width: 640px) {

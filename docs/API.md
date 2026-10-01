@@ -117,6 +117,11 @@ POST /api/admin/orders/{orderNo}/confirm
   `POST /admin/guides`、`POST /admin/staff` 的密码字段。
 - 校验失败时**不得产生任何副作用**：创建类接口不落 `sys_user`/`staff` 行，改密接口不更新
   `password_hash`。
+- **改密只能由本人发起**：`PUT /account/password` 必须提供原密码，且只作用于当前登录账号
+  （该端点没有「目标账号」参数）。契约**不提供**管理员修改他人密码的端点，管理端唯一能设定密码的
+  时机是建档时填写的初始密码（`POST /admin/guides`、`POST /admin/staff`，见 PRD §38、§43）。
+  在资料维护端点（如 `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`）提交 `password`
+  属于契约外字段，按 **400** 拒绝，且整个请求不产生任何写入。
 
 ## 5. 统一响应
 

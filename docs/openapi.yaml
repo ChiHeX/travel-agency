@@ -2428,7 +2428,7 @@ components:
       required: [username, password]
       properties:
         username: { type: string, minLength: 3, maxLength: 32, example: demo_user }
-        password: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422', example: DemoPass123! }
+        password: { type: string, minLength: 1, maxLength: 72, format: password, description: '登录口令，只做哈希匹配：不设 8 字符下限（历史口令按 UTF-16 码元口径创建，可能不足 8 个字符），所有不匹配与不足一律 401 AUTHENTICATION_REQUIRED（登录场景不暴露"该账号存在、只是口令长度不对"）。超过 72 UTF-8 字节时按 422 拒绝，见 docs/API.md §4.2', example: DemoPass123! }
     RegisterRequest:
       type: object
       additionalProperties: false
@@ -2454,8 +2454,8 @@ components:
       additionalProperties: false
       required: [currentPassword, newPassword]
       properties:
-        currentPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
-        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
+        currentPassword: { type: string, minLength: 1, maxLength: 72, format: password, description: '当前口令，只做哈希匹配：不套用 8 字符下限（历史口令按 UTF-16 码元口径创建，例如 4 个 emoji 只有 4 个字符却有 8 个码元），仍需非空且 UTF-8 编码不超过 72 字节；不匹配返回 422 VALIDATION_ERROR（不是 401，避免前端把"打错原密码"当成登录失效）。见 docs/API.md §4.2' }
+        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '新口令，套用完整设置规则：8-72 字符（按 Unicode 码点计，与后端 @CodePointLength 同口径），且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
     User:
       type: object
       additionalProperties: false

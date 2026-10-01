@@ -95,10 +95,14 @@ POST /api/admin/orders/{orderNo}/confirm
 
 每个接口必须列出允许筛选和排序的字段，不得把客户端字段名直接拼接到 SQL。
 
-### 4.2 密码字段的长度口径（字符数 + UTF-8 字节数，两个上限）
+### 4.2 密码字段的长度口径（设置类与验证类，两套规则）
 
-密码统一为 **8～72 个字符**，并额外受 **UTF-8 编码不超过 72 字节** 的约束。两个上限单位不同，
-只在纯 ASCII 密码下等价：
+密码字段分两类，**口径不同，不得互相套用**：
+
+**① 设置类**（创建或修改口令）：`POST /auth/register`、`POST /admin/guides`、`POST /admin/staff`
+的 `password`，以及 `PUT /account/password` 的 `newPassword` —— **8～72 个字符**，并额外受
+**UTF-8 编码不超过 72 字节** 的约束。「字符」按 Unicode 码点计（与 JSON Schema 的 `maxLength`、
+后端 `@CodePointLength` 同口径）。两个上限单位不同，只在纯 ASCII 密码下等价：
 
 | 输入 | 字符数 | UTF-8 字节数 | 结果 |
 |---|---|---|---|
@@ -108,18 +112,32 @@ POST /api/admin/orders/{orderNo}/confirm
 | `😀` × 19 | 38 | 76 | **422** `VALIDATION_ERROR` |
 | `a` × 73 | 73 | 73 | **422**（同时超字符数与字节数） |
 
+**② 验证类**（核对已有口令）：`POST /auth/login` 的 `password`、`PUT /account/password` 的
+`currentPassword` —— **只要求非空且 UTF-8 不超过 72 字节，不套用 8 字符下限**，判定方式是
+**哈希匹配**（长度不合法时自然不匹配）。
+
+为什么验证类不能套用设置规则：历史口令是按 **UTF-16 码元** 口径创建并保存的（当时的校验是
+`@Size(min = 8)`，一个 emoji 记 2 个码元），例如 `😀😀😀😀` 只有 4 个字符（码点）却有 8 个码元，
+当时能注册、现在也仍能登录。改密接口若在核对原密码之前就以「不足 8 个字符」回 422，这些账号
+会既改不了密码、又没有管理员重置入口（见下），等于被永久锁死在旧口令上。因此：
+
+- `POST /auth/login` 的不匹配一律 401 `AUTHENTICATION_REQUIRED`（不因长度暴露账号是否存在）；
+- `PUT /account/password` 的原密码不匹配回 422 `VALIDATION_ERROR`「原密码不正确」——
+  该端点刻意不用 401：前端 axios 拦截器把任何 401 当成登录失效，用户打错一次原密码就会被强制登出。
+
+两类共有的守卫：
+
 - 字节上限来自 BCrypt：口令超过 72 字节时 `BCryptPasswordEncoder#encode` 会抛
-  `IllegalArgumentException`，若只在 DTO 上写 `@Size(max = 72)`（数的是字符），
-  中文/emoji 密码会绕过校验直达加密层，最终以 **500** 返回。
+  `IllegalArgumentException`，若只按字符数校验（`@Size`/`maxLength`），中文/emoji 密码会绕过
+  校验直达加密层，最终以 **500** 返回；超过 72 字节的输入也不可能是任何已存口令，因此验证类同样保留该上限。
 - 超限一律以 **422** 拒绝，**不做静默截断**：截断会让「用户设置的密码」与
   「实际参与校验的字节」不一致。
-- 适用范围：`POST /auth/register`、`POST /auth/login`、`PUT /account/password`、
-  `POST /admin/guides`、`POST /admin/staff` 的密码字段。
 - 校验失败时**不得产生任何副作用**：创建类接口不落 `sys_user`/`staff` 行，改密接口不更新
   `password_hash`。
 - **改密只能由本人发起**：`PUT /account/password` 必须提供原密码，且只作用于当前登录账号
   （该端点没有「目标账号」参数）。契约**不提供**管理员修改他人密码的端点，管理端唯一能设定密码的
-  时机是建档时填写的初始密码（`POST /admin/guides`、`POST /admin/staff`，见 PRD §38、§43）。
+  时机是建档时填写的初始密码（`POST /admin/guides`、`POST /admin/staff`，见 PRD §38、§43）——
+  正因为没有管理员重置这条退路，验证类才必须保留旧口令的自助升级路径。
   在资料维护端点（如 `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`）提交 `password`
   属于契约外字段，按 **400** 拒绝，且整个请求不产生任何写入。
 

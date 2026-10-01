@@ -7,23 +7,27 @@ import org.hibernate.validator.constraints.CodePointLength;
 
 /**
  * 修改密码请求，对齐契约 PasswordChangeRequest：
- * required [currentPassword, newPassword]，两者 minLength 8 / maxLength 72，
- * additionalProperties=false —— 因此这里只允许这两个字段，多传字段会被全局
- * FAIL_ON_UNKNOWN_PROPERTIES 直接判成 400。
+ * required [currentPassword, newPassword]，additionalProperties=false ——
+ * 因此这里只允许这两个字段，多传字段会被全局 FAIL_ON_UNKNOWN_PROPERTIES 直接判成 400。
  *
- * <p><b>为什么 {@code @CodePointLength} 之外还要 {@link Utf8ByteLength}</b>：契约的 72 是
- * <i>字符</i>数（JSON Schema 的 {@code maxLength} 数码点），BCrypt 的 72 是 <i>UTF-8 字节</i>数。
- * 25 个汉字只有 25 个字符却占 75 字节，能通过字符上限，随后
- * {@code BCryptPasswordEncoder#encode} 抛
- * {@code IllegalArgumentException: password cannot be more than 72 bytes}，被兜底成 500。
- * 两个约束叠加后，超限输入在进入 service 之前就以 422 拒绝，密码不会被改动。</p>
+ * <p><b>两个字段的口径不同，刻意不共用同一套长度约束：</b></p>
+ * <ul>
+ *   <li>{@code newPassword} 是「设置新口令」，套用完整的设置规则：8–72 个字符
+ *       （{@link CodePointLength}，与契约 maxLength 同口径）+ UTF-8 不超过 72 字节；</li>
+ *   <li>{@code currentPassword} 是「验证已有口令」，只要求非空且 UTF-8 不超过 72 字节，
+ *       <b>不套用新的设置规则</b>（既没有 8 字符下限，也没有码点上限 —— 上限由字节上限蕴含）。</li>
+ * </ul>
  *
- * <p>字符上限按码点计数而非 UTF-16 码元：一个 emoji 是 1 个码点却是 2 个码元，
- * 用 {@code @Size} 会把契约允许的密码误判成超长。</p>
+ * <p>为什么原密码不能套用设置规则：历史口令是按 <b>UTF-16 码元</b> 口径创建的
+ * （{@code @Size(min = 8)}），例如「😀😀😀😀」只有 4 个字符（码点）却有 8 个码元，
+ * 当时能注册、能登录、也确实存在库里。改密接口若在校验原密码之前就以「不足 8 个字符」回 422，
+ * 这些用户就再也改不了密码 —— 而契约又不提供管理员重置入口（见 API.md §4.2），
+ * 等于把旧账号永久锁死在旧口令上。原密码的正确校验方式是<b>哈希匹配</b>：
+ * 长度不合法时 {@code passwordEncoder.matches} 自然不匹配，回 422「原密码不正确」。
+ * 字节上限必须保留：超过 72 字节的输入不可能是任何已存口令，且会让 BCrypt 抛异常变成 500。</p>
  */
 public record PasswordChangeRequest(
         @NotBlank(message = "原密码不能为空")
-        @CodePointLength(min = PasswordRules.MIN_CHARS, max = PasswordRules.MAX_CHARS, message = "原密码长度应为 8-72 位")
         @Utf8ByteLength(max = PasswordRules.MAX_UTF8_BYTES, message = PasswordRules.BYTE_LIMIT_MESSAGE)
         String currentPassword,
         @NotBlank(message = "新密码不能为空")

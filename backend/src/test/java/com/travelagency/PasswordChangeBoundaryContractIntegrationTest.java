@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -77,6 +78,7 @@ class PasswordChangeBoundaryContractIntegrationTest {
     @Autowired SysUserMapper users;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
+    @Autowired PasswordEncoder passwordEncoder;
 
     private MockMvc mvc() {
         return MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
@@ -233,7 +235,95 @@ class PasswordChangeBoundaryContractIntegrationTest {
         }
     }
 
+    /**
+     * 旧口令的<b>自助升级路径</b>：历史口令是按 UTF-16 码元口径创建并保存的（当时的校验是
+     * {@code @Size(min = 8)}，一个 emoji 记 2 个码元），「😀😀😀😀」只有 4 个字符（码点）
+     * 却有 8 个码元 —— 当时能注册、现在也仍能登录。
+     *
+     * <p>改密接口若在核对原密码之前就以「不足 8 个字符」回 422，这些账号会既改不了密码、
+     * 又没有管理员重置入口（本类其余用例钉住的正是这一点），等于被永久锁死在旧口令上。
+     * 因此<b>验证类字段（原密码 / 登录口令）只做哈希匹配，不套用新密码的设置规则</b>；
+     * 新密码仍严格要求 8 个码点。</p>
+     */
+    @Test
+    @DisplayName("旧口令（4 个码点 / 8 个码元）能登录，也能自助升级为合规新口令")
+    void legacyShortPasswordCanStillBeChanged() throws Exception {
+        String legacy = "😀😀😀😀";
+        assertEquals(4, legacy.codePointCount(0, legacy.length()), "前提：码点数不足 8");
+        assertEquals(8, legacy.length(), "前提：UTF-16 码元数恰好等于旧规则的下限");
+        assertTrue(legacy.getBytes(StandardCharsets.UTF_8).length <= 72, "前提：字节数在上限之内");
+
+        SysUser user = accountWithPassword("legacy_pwd", legacy);
+        String username = user.username;
+
+        // 1) 旧口令仍能登录：登录字段不设长度下限，只做哈希匹配
+        loginSucceeds(username, legacy);
+
+        String token = "Bearer " + tokens.createToken(user.id, username, Set.of("USER"));
+        String hashBefore = users.selectById(user.id).passwordHash;
+
+        // 2) 新密码仍套用设置规则：3 个码点的新密码被 422 拒绝，且不产生写入
+        mvc().perform(put("/api/account/password").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"" + legacy + "\",\"newPassword\":\"😀😀😀\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].field").value("newPassword"));
+        assertEquals(hashBefore, users.selectById(user.id).passwordHash, "校验失败不得改库");
+
+        // 3) 用旧口令自助升级：204，之后旧口令失效、新口令生效
+        mvc().perform(put("/api/account/password").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"" + legacy + "\",\"newPassword\":\""
+                                + NEW_PASSWORD + "\"}"))
+                .andExpect(status().isNoContent());
+        loginFails(username, legacy);
+        loginSucceeds(username, NEW_PASSWORD);
+    }
+
+    /**
+     * 原密码只保留两个守卫：非空 + UTF-8 不超过 72 字节（超过 72 字节的输入不可能是任何已存口令，
+     * 且会让 BCrypt 抛异常变成 500）。长度下限不做 ——
+     * 不匹配由哈希比对给出 422「原密码不正确」，而不是「长度应为 8-72 位」。
+     */
+    @Test
+    @DisplayName("原密码只校验非空与字节上限，长度下限交给哈希匹配")
+    void currentPasswordHasNoLengthRuleOnlyByteCap() throws Exception {
+        SysUser user = accountWithPassword("pwd_probe", NEW_PASSWORD);
+        String token = "Bearer " + tokens.createToken(user.id, user.username, Set.of("USER"));
+        String hashBefore = users.selectById(user.id).passwordHash;
+
+        // 2 个码点（8 字节）的原密码：不因长度被拒，而是走到哈希比对后回「原密码不正确」
+        mvc().perform(put("/api/account/password").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"😀😀\",\"newPassword\":\"" + NEW_PASSWORD + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("原密码不正确"));
+
+        // 73 个字节：超出 BCrypt 硬上限，按 422 拒绝（不是 500），错误指回该字段
+        mvc().perform(put("/api/account/password").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"" + "a".repeat(73) + "\",\"newPassword\":\""
+                                + NEW_PASSWORD + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].field").value("currentPassword"));
+        assertEquals(hashBefore, users.selectById(user.id).passwordHash, "校验失败不得改库");
+    }
+
     // ===================== 夹具与断言工具 =====================
+
+    /** 落库一个带真实 BCrypt 哈希的账号：模拟「改动前就已存在」的口令。 */
+    private SysUser accountWithPassword(String prefix, String rawPassword) {
+        SysUser user = new SysUser();
+        user.username = prefix + "_" + shortId();
+        user.nickname = user.username;
+        user.realName = user.username;
+        user.passwordHash = passwordEncoder.encode(rawPassword);
+        user.status = 1;
+        user.deleted = 0;
+        users.insert(user);
+        return user;
+    }
 
     /** 通过契约端点建档导游：账号 + 初始密码 + 资料一次写入。 */
     private JsonNode createGuide() throws Exception {

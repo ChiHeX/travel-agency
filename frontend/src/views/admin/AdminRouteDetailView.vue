@@ -7,6 +7,7 @@ import RequestState from '@/components/RequestState.vue'
 import RouteFormDialog from '@/components/RouteFormDialog.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import { fetchAllPages } from '@/utils/paging'
+import { codePointLength } from '@/utils/text'
 
 /**
  * 线路管理详情页：线路资料、团期概览、每日行程与行程项目管理。
@@ -168,13 +169,24 @@ async function saveDay() {
   const title = dayForm.title.trim()
   if (!Number.isInteger(dayNumber) || dayNumber < 1) return ElMessage.warning('行程天数序号应为大于 0 的整数')
   if (!title) return ElMessage.warning('请填写当日行程标题')
+  // 契约 ItineraryDayRequest 的长度上限（title 200、description 10000、transportation/meals 255）
+  // 数的是字符（码点），与后端 @CodePointLength 同口径；JS 的 String#length 数的是 UTF-16 码元
+  // （一个 emoji 记 2），会把契约允许的文案判成超长。这里校验即将提交的值（已 trim），
+  // 与 optional() 送出的内容一致，避免尾随空格造成误判。
+  if (codePointLength(title) > 200) return ElMessage.warning('行程标题最多 200 个字符')
+  const description = optional(dayForm.description)
+  const transportation = optional(dayForm.transportation)
+  const meals = optional(dayForm.meals)
+  if (codePointLength(description) > 10000) return ElMessage.warning('行程说明最多 10000 个字符')
+  if (codePointLength(transportation) > 255) return ElMessage.warning('交通说明最多 255 个字符')
+  if (codePointLength(meals) > 255) return ElMessage.warning('餐食说明最多 255 个字符')
 
   const payload = {
     dayNumber,
     title,
-    description: optional(dayForm.description),
-    transportation: optional(dayForm.transportation),
-    meals: optional(dayForm.meals),
+    description,
+    transportation,
+    meals,
     hotelId: optional(dayForm.hotelId)
   }
 
@@ -256,12 +268,17 @@ async function saveItem() {
   const name = itemForm.name.trim()
   if (!Number.isInteger(sortNo) || sortNo < 1) return ElMessage.warning('排序号应为大于 0 的整数')
   if (!name) return ElMessage.warning('请填写行程项目名称')
+  // 契约 ItineraryItemRequest 的 name 上限 200、description 上限 10000，单位是字符（码点）而不是
+  // UTF-16 码元：一个 emoji 在 String#length 里记 2，会把契约允许的名称误判成超长。
+  if (codePointLength(name) > 200) return ElMessage.warning('行程项目名称最多 200 个字符')
+  const description = optional(itemForm.description)
+  if (codePointLength(description) > 10000) return ElMessage.warning('行程项目说明最多 10000 个字符')
 
   const payload = {
     sortNo,
     itemType: itemForm.itemType,
     name,
-    description: optional(itemForm.description),
+    description,
     attractionId: optional(itemForm.attractionId),
     longitude: coordinate(itemForm.longitude),
     latitude: coordinate(itemForm.latitude)
@@ -502,21 +519,23 @@ onMounted(load)
             </option>
           </select>
         </div>
+        <!-- 本弹窗所有文本框都不设 maxlength：它按 UTF-16 码元截断，会把契约允许的 emoji 文案静默砍短
+             （ItineraryDayRequest：title 200 / description 10000 / transportation、meals 255），上限由 saveDay() 按码点校验 -->
         <div class="form-field wide">
           <label>行程标题 <span class="req">*</span></label>
-          <input v-model="dayForm.title" maxlength="200" placeholder="例如：上海 → 昆明" />
+          <input v-model="dayForm.title" placeholder="例如：上海 → 昆明" />
         </div>
         <div class="form-field wide">
           <label>行程说明</label>
-          <textarea v-model="dayForm.description" rows="3" maxlength="10000" placeholder="当天安排说明"></textarea>
+          <textarea v-model="dayForm.description" rows="3" placeholder="当天安排说明"></textarea>
         </div>
         <div class="form-field">
           <label>交通说明</label>
-          <input v-model="dayForm.transportation" maxlength="255" placeholder="例如：飞机 / 旅游大巴" />
+          <input v-model="dayForm.transportation" placeholder="例如：飞机 / 旅游大巴" />
         </div>
         <div class="form-field">
           <label>餐食说明</label>
-          <input v-model="dayForm.meals" maxlength="255" placeholder="例如：早、午餐" />
+          <input v-model="dayForm.meals" placeholder="例如：早、午餐" />
         </div>
       </div>
       <template #footer>
@@ -551,9 +570,10 @@ onMounted(load)
             <option value="OTHER">其他</option>
           </select>
         </div>
+        <!-- 同样不设 maxlength（ItineraryItemRequest：name 200 / description 10000），由 saveItem() 按码点校验 -->
         <div class="form-field wide">
           <label>项目名称 <span class="req">*</span></label>
-          <input v-model="itemForm.name" maxlength="200" placeholder="例如：大理古城" />
+          <input v-model="itemForm.name" placeholder="例如：大理古城" />
         </div>
         <div class="form-field wide">
           <label>关联景点</label>
@@ -574,7 +594,7 @@ onMounted(load)
         </div>
         <div class="form-field wide">
           <label>项目说明</label>
-          <textarea v-model="itemForm.description" rows="2" maxlength="10000" placeholder="游览安排说明"></textarea>
+          <textarea v-model="itemForm.description" rows="2" placeholder="游览安排说明"></textarea>
         </div>
       </div>
       <template #footer>

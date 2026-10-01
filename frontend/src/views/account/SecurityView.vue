@@ -4,28 +4,34 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
+import { codePointLength, utf8Bytes } from '@/utils/text'
 
 const router = useRouter()
 const auth = useAuthStore()
 const form = reactive({ currentPassword: '', newPassword: '', confirmation: '' })
 const submitting = ref(false)
 const error = ref('')
-// 后端（BCrypt）的口令上限是 72 个 UTF-8 字节，不是 72 个字符：25 个汉字只有 25 个字符却占
-// 75 字节，服务端会以 422 拒绝。这里按同一口径先拦一次，避免让用户白等一次请求。
+// 契约 PasswordChangeRequest（API.md §4.2）的口令上限有两个单位，必须分别按各自口径校验：
+// ① 字符数（8–72）—— JSON Schema 与后端 @CodePointLength 数的是码点，JS 的 String#length 数的是
+//    UTF-16 码元（一个 emoji 记 2），所以字符数用 codePointLength；
+// ② UTF-8 字节数（≤72）—— BCrypt 的硬上限来自字节：25 个汉字只有 25 个字符却占 75 字节，服务端会以 422 拒绝。
+// 这里按同一口径先拦一次，避免让用户白等一次请求。
 const PASSWORD_MAX_BYTES = 72
-const utf8Bytes = (value) => new TextEncoder().encode(value).length
-const passwordTooLong = (value) => value.length > 72 || utf8Bytes(value) > PASSWORD_MAX_BYTES
+const passwordTooLong = (value) => codePointLength(value) > 72 || utf8Bytes(value) > PASSWORD_MAX_BYTES
 const strength = computed(() => {
   const value = form.newPassword
   if (!value) return ''
   const groups = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((rule) => rule.test(value)).length
-  return value.length < 8 ? '不足 8 位' : value.length >= 12 && groups >= 3 ? '强' : groups >= 2 ? '中' : '弱'
+  // 强度阈值同样按码点计，否则同一个框里的长度会出现两种口径（emoji 密码会被多算一倍）
+  const length = codePointLength(value)
+  return length < 8 ? '不足 8 位' : length >= 12 && groups >= 3 ? '强' : groups >= 2 ? '中' : '弱'
 })
 
 async function submit() {
   if (submitting.value) return
   error.value = ''
-  if ([form.currentPassword, form.newPassword].some((value) => value.length < 8)) {
+  // 长度下限按码点：契约 PasswordChangeRequest 的 minLength 是 8 个字符，emoji 记 1 而不是 2
+  if ([form.currentPassword, form.newPassword].some((value) => codePointLength(value) < 8)) {
     error.value = '原密码和新密码长度应为 8–72 位'
     return
   }
@@ -63,22 +69,28 @@ async function submit() {
           <p>请先验证原密码，再设置新密码。</p>
         </div>
         <form class="security-form" @submit.prevent="submit">
+          <!--
+            三个密码框都不设 maxlength：maxlength 数的是 UTF-16 码元，会在打字过程中把契约允许的
+            口令静默截短（32 个 emoji 只留下 16 个），用户设置的密码与真正参与校验的就不一致了。
+            上限改由提交时的码点/字节校验负责（PasswordChangeRequest，见 API.md §4.2）。
+            minlength="8" 保留：它只会与码点校验同向，不会更严格。
+          -->
           <fieldset :disabled="submitting">
             <div class="settings-fields">
               <div class="setting-row">
                 <div class="setting-label"><label for="current-password">原密码</label></div>
-                <div class="setting-control"><input id="current-password" v-model="form.currentPassword" type="password" autocomplete="current-password" minlength="8" maxlength="72" required /></div>
+                <div class="setting-control"><input id="current-password" v-model="form.currentPassword" type="password" autocomplete="current-password" minlength="8" required /></div>
               </div>
               <div class="setting-row">
                 <div class="setting-label"><label for="new-password">新密码</label></div>
                 <div class="setting-control password-entry">
-                  <input id="new-password" v-model="form.newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="72" required />
+                  <input id="new-password" v-model="form.newPassword" type="password" autocomplete="new-password" minlength="8" required />
                   <p>8–72 位，且不超过 72 个 UTF-8 字节。<span v-if="strength">密码强度：{{ strength }}</span></p>
                 </div>
               </div>
               <div class="setting-row">
                 <div class="setting-label"><label for="confirm-password">确认新密码</label></div>
-                <div class="setting-control"><input id="confirm-password" v-model="form.confirmation" type="password" autocomplete="new-password" maxlength="72" required /></div>
+                <div class="setting-control"><input id="confirm-password" v-model="form.confirmation" type="password" autocomplete="new-password" required /></div>
               </div>
               <div class="settings-actions">
                 <p v-if="error" class="form-error" role="alert">{{ error }}</p>

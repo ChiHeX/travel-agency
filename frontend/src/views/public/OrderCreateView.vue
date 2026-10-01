@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, orderApi, routeApi } from '@/api/modules'
 import { createIdempotencyKey, idTypeLabels } from '@/utils/order'
+import { codePointLength } from '@/utils/text'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import { returnToPrevious } from '@/utils/navigation'
 import { useBookingStore } from '@/stores/booking'
@@ -144,9 +145,12 @@ async function submit() {
       (item) =>
         !item.name.trim() ||
         !item.birthDate ||
-        item.idNo.trim().length < 3 ||
+        // 证件号码与紧急联系人电话的下限按 Unicode 码点算（契约 minLength 3，后端 @CodePointLength
+        // 同口径）：String#length 数的是 UTF-16 码元，一个 emoji 记 2，会把不足 3 个字符的输入放过去，
+        // 等后端回 422 才知道填少了。
+        codePointLength(item.idNo.trim()) < 3 ||
         !item.emergencyName.trim() ||
-        item.emergencyPhone.trim().length < 3
+        codePointLength(item.emergencyPhone.trim()) < 3
     )
   ) {
     return ElMessage.warning('请完整填写每位出行人的实名姓名、证件号码与紧急联系人')

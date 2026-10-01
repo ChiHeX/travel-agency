@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { accountApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
+import { codePointLength } from '@/utils/text'
 
 const items = ref([])
 const form = reactive({ title: '', content: '' })
@@ -30,6 +31,15 @@ async function submit() {
   if (submitting.value) return
   submitError.value = ''
   if (!form.title.trim() || !form.content.trim()) return ElMessage.warning('请填写问题标题和详细内容')
+  // 契约 ConsultationRequest：title 2–100、content 2–2000。这里数的是字符（码点），与后端
+  // @CodePointLength 同口径；用 String#length（UTF-16 码元）会把 emoji 记成 2 个字符而误判超长。
+  // 校验的是即将提交的原值（不做 trim），否则去掉首尾空格后仍可能超过契约上限。
+  if (codePointLength(form.title) < 2 || codePointLength(form.title) > 100) {
+    return ElMessage.warning('咨询主题需为 2–100 个字符')
+  }
+  if (codePointLength(form.content) < 2 || codePointLength(form.content) > 2000) {
+    return ElMessage.warning('详细描述需为 2–2000 个字符')
+  }
   submitting.value = true
   try {
     await accountApi.createConsultation(form)
@@ -64,9 +74,10 @@ onMounted(load)
         <div class="admin-panel form-panel-box">
           <form class="consultation-form" @submit.prevent="submit">
             <p v-if="submitError" class="form-error" role="alert">{{ submitError }}</p>
+            <!-- 去掉 maxlength：它按 UTF-16 码元（emoji 记 2）截断，会把契约允许的 emoji 文本静默砍短；上限改由提交时的码点校验负责 -->
             <div class="form-field">
               <label>咨询主题 / 问题概要</label>
-              <input v-model="form.title" minlength="2" maxlength="100" placeholder="例如：咨询集合地点或行程安排" required />
+              <input v-model="form.title" minlength="2" placeholder="例如：咨询集合地点或行程安排" required />
             </div>
 
             <div class="form-field">
@@ -75,7 +86,6 @@ onMounted(load)
                 v-model="form.content"
                 rows="5"
                 minlength="2"
-                maxlength="2000"
                 placeholder="请详细描述您在预订、行程安排或费用方面的疑问..."
                 required
               ></textarea>

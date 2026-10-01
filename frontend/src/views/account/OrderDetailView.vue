@@ -12,6 +12,7 @@ import {
   paymentStatusLabels,
   refundStatusLabels
 } from '@/utils/order'
+import { codePointLength } from '@/utils/text'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -60,7 +61,9 @@ async function submitRefund() {
   if (refundSubmitting.value) return
   actionError.value = ''
   const reason = refund.reason.trim()
-  if (reason.length < 2 || reason.length > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
+  // 契约 RefundCreateRequest.reason 是 minLength 2 / maxLength 500，数的是字符（码点）；
+  // 用 String#length 会把 emoji 记成 2 个，把契约允许的原因判成超长。
+  if (codePointLength(reason) < 2 || codePointLength(reason) > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
   refundSubmitting.value = true
   try {
     await orderApi.refund(currentRoute.params.orderNo, { reason }, refundKey)
@@ -81,7 +84,8 @@ async function submitReview() {
   actionError.value = ''
   const content = review.content.trim()
   if (!Number.isInteger(review.rating) || review.rating < 1 || review.rating > 5) return ElMessage.warning('请选择 1–5 星评分')
-  if (!content || content.length > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
+  // 契约 ReviewCreateRequest.content 是 minLength 1 / maxLength 1000，同样按字符（码点）计
+  if (!content || codePointLength(content) > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
   reviewSubmitting.value = true
   try {
     const saved = await orderApi.review(currentRoute.params.orderNo, { rating: review.rating, content })
@@ -353,7 +357,8 @@ onMounted(load)
       </div>
       <div class="form-field">
         <label>行程体验与导游服务评价</label>
-        <textarea v-model="review.content" rows="4" maxlength="1000" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
+        <!-- 去掉 maxlength：它按 UTF-16 码元截断，会把 1000 个 emoji 的合法评价静默砍半；改为提交时按码点校验 -->
+        <textarea v-model="review.content" rows="4" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
       </div>
       <template #footer>
         <button class="secondary-button" @click="reviewOpen = false">取消</button>

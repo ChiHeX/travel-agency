@@ -7,6 +7,7 @@ import AttractionFormDialog from '@/components/AttractionFormDialog.vue'
 import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
 import GuideFormDialog from '@/components/GuideFormDialog.vue'
 import HotelFormDialog from '@/components/HotelFormDialog.vue'
+import { codePointLength } from '@/utils/text'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -194,8 +195,19 @@ function goToPage(delta) {
   load()
 }
 
-/** 提交筛选：必须先回到第 1 页，否则会停在"上一次筛选下的第 N 页"，很容易落到空页。 */
+/**
+ * 提交筛选：必须先回到第 1 页，否则会停在"上一次筛选下的第 N 页"，很容易落到空页。
+ *
+ * 契约里 keyword 参数是 maxLength: 100，后端以 @CodePointLength(max = 100) 按字符（码点）校验：
+ * 用 String#length（UTF-16 码元，一个 emoji 记 2）会把 50 个 emoji 的关键字判成超长，
+ * 而此前输入框上的 maxlength="100" 又会把 70 个 emoji 的关键字静默截成 35 个、搜出一批
+ * 与用户输入不符的结果。因此这里既不给输入框设 maxlength，也不截断，改为提交前按码点拦一次。
+ */
 function search() {
+  if (codePointLength(keyword.value.trim()) > 100) {
+    ElMessage.warning('搜索关键字最多 100 个字符')
+    return
+  }
   page.value = 1
   load()
 }
@@ -449,9 +461,9 @@ onMounted(load)
 
     <!-- 景点与酒店资料的 keyword 筛选，对应契约 GET 端点的 keyword 参数（导游列表没有该参数） -->
     <form v-if="searchable" class="resource-search" @submit.prevent="search">
+      <!-- 不设 maxlength：它按 UTF-16 码元截断 emoji 关键字，超长改由 search() 按码点提示 -->
       <input
         v-model="keyword"
-        maxlength="100"
         :placeholder="resource === 'hotels'
           ? '按酒店名称、地址或简介搜索'
           : '按景点名称、所属城市或简介搜索'"

@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import { codePointLength, overCodePoints } from '@/utils/text'
 
 /**
  * 酒店资料新增 / 修改表单弹窗（对应契约 POST /admin/hotels 与 PUT /admin/hotels/{hotelId}）。
@@ -102,15 +103,22 @@ function optional(value) {
 }
 
 /**
- * 按 Unicode 码点计数。
+ * 文本长度一律按 Unicode 码点校验（`@/utils/text` 的 codePointLength）。
  *
  * 契约的 `maxLength` 是 JSON Schema 口径，数的是字符（码点），后端的
- * `@CodePointLength` 也是这个口径；而 JS 的 `String#length` 数的是 UTF-16 码元，
- * 一个 emoji 会被算成 2。用 `.length` 做校验会把契约允许的内容误判成超长
- * （例如 100 个 emoji 的酒店名：码点 100 ≤ 128 合法，码元却是 200）。
- * 输入框上的 maxlength 属性只是打字时的便利用户体验，最终以上面的口径为准。
+ * `@CodePointLength` 也是这个口径；而 JS 的 `String#length` 与 HTML 的 `maxlength`
+ * 数的是 UTF-16 码元，一个 emoji 会被算成 2。用 `.length` 做校验会把契约允许的内容
+ * 误判成超长（例如 100 个 emoji 的酒店名：码点 100 ≤ 128 合法，码元却是 200）；
+ * 而输入框上的 `maxlength` 更糟 —— 它会在打字过程中把同样的内容静默截断成 50 个 emoji。
+ * 因此模板里不设 `maxlength`，改为「不截断 + 实时计数（超出变红）+ 提交时校验」。
  */
-const codePointLength = (value) => [...String(value ?? '')].length
+
+/** 各字段的码点上限，与契约 HotelCreateRequest / HotelUpdateRequest 和后端 @CodePointLength 一致。 */
+const NAME_MAX = 128
+const ADDRESS_MAX = 255
+const CONTACT_PHONE_MAX = 20
+const INTRO_MAX = 10000
+const DATA_SOURCE_MAX = 500
 
 /** 坐标必须是契约允许范围内的数字；未填写返回 null。 */
 function coordinate(value, min, max, label) {
@@ -130,12 +138,12 @@ function validate() {
   const name = form.name.trim()
   const dataSource = form.dataSource.trim()
   if (!name) return '请填写酒店名称'
-  if (codePointLength(name) > 128) return '酒店名称最多 128 个字符'
-  if (codePointLength(form.address.trim()) > 255) return '酒店地址最多 255 个字符'
-  if (codePointLength(form.contactPhone.trim()) > 20) return '联系电话最多 20 个字符'
-  if (codePointLength(form.intro) > 10000) return '酒店简介最多 10000 个字符'
+  if (overCodePoints(name, NAME_MAX)) return `酒店名称最多 ${NAME_MAX} 个字符`
+  if (overCodePoints(form.address.trim(), ADDRESS_MAX)) return `酒店地址最多 ${ADDRESS_MAX} 个字符`
+  if (overCodePoints(form.contactPhone.trim(), CONTACT_PHONE_MAX)) return `联系电话最多 ${CONTACT_PHONE_MAX} 个字符`
+  if (overCodePoints(form.intro, INTRO_MAX)) return `酒店简介最多 ${INTRO_MAX} 个字符`
   if (!dataSource) return '请填写数据来源说明'
-  if (codePointLength(dataSource) > 500) return '数据来源说明最多 500 个字符'
+  if (overCodePoints(dataSource, DATA_SOURCE_MAX)) return `数据来源说明最多 ${DATA_SOURCE_MAX} 个字符`
   const longitude = coordinate(form.longitude, -180, 180, '经度')
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
@@ -389,12 +397,19 @@ async function save() {
 
       <div class="form-field wide">
         <label>酒店名称 <span class="req">*</span></label>
-        <input v-model="form.name" maxlength="128" placeholder="例如：大理古城演示酒店" />
+        <!-- 不设 maxlength：HTML 数的是 UTF-16 码元，会把契约允许的 emoji 名称静默截断 -->
+        <input v-model="form.name" placeholder="例如：大理古城演示酒店" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.name, NAME_MAX) }">
+          {{ codePointLength(form.name) }} / {{ NAME_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
         <label>联系电话</label>
-        <input v-model="form.contactPhone" maxlength="20" placeholder="例如：0872-1234567" />
+        <input v-model="form.contactPhone" placeholder="例如：0872-1234567" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.contactPhone, CONTACT_PHONE_MAX) }">
+          {{ codePointLength(form.contactPhone) }} / {{ CONTACT_PHONE_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
@@ -407,7 +422,10 @@ async function save() {
 
       <div class="form-field wide">
         <label>详细地址</label>
-        <input v-model="form.address" maxlength="255" placeholder="例如：云南省大理白族自治州大理市" />
+        <input v-model="form.address" placeholder="例如：云南省大理白族自治州大理市" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.address, ADDRESS_MAX) }">
+          {{ codePointLength(form.address) }} / {{ ADDRESS_MAX }}
+        </p>
       </div>
 
       <div class="form-field">
@@ -423,11 +441,17 @@ async function save() {
       <div class="form-field wide">
         <label>酒店简介</label>
         <textarea v-model="form.intro" rows="3" placeholder="用于线路行程展示的酒店介绍文字"></textarea>
+        <p class="form-counter" :class="{ over: overCodePoints(form.intro, INTRO_MAX) }">
+          {{ codePointLength(form.intro) }} / {{ INTRO_MAX }}
+        </p>
       </div>
 
       <div class="form-field wide">
         <label>数据来源说明 <span class="req">*</span></label>
-        <input v-model="form.dataSource" maxlength="500" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
+        <input v-model="form.dataSource" placeholder="例如：团队整理的测试数据；坐标仅用于软件演示" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.dataSource, DATA_SOURCE_MAX) }">
+          {{ codePointLength(form.dataSource) }} / {{ DATA_SOURCE_MAX }}
+        </p>
         <p class="form-hint">
           资料必须可追溯：来源说明会随酒店一起保存，供后台核对与展示，不得留空。
         </p>
@@ -469,6 +493,19 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+/* 实时码点计数：超过契约上限时变红，用户不用等提交才知道超了 */
+.form-counter {
+  margin: 4px 0 0;
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-tertiary);
+}
+
+.form-counter.over {
+  color: var(--danger-red);
+  font-weight: 700;
 }
 
 /* 版本冲突面板：与团期表单同一套视觉口径，避免同一个系统里出现两种冲突提示。 */

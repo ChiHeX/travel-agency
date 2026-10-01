@@ -296,6 +296,33 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
 
 能兼容旧调用方时，优先新增可选字段或新接口。删除字段、改变字段含义或改变类型属于破坏性变更，不得静默实施。
 
+### 12.1 补齐写入端点的 422 声明（本次变更）
+
+- **内容**：为 14 个写入端点补上 `422 ValidationFailed` 声明：
+  `PUT /admin/attractions/{attractionId}`、`PUT /admin/itinerary-items/{itemId}`、
+  `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`、`PUT /admin/articles/{articleId}`、
+  `POST /admin/refunds/{refundId}/approve`、`POST /admin/consultations/{consultationId}/replies`、
+  `POST /favorites`，以及 `PATCH /admin/guides/{guideId}/status`、
+  `PATCH /admin/staff/{staffId}/status`、`PATCH /admin/users/{userId}/status`、
+  `PATCH /admin/departures/{departureId}/status`、`PATCH /admin/reviews/{reviewId}/status`、
+  `PATCH /admin/articles/{articleId}/status`。
+- **依据**：这些端点在字段语义校验失败时**本来就**返回 422 —— 请求体带 `@Valid`，字段约束失败由
+  `GlobalExceptionHandler` 统一映射成 422 `VALIDATION_ERROR`；6 个状态端点的取值另外由
+  `@Pattern`（账号 / 团期状态）或服务端枚举白名单（评价 / 攻略 / 导游 / 指南状态）挡住，同样回 422。
+  缺的只是契约文本，`docs/openapi.yaml` 原先只列了 `200` / `404` / `409`。
+- **兼容影响**：只声明「变更前就已经会返回」的错误响应。成功响应、字段、类型、必填性、权限与状态
+  流转均未变；调用方按 422 展示 `message` / `errors[]` 即可，无需修改任何调用代码。
+- **确认状态**：本项由 `#46`（后台导游管理）的收尾记录发起 —— 该记录把「`PUT /admin/guides/{guideId}`
+  缺 422 声明」列为范围外、需另开变更处理，并指向 `#42` 登记的同类清单。**未记录前端、后端、
+  测试成员的分别确认**，不得据此声称三方已分别确认；如需成员级确认，请在合并前补记。
+- **仍未声明（同类缺口，建议另开契约变更处理）**：
+  - 各写入端点在请求体为**非法 JSON 或含契约外字段**时返回的 `400`（`additionalProperties: false`
+    由全局严格模式拒绝）：`docs/openapi.yaml` 目前只有一个端点声明了 400，其余均未逐端点列出；
+  - `POST /favorites` 的成功响应形状：实现返回 `200` 且 `data` 为 `null`，契约声明的是
+    `201` + `Location` + `FavoriteEnvelope`（属响应契约不一致，与 422 无关）；
+  - `POST /payments/alipay/notify`：实现按**表单参数**接收支付宝回调并以 `text/plain` 应答，
+    契约描述的是 JSON 请求体（第三方回调，属接收格式不一致）。
+
 ## 13. 模块契约工作流
 
 每个模块都按以下顺序推进，不能等后端写完后再反推接口：

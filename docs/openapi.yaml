@@ -469,6 +469,7 @@ paths:
               schema: { $ref: '#/components/schemas/FavoriteEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /favorites/{routeId}:
     parameters:
@@ -991,6 +992,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ItineraryItemEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Routes]
       operationId: deleteItineraryItem
@@ -1115,6 +1117,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/attractions:
     get:
@@ -1174,6 +1177,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AttractionEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
       operationId: deleteAttraction
@@ -1347,6 +1351,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/guides/{guideId}/status:
     parameters:
@@ -1368,6 +1373,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/orders:
     get:
@@ -1509,6 +1515,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RefundEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /admin/refunds/{refundId}/reject:
@@ -1583,6 +1590,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReviewEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/users:
     get:
@@ -1643,6 +1651,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UserEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff:
     get:
@@ -1706,6 +1715,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff/{staffId}/status:
     parameters:
@@ -1727,6 +1737,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations:
     get:
@@ -1785,6 +1796,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations/{consultationId}/close:
     parameters:
@@ -1963,6 +1975,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Content]
       operationId: deleteArticle
@@ -1992,6 +2005,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/logs:
     get:

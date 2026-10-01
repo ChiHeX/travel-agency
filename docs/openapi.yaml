@@ -469,6 +469,7 @@ paths:
               schema: { $ref: '#/components/schemas/FavoriteEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /favorites/{routeId}:
     parameters:
@@ -991,6 +992,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ItineraryItemEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Routes]
       operationId: deleteItineraryItem
@@ -1115,6 +1117,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/attractions:
     get:
@@ -1174,6 +1177,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AttractionEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
       operationId: deleteAttraction
@@ -1353,6 +1357,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/guides/{guideId}/status:
     parameters:
@@ -1374,6 +1379,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/orders:
     get:
@@ -1515,6 +1521,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RefundEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /admin/refunds/{refundId}/reject:
@@ -1589,6 +1596,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReviewEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/users:
     get:
@@ -1649,6 +1657,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UserEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff:
     get:
@@ -1712,6 +1721,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff/{staffId}/status:
     parameters:
@@ -1733,6 +1743,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations:
     get:
@@ -1791,6 +1802,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations/{consultationId}/close:
     parameters:
@@ -1969,6 +1981,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Content]
       operationId: deleteArticle
@@ -1998,6 +2011,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/logs:
     get:
@@ -2414,7 +2428,7 @@ components:
       required: [username, password]
       properties:
         username: { type: string, minLength: 3, maxLength: 32, example: demo_user }
-        password: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422', example: DemoPass123! }
+        password: { type: string, minLength: 1, maxLength: 72, format: password, description: '登录口令，只做哈希匹配：不设 8 字符下限（历史口令按 UTF-16 码元口径创建，可能不足 8 个字符），所有不匹配与不足一律 401 AUTHENTICATION_REQUIRED（登录场景不暴露"该账号存在、只是口令长度不对"）。超过 72 UTF-8 字节时按 422 拒绝，见 docs/API.md §4.2', example: DemoPass123! }
     RegisterRequest:
       type: object
       additionalProperties: false
@@ -2440,8 +2454,8 @@ components:
       additionalProperties: false
       required: [currentPassword, newPassword]
       properties:
-        currentPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
-        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
+        currentPassword: { type: string, minLength: 1, maxLength: 72, format: password, description: '当前口令，只做哈希匹配：不套用 8 字符下限（历史口令按 UTF-16 码元口径创建，例如 4 个 emoji 只有 4 个字符却有 8 个码元），仍需非空且 UTF-8 编码不超过 72 字节；不匹配返回 422 VALIDATION_ERROR（不是 401，避免前端把"打错原密码"当成登录失效）。见 docs/API.md §4.2' }
+        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '新口令，套用完整设置规则：8-72 字符（按 Unicode 码点计，与后端 @CodePointLength 同口径），且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
     User:
       type: object
       additionalProperties: false

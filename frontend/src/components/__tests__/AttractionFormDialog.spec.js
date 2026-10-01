@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import AttractionFormDialog from '../AttractionFormDialog.vue'
 
 /**
@@ -207,5 +208,46 @@ describe('AttractionFormDialog', () => {
     expect(wrapper.text()).toContain('数据来源说明不能为空')
     expect(wrapper.emitted('saved')).toBeUndefined()
     expect(field(wrapper, '景点名称').element.value).toBe('西湖')
+  })
+
+  /**
+   * 长度口径：契约的 maxLength 数的是字符（码点），HTML 的 maxlength 与 JS 的 String#length
+   * 数的是 UTF-16 码元。128 个 emoji 的景点名在契约与库内 VARCHAR(128)（utf8mb4 按码点计）
+   * 下都合法，码元却是 256 —— 既会被 maxlength 静默截断，也会被 `.length` 校验误判成超长。
+   */
+  it('名称按 Unicode 码点校验：128 个 emoji 合法放行，129 个被拦下且不发请求', async () => {
+    createAttraction.mockResolvedValue({ id: '2', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '景点名称').setValue('😀'.repeat(128))
+    await field(wrapper, '所属城市').setValue('杭州')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+
+    expect(createAttraction).toHaveBeenCalledTimes(1)
+    expect(createAttraction.mock.calls[0][0].name).toBe('😀'.repeat(128))
+
+    createAttraction.mockClear()
+    await field(wrapper, '景点名称').setValue('😀'.repeat(129))
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+
+    expect(createAttraction).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('景点名称最多 128 个字符')
+  })
+
+  it('文本输入框不设 maxlength，计数器按码点显示当前长度', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    for (const label of ['景点名称', '所属城市', '详细地址', '景点简介', '数据来源说明']) {
+      expect(field(wrapper, label).attributes('maxlength')).toBeUndefined()
+    }
+
+    // 64 个 emoji 是 64 个码点（128 个码元）：计数器与校验都认 64。
+    await field(wrapper, '景点名称').setValue('😀'.repeat(64))
+    expect(wrapper.find('.form-counter').text()).toBe('64 / 128')
   })
 })

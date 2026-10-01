@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import { codePointLength, utf8Bytes } from '@/utils/text'
 
 /**
  * 导游新增 / 修改表单弹窗（对应契约 POST /admin/guides 与 PUT /admin/guides/{guideId}）。
@@ -82,12 +83,13 @@ function optional(value) {
 }
 
 /**
- * 按 Unicode 码点计数。契约的 maxLength 是 JSON Schema 口径，数的是字符（码点），
- * 后端的 @CodePointLength 也是这个口径；JS 的 String#length 数的是 UTF-16 码元，
- * 一个 emoji 会被算成 2，用 `.length` 会把契约允许的内容误判成超长。
+ * 码点计数与 UTF-8 字节数统一由 `@/utils/text` 提供（本组件不再各存一份实现）。
+ *
+ * 契约的 maxLength 是 JSON Schema 口径，数的是字符（码点），后端的 @CodePointLength
+ * 也是这个口径；JS 的 String#length 数的是 UTF-16 码元，一个 emoji 会被算成 2，
+ * 用 `.length` 会把契约允许的内容误判成超长。密码还要额外看 BCrypt 的 72 字节上限，
+ * 两个口径单位不同（见 `utils/text.js` 与契约 API.md §4.2）。
  */
-const codePointLength = (value) => [...String(value ?? '')].length
-const utf8Bytes = (value) => new TextEncoder().encode(String(value ?? '')).length
 
 /**
  * 各字段的码点上限，与契约（GuideCreateRequest / GuideUpdateRequest）和后端

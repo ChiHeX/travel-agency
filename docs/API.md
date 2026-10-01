@@ -95,10 +95,14 @@ POST /api/admin/orders/{orderNo}/confirm
 
 每个接口必须列出允许筛选和排序的字段，不得把客户端字段名直接拼接到 SQL。
 
-### 4.2 密码字段的长度口径（字符数 + UTF-8 字节数，两个上限）
+### 4.2 密码字段的长度口径（设置类与验证类，两套规则）
 
-密码统一为 **8～72 个字符**，并额外受 **UTF-8 编码不超过 72 字节** 的约束。两个上限单位不同，
-只在纯 ASCII 密码下等价：
+密码字段分两类，**口径不同，不得互相套用**：
+
+**① 设置类**（创建或修改口令）：`POST /auth/register`、`POST /admin/guides`、`POST /admin/staff`
+的 `password`，以及 `PUT /account/password` 的 `newPassword` —— **8～72 个字符**，并额外受
+**UTF-8 编码不超过 72 字节** 的约束。「字符」按 Unicode 码点计（与 JSON Schema 的 `maxLength`、
+后端 `@CodePointLength` 同口径）。两个上限单位不同，只在纯 ASCII 密码下等价：
 
 | 输入 | 字符数 | UTF-8 字节数 | 结果 |
 |---|---|---|---|
@@ -108,15 +112,34 @@ POST /api/admin/orders/{orderNo}/confirm
 | `😀` × 19 | 38 | 76 | **422** `VALIDATION_ERROR` |
 | `a` × 73 | 73 | 73 | **422**（同时超字符数与字节数） |
 
+**② 验证类**（核对已有口令）：`POST /auth/login` 的 `password`、`PUT /account/password` 的
+`currentPassword` —— **只要求非空且 UTF-8 不超过 72 字节，不套用 8 字符下限**，判定方式是
+**哈希匹配**（长度不合法时自然不匹配）。
+
+为什么验证类不能套用设置规则：历史口令是按 **UTF-16 码元** 口径创建并保存的（当时的校验是
+`@Size(min = 8)`，一个 emoji 记 2 个码元），例如 `😀😀😀😀` 只有 4 个字符（码点）却有 8 个码元，
+当时能注册、现在也仍能登录。改密接口若在核对原密码之前就以「不足 8 个字符」回 422，这些账号
+会既改不了密码、又没有管理员重置入口（见下），等于被永久锁死在旧口令上。因此：
+
+- `POST /auth/login` 的不匹配一律 401 `AUTHENTICATION_REQUIRED`（不因长度暴露账号是否存在）；
+- `PUT /account/password` 的原密码不匹配回 422 `VALIDATION_ERROR`「原密码不正确」——
+  该端点刻意不用 401：前端 axios 拦截器把任何 401 当成登录失效，用户打错一次原密码就会被强制登出。
+
+两类共有的守卫：
+
 - 字节上限来自 BCrypt：口令超过 72 字节时 `BCryptPasswordEncoder#encode` 会抛
-  `IllegalArgumentException`，若只在 DTO 上写 `@Size(max = 72)`（数的是字符），
-  中文/emoji 密码会绕过校验直达加密层，最终以 **500** 返回。
+  `IllegalArgumentException`，若只按字符数校验（`@Size`/`maxLength`），中文/emoji 密码会绕过
+  校验直达加密层，最终以 **500** 返回；超过 72 字节的输入也不可能是任何已存口令，因此验证类同样保留该上限。
 - 超限一律以 **422** 拒绝，**不做静默截断**：截断会让「用户设置的密码」与
   「实际参与校验的字节」不一致。
-- 适用范围：`POST /auth/register`、`POST /auth/login`、`PUT /account/password`、
-  `POST /admin/guides`、`POST /admin/staff` 的密码字段。
 - 校验失败时**不得产生任何副作用**：创建类接口不落 `sys_user`/`staff` 行，改密接口不更新
   `password_hash`。
+- **改密只能由本人发起**：`PUT /account/password` 必须提供原密码，且只作用于当前登录账号
+  （该端点没有「目标账号」参数）。契约**不提供**管理员修改他人密码的端点，管理端唯一能设定密码的
+  时机是建档时填写的初始密码（`POST /admin/guides`、`POST /admin/staff`，见 PRD §38、§43）——
+  正因为没有管理员重置这条退路，验证类才必须保留旧口令的自助升级路径。
+  在资料维护端点（如 `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`）提交 `password`
+  属于契约外字段，按 **400** 拒绝，且整个请求不产生任何写入。
 
 ## 5. 统一响应
 
@@ -295,6 +318,33 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
 4. 完成联调后再合并到共享分支。
 
 能兼容旧调用方时，优先新增可选字段或新接口。删除字段、改变字段含义或改变类型属于破坏性变更，不得静默实施。
+
+### 12.1 补齐写入端点的 422 声明（本次变更）
+
+- **内容**：为 14 个写入端点补上 `422 ValidationFailed` 声明：
+  `PUT /admin/attractions/{attractionId}`、`PUT /admin/itinerary-items/{itemId}`、
+  `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`、`PUT /admin/articles/{articleId}`、
+  `POST /admin/refunds/{refundId}/approve`、`POST /admin/consultations/{consultationId}/replies`、
+  `POST /favorites`，以及 `PATCH /admin/guides/{guideId}/status`、
+  `PATCH /admin/staff/{staffId}/status`、`PATCH /admin/users/{userId}/status`、
+  `PATCH /admin/departures/{departureId}/status`、`PATCH /admin/reviews/{reviewId}/status`、
+  `PATCH /admin/articles/{articleId}/status`。
+- **依据**：这些端点在字段语义校验失败时**本来就**返回 422 —— 请求体带 `@Valid`，字段约束失败由
+  `GlobalExceptionHandler` 统一映射成 422 `VALIDATION_ERROR`；6 个状态端点的取值另外由
+  `@Pattern`（账号 / 团期状态）或服务端枚举白名单（评价 / 攻略 / 导游 / 指南状态）挡住，同样回 422。
+  缺的只是契约文本，`docs/openapi.yaml` 原先只列了 `200` / `404` / `409`。
+- **兼容影响**：只声明「变更前就已经会返回」的错误响应。成功响应、字段、类型、必填性、权限与状态
+  流转均未变；调用方按 422 展示 `message` / `errors[]` 即可，无需修改任何调用代码。
+- **确认状态**：本项由 `#46`（后台导游管理）的收尾记录发起 —— 该记录把「`PUT /admin/guides/{guideId}`
+  缺 422 声明」列为范围外、需另开变更处理，并指向 `#42` 登记的同类清单。**未记录前端、后端、
+  测试成员的分别确认**，不得据此声称三方已分别确认；如需成员级确认，请在合并前补记。
+- **仍未声明（同类缺口，建议另开契约变更处理）**：
+  - 各写入端点在请求体为**非法 JSON 或含契约外字段**时返回的 `400`（`additionalProperties: false`
+    由全局严格模式拒绝）：`docs/openapi.yaml` 目前只有一个端点声明了 400，其余均未逐端点列出；
+  - `POST /favorites` 的成功响应形状：实现返回 `200` 且 `data` 为 `null`，契约声明的是
+    `201` + `Location` + `FavoriteEnvelope`（属响应契约不一致，与 422 无关）；
+  - `POST /payments/alipay/notify`：实现按**表单参数**接收支付宝回调并以 `text/plain` 应答，
+    契约描述的是 JSON 请求体（第三方回调，属接收格式不一致）。
 
 ## 13. 模块契约工作流
 

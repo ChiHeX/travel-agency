@@ -4,7 +4,7 @@ import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 
 /**
  * 景点新增/修改请求，对齐契约 {@code AttractionUpsertRequest}（{@code additionalProperties: false}，
@@ -20,18 +20,24 @@ import jakarta.validation.constraints.Size;
  * 与契约 {@code Longitude} / {@code Latitude} 的定义一一对应，超范围在写库前返回 422，
  * 而不是等到 {@code DECIMAL(10,7)} 落库时报错变成 500。</p>
  *
+ * <p><b>长度上限按 Unicode 码点计数</b>（{@link CodePointLength}）：契约的 {@code maxLength}
+ * 是 JSON Schema 口径，数的是字符（码点），而 {@code @Size} 数的是 UTF-16 码元 ——
+ * 一个 emoji 会被算成 2，于是出现「契约允许、实现却回 422」（128 个 emoji 的景点名，
+ * 码点 128 ≤ 128 合法，码元却是 256）。库内列宽同样是码点口径
+ * （{@code VARCHAR(128)} 在 utf8mb4 下就是 128 个字符），三边一致。</p>
+ *
  * <p>{@code status} 是契约 {@code AccountStatus} 枚举，映射到库内 {@code status} 的 1/0。
  * 它在契约里<b>不是必填</b>：新增时缺省按 {@code ACTIVE} 建档，修改时缺省表示
  * "保持库内当前状态"，避免漏传字段就把一个已停用的景点悄悄重新启用。</p>
  */
 public record AttractionUpsertRequest(
         @NotBlank(message = "景点名称不能为空")
-        @Size(max = 128, message = "景点名称最多 128 个字符") String name,
+        @CodePointLength(max = 128, message = "景点名称最多 128 个字符") String name,
 
         @NotBlank(message = "所属城市不能为空")
-        @Size(max = 64, message = "所属城市最多 64 个字符") String city,
+        @CodePointLength(max = 64, message = "所属城市最多 64 个字符") String city,
 
-        @Size(max = 255, message = "景点地址最多 255 个字符") String address,
+        @CodePointLength(max = 255, message = "景点地址最多 255 个字符") String address,
 
         @DecimalMin(value = "-180", message = "经度应在 -180 到 180 之间")
         @DecimalMax(value = "180", message = "经度应在 -180 到 180 之间") Double longitude,
@@ -39,10 +45,10 @@ public record AttractionUpsertRequest(
         @DecimalMin(value = "-90", message = "纬度应在 -90 到 90 之间")
         @DecimalMax(value = "90", message = "纬度应在 -90 到 90 之间") Double latitude,
 
-        @Size(max = 10000, message = "景点简介最多 10000 个字符") String intro,
+        @CodePointLength(max = 10000, message = "景点简介最多 10000 个字符") String intro,
 
         @NotBlank(message = "数据来源说明不能为空")
-        @Size(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
+        @CodePointLength(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
 
         @Pattern(regexp = "ACTIVE|DISABLED", message = "景点状态只能是 ACTIVE 或 DISABLED") String status) {
 

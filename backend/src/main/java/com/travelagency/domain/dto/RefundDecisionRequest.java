@@ -1,13 +1,14 @@
 package com.travelagency.domain.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 
 /**
  * 退款审核请求，对齐契约 RefundDecisionRequest。
  *
  * <p>契约把 {@code comment} 列为 required 且 minLength: 1（同意与拒绝共用同一 schema），
- * 因此两个动作都必须给出审核意见。</p>
+ * 因此两个动作都必须给出审核意见；长度按 Unicode 码点计数（{@link CodePointLength}），
+ * 与契约的 {@code maxLength} 口径一致。</p>
  *
  * <p>整个 requestBody 在 {@code POST /admin/refunds/{refundId}/approve} 上是可选的，
  * 但「不提交 body」与「提交空意见」是两回事：前者由 {@code @RequestBody(required = false)}
@@ -15,5 +16,5 @@ import jakarta.validation.constraints.Size;
  */
 public record RefundDecisionRequest(
         @NotBlank(message = "审核意见不能为空")
-        @Size(max = 500, message = "审核意见不能超过 500 字") String comment) {
+        @CodePointLength(max = 500, message = "审核意见不能超过 500 字") String comment) {
 }

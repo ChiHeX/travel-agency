@@ -210,7 +210,7 @@ public class AdminController {
     // 且允许客户端提交名额字段），迁移后 AdminController 只保留其它后台模块的接口。
 
     /**
-     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status 筛选）。
+     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status/keyword 筛选）。
      *
      * <p>返回 {@link GuideView}：契约 Guide 把 {@code username} 列为 required，
      * 而实体只有 {@code userId}，直出实体拿不到账号名。</p>
@@ -219,7 +219,8 @@ public class AdminController {
     public ApiResponse<PageResponse<GuideView>> guides(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<Guide> query = new QueryWrapper<>();
         if (status != null && !status.isBlank()) {
@@ -577,7 +578,8 @@ public class AdminController {
     public ApiResponse<PageResponse<OperationLogView>> logs(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String module,
+            @RequestParam(required = false)
+            @CodePointLength(max = 64, message = "module 长度不能超过 64 个字符") String module,
             @RequestParam(required = false) Long operatorId) {
         QueryWrapper<OperationLog> query = new QueryWrapper<>();
         if (module != null && !module.isBlank()) {

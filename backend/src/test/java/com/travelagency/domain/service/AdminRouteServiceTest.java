@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -627,6 +628,75 @@ class AdminRouteServiceTest {
         assertEquals(0, captor.getValue().longitude.compareTo(new BigDecimal("100.1645720")));
         assertEquals(0, captor.getValue().latitude.compareTo(new BigDecimal("25.6064850")));
         assertEquals(11L, captor.getValue().dayId, "所属每日行程由 URL 决定");
+    }
+
+    @Test
+    @DisplayName("新增项目：所关联景点的坐标不成对（历史数据）时不继承，保持两个坐标都为空")
+    void createItemDoesNotInheritHalfCoordinatePair() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
+        Attraction attraction = new Attraction();
+        attraction.id = 6L;
+        attraction.name = "只有经度的历史景点";
+        attraction.longitude = new BigDecimal("100.1645720");
+        attraction.latitude = null;
+        when(attractionMapper.selectById(6L)).thenReturn(attraction);
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.insert(any(RouteItineraryItem.class))).thenAnswer(invocation -> {
+            RouteItineraryItem inserted = invocation.getArgument(0);
+            inserted.id = 33L;
+            return 1;
+        });
+        when(itemMapper.selectById(33L)).thenReturn(item(33L, 11L, 1, "ATTRACTION", "只有经度的历史景点"));
+
+        service.createItem(11L, itemRequest(1, "ATTRACTION", "只有经度的历史景点", 6L, null, null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryItem> captor = ArgumentCaptor.forClass(RouteItineraryItem.class);
+        verify(itemMapper).insert(captor.capture());
+        assertNull(captor.getValue().longitude, "景点坐标不成对时不继承经度");
+        assertNull(captor.getValue().latitude, "景点坐标不成对时不继承纬度");
+    }
+
+    @Test
+    @DisplayName("修改项目：未提供坐标时整对继承景点坐标")
+    void updateItemInheritsWholeCoordinatePair() {
+        when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "ATTRACTION", "大理古城"));
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+
+        Attraction pair = new Attraction();
+        pair.id = 5L;
+        pair.longitude = new BigDecimal("100.1645720");
+        pair.latitude = new BigDecimal("25.6064850");
+        when(attractionMapper.selectById(5L)).thenReturn(pair);
+
+        service.updateItem(31L, itemRequest(1, "ATTRACTION", "大理古城", 5L, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryItem>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(itemMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryItem> wrapper = (UpdateWrapper<RouteItineraryItem>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("100.1645720")));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("25.6064850")));
+    }
+
+    @Test
+    @DisplayName("修改项目：景点坐标不成对（历史数据）时不继承，避免把半截坐标复制进行程项")
+    void updateItemDoesNotInheritHalfCoordinatePair() {
+        when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "ATTRACTION", "只有经度的历史景点"));
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+
+        Attraction half = new Attraction();
+        half.id = 6L;
+        half.longitude = new BigDecimal("100.1645720");
+        half.latitude = null;
+        when(attractionMapper.selectById(6L)).thenReturn(half);
+
+        service.updateItem(31L, itemRequest(1, "ATTRACTION", "只有经度的历史景点", 6L, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryItem>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(itemMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryItem> wrapper = (UpdateWrapper<RouteItineraryItem>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(null), "半截坐标不继承，写入 NULL");
+        assertFalse(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("100.1645720")),
+                "不能把景点的半截经度复制进行程项");
     }
 
     @Test

@@ -34,6 +34,7 @@ import AdminDashboardView from '@/views/admin/AdminDashboardView.vue'
 import AdminRoutesView from '@/views/admin/AdminRoutesView.vue'
 import AdminRouteDetailView from '@/views/admin/AdminRouteDetailView.vue'
 import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
+import AdminPlaceGuidesView from '@/views/admin/AdminPlaceGuidesView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
 import GuideDashboardView from '@/views/guide/GuideDashboardView.vue'
@@ -116,6 +117,7 @@ const routes = [
       { path: 'attractions', name: 'admin-attractions', component: AdminResourcesView, props: { title: '景点管理', resource: 'attractions' } },
       { path: 'hotels', name: 'admin-hotels', component: AdminResourcesView, props: { title: '酒店资料', resource: 'hotels' } },
       { path: 'guides', name: 'admin-guides', component: AdminResourcesView, props: { title: '导游管理', resource: 'guides' } },
+      { path: 'place-guides', name: 'admin-place-guides', component: AdminPlaceGuidesView },
       { path: 'orders', name: 'admin-orders', component: AdminOrdersView },
       { path: 'refunds', name: 'admin-refunds', component: AdminResourcesView, props: { title: '退款审核', resource: 'refunds' } },
       { path: 'users', name: 'admin-users', component: AdminUsersView },

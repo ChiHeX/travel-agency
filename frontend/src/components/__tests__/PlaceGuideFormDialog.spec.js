@@ -1,0 +1,184 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import PlaceGuideFormDialog from '../PlaceGuideFormDialog.vue'
+
+/**
+ * 地点指南表单的契约测试（契约 {@code PlaceGuideUpsertRequest}）。
+ *
+ * <p>覆盖这一档最容易出错的接线：</p>
+ * <ul>
+ *   <li>只提交契约字段（{@code title / summary / city / destination / coverUrl / places}），
+ *       不上送 {@code id / status / authorId / publishedAt}（严格模式下就是 400）；</li>
+ *   <li>{@code places} 的顺序就是地图顺序，提交时必须保持界面上的排序；</li>
+ *   <li>{@code attractionId} 必须是字符串 id，可空字段（摘要/目的地/封面/备注）为空时提交 {@code null}；</li>
+ *   <li>只有"启用且带经纬度"的景点才能作为地点（后端以 422 拒绝无坐标 / 已停用的地点），
+ *       因此无坐标的景点不得出现在可选项里，<b>少于两个地点</b>必须在本地就被拦下。</li>
+ * </ul>
+ */
+
+const createPlaceGuide = vi.fn()
+const updatePlaceGuide = vi.fn()
+const fetchAttractions = vi.fn()
+const warning = vi.fn()
+
+vi.mock('@/api/modules', () => ({
+  adminApi: {
+    createPlaceGuide: (...args) => createPlaceGuide(...args),
+    updatePlaceGuide: (...args) => updatePlaceGuide(...args),
+    attractions: (...args) => fetchAttractions(...args)
+  }
+}))
+
+vi.mock('element-plus', () => ({
+  ElMessage: { success: vi.fn(), warning: (...args) => warning(...args), error: vi.fn(), info: vi.fn() }
+}))
+
+const westLake = { id: '12', name: '西湖', city: '杭州', longitude: 120.13, latitude: 30.24, status: 'ACTIVE' }
+const lingyin = { id: '13', name: '灵隐寺', city: '杭州', longitude: 120.1, latitude: 30.241, status: 'ACTIVE' }
+/** 启用但没有坐标：不能作为指南地点，不得出现在下拉候选里。 */
+const withoutCoordinates = { id: '14', name: '无坐标景点', city: '杭州', longitude: null, latitude: null, status: 'ACTIVE' }
+/** 已停用：即使有坐标也不能被选为地点。 */
+const disabledAttraction = { id: '15', name: '已停用景点', city: '杭州', longitude: 120.2, latitude: 30.25, status: 'DISABLED' }
+
+function mountDialog(guide = null) {
+  return mount(PlaceGuideFormDialog, {
+    props: { modelValue: true, guide },
+    global: {
+      // el-dialog 由应用全局注册，测试里只保留插槽内容。
+      stubs: { 'el-dialog': { template: '<div><slot /><slot name="footer" /></div>' } }
+    }
+  })
+}
+
+/** 按 label 文案定位表单项里的控件。 */
+function field(wrapper, label) {
+  const group = wrapper.findAll('.form-field')
+    .find((item) => item.find('label').exists() && item.find('label').text().startsWith(label))
+  if (!group) throw new Error(`找不到标签以「${label}」开头的表单项`)
+  const control = group.find('input, textarea, select')
+  if (!control.exists()) throw new Error(`表单项「${label}」里没有输入控件`)
+  return control
+}
+
+function buttonByText(wrapper, text) {
+  const button = wrapper.findAll('button').find((item) => item.text().includes(text))
+  if (!button) {
+    throw new Error(`找不到按钮「${text}」，现有按钮：${wrapper.findAll('button').map((b) => b.text()).join(' / ')}`)
+  }
+  return button
+}
+
+beforeEach(() => {
+  createPlaceGuide.mockReset()
+  updatePlaceGuide.mockReset()
+  warning.mockReset()
+  fetchAttractions.mockReset().mockResolvedValue({
+    items: [westLake, withoutCoordinates, lingyin, disabledAttraction],
+    totalPages: 1
+  })
+})
+
+describe('PlaceGuideFormDialog', () => {
+  it('新增：只提交契约字段，地点顺序与 id 形状正确，空的可选字段提交 null', async () => {
+    createPlaceGuide.mockResolvedValue({ id: '1', status: 'DRAFT' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '指南标题').setValue('  杭州双景点地图指南  ')
+    await field(wrapper, '所属城市').setValue('杭州')
+
+    const selects = wrapper.findAll('.place-select')
+    expect(selects).toHaveLength(2)
+    await selects[0].setValue('12')
+    await selects[1].setValue('13')
+    await wrapper.findAll('.place-note')[1].setValue(' 顺路可看飞来峰 ')
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+
+    expect(createPlaceGuide).toHaveBeenCalledTimes(1)
+    const payload = createPlaceGuide.mock.calls[0][0]
+    expect(payload).toEqual({
+      title: '杭州双景点地图指南',
+      summary: null,
+      city: '杭州',
+      destination: null,
+      coverUrl: null,
+      places: [
+        { attractionId: '12', note: null },
+        { attractionId: '13', note: '顺路可看飞来峰' }
+      ]
+    })
+    // 契约外字段一律不上送。
+    expect(payload).not.toHaveProperty('id')
+    expect(payload).not.toHaveProperty('status')
+    expect(payload).not.toHaveProperty('authorId')
+    expect(payload).not.toHaveProperty('publishedAt')
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+    expect(wrapper.emitted('saved')[0][0]).toMatchObject({ created: true })
+  })
+
+  it('无坐标或已停用的景点不会出现在地点候选项里', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    const options = wrapper.findAll('.place-select option').map((option) => option.text())
+    expect(options.some((text) => text.includes('西湖'))).toBe(true)
+    expect(options.some((text) => text.includes('灵隐寺'))).toBe(true)
+    expect(options.some((text) => text.includes('无坐标景点'))).toBe(false)
+    expect(options.some((text) => text.includes('已停用景点'))).toBe(false)
+  })
+
+  it('少于两个地点时不发请求，就地提示', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '指南标题').setValue('只有一个地点的指南')
+    await field(wrapper, '所属城市').setValue('杭州')
+    await wrapper.findAll('.place-select')[0].setValue('12')
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+
+    expect(warning).toHaveBeenCalled()
+    expect(createPlaceGuide).not.toHaveBeenCalled()
+    expect(updatePlaceGuide).not.toHaveBeenCalled()
+  })
+
+  it('编辑：回填地点并按界面顺序提交 PUT', async () => {
+    updatePlaceGuide.mockResolvedValue({ id: '7', status: 'PUBLISHED' })
+    const guide = {
+      id: '7',
+      title: '北京中轴线地图演示指南',
+      summary: '演示摘要',
+      city: '北京',
+      destination: '北京',
+      coverUrl: 'https://example.com/cover.jpg',
+      status: 'PUBLISHED',
+      places: [
+        { attractionId: '12', name: '西湖', city: '杭州', longitude: 120.13, latitude: 30.24, note: '第一站', sortOrder: 1 },
+        { attractionId: '13', name: '灵隐寺', city: '杭州', longitude: 120.1, latitude: 30.241, note: '第二站', sortOrder: 2 }
+      ]
+    }
+    const wrapper = mountDialog(guide)
+    await flushPromises()
+
+    // 把第二行上移到首位后提交，顺序应以上移后的界面顺序为准。
+    // 注意取第二行：第一行的「上移」是禁用的（已在首位），点它不会触发任何移动。
+    const placeRows = wrapper.findAll('.place-row')
+    await buttonByText(placeRows[1], '上移').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.place-note').map((input) => input.element.value)).toEqual(['第二站', '第一站'])
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+
+    expect(updatePlaceGuide).toHaveBeenCalledTimes(1)
+    const [guideId, payload] = updatePlaceGuide.mock.calls[0]
+    expect(guideId).toBe('7')
+    expect(payload.places.map((place) => place.attractionId)).toEqual(['13', '12'])
+    expect(wrapper.emitted('saved')[0][0]).toMatchObject({ created: false })
+  })
+})

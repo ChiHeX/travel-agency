@@ -140,6 +140,15 @@ export const adminApi = {
   replyConsultation: (consultationId, payload) =>
     request.post(`/admin/consultations/${consultationId}/replies`, payload),
   closeConsultation: (consultationId) => request.post(`/admin/consultations/${consultationId}/close`),
+  // 地点指南（地图联动内容）：契约 /admin/place-guides。列表只声明 page/size，
+  // 没有状态或关键字筛选参数，页面因此不做契约外的筛选查询。
+  placeGuides: (params) => request.get('/admin/place-guides', { params }),
+  placeGuide: (guideId) => request.get(`/admin/place-guides/${guideId}`),
+  createPlaceGuide: (payload) => request.post('/admin/place-guides', payload),
+  updatePlaceGuide: (guideId, payload) => request.put(`/admin/place-guides/${guideId}`, payload),
+  updatePlaceGuideStatus: (guideId, status) =>
+    request.patch(`/admin/place-guides/${guideId}/status`, { status }),
+
   articles: (params) => request.get('/admin/articles', { params }),
   article: (articleId) => request.get(`/admin/articles/${articleId}`),
   createArticle: (payload) => request.post('/admin/articles', payload),

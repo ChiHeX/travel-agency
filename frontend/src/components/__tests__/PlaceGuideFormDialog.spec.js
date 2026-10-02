@@ -225,4 +225,81 @@ describe('PlaceGuideFormDialog', () => {
     expect(warning).toHaveBeenCalledWith('正在加载候选景点，请稍候再保存')
     expect(updatePlaceGuide).not.toHaveBeenCalled()
   })
+
+  it('首次加载成功后景点数据发生变化，再次打开会重新取候选（不命中旧缓存）', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .not.toContain('新补坐标景点')
+
+    // 另一位成员刚给景点补齐坐标（或新建了景点）：本次会话里它必须能选到。
+    const justFixed = { id: '16', name: '新补坐标景点', city: '杭州', longitude: 120.2, latitude: 30.3, status: 'ACTIVE' }
+    fetchAttractions.mockResolvedValue({ items: [westLake, lingyin, justFixed], totalPages: 1 })
+
+    await wrapper.setProps({ modelValue: false })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    expect(fetchAttractions).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .toContain('新补坐标景点')
+  })
+
+  it('候选刷新后，刚补齐坐标的景点不再被误判为「已停用或缺坐标」，保存可以正常提交', async () => {
+    // 指南里已经引用了这条景点（另一位成员刚把它补齐坐标并加进指南）。
+    const guide = {
+      id: '7',
+      title: '杭州双景点地图指南',
+      city: '杭州',
+      destination: '杭州',
+      places: [
+        { attractionId: '16', name: '新补坐标景点', city: '杭州', longitude: 120.2, latitude: 30.3, note: '第一站', sortOrder: 1 },
+        { attractionId: '13', name: '灵隐寺', city: '杭州', longitude: 120.1, latitude: 30.241, note: '第二站', sortOrder: 2 }
+      ]
+    }
+    // 本次取到的候选里还没有它（缓存了旧结果的实现会一直停在这个状态）。
+    fetchAttractions.mockResolvedValue({ items: [lingyin], totalPages: 1 })
+    const wrapper = mountDialog(guide)
+    await flushPromises()
+
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .toContain('已停用或缺坐标')
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+    expect(updatePlaceGuide).not.toHaveBeenCalled()
+
+    // 重新打开：候选刷新后这条地点合法，保存必须放行（此前关掉重开仍然被拦）。
+    const justFixed = { id: '16', name: '新补坐标景点', city: '杭州', longitude: 120.2, latitude: 30.3, status: 'ACTIVE' }
+    fetchAttractions.mockResolvedValue({ items: [lingyin, justFixed], totalPages: 1 })
+    updatePlaceGuide.mockResolvedValue({ id: '7', status: 'PUBLISHED' })
+    await wrapper.setProps({ modelValue: false })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .not.toContain('已停用或缺坐标')
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+
+    expect(updatePlaceGuide).toHaveBeenCalledTimes(1)
+    expect(updatePlaceGuide.mock.calls[0][1].places.map((place) => place.attractionId))
+      .toEqual(['16', '13'])
+  })
+
+  it('刷新候选失败时保留上一次的候选列表，不清空成不可用状态', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(fetchAttractions).toHaveBeenCalledTimes(1)
+
+    // 第二次打开时候选取数失败：仍要能用上一次取到的景点正常编辑，同时给出可重试提示。
+    fetchAttractions.mockRejectedValue(new Error('网络异常'))
+    await wrapper.setProps({ modelValue: false })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    expect(wrapper.find('.hint-error').text()).toContain('候选景点加载失败')
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .toContain('西湖')
+  })
 })

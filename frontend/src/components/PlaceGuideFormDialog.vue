@@ -57,9 +57,10 @@ const places = ref([])
 /** 候选景点：只取启用且有坐标的，逐页取全量（契约 size 上限 100）。 */
 const attractionOptions = ref([])
 const optionsLoading = ref(false)
-const optionsLoaded = ref(false)
 /** 候选景点取数失败的原因；失败后必须让运营能重试，而不是整个会话都卡在空候选上。 */
 const optionsError = ref('')
+/** 正在进行中的候选取数：弹窗反复开关时不重复发同一批请求。 */
+let optionsRequest = null
 
 const editing = computed(() => Boolean(props.guide?.id))
 
@@ -70,26 +71,33 @@ const hasCoordinates = (attraction) =>
 /**
  * 取候选景点。
  *
- * <p>失败时必须把 {@code optionsLoaded} 复位：这个标记只是"本次会话不必重复取"的缓存，
- * 若失败后仍然保留，一处网络抖动就会让整个页面会话再也取不到候选景点 ——
- * 下拉永远只剩"请选择景点"，而保存又会被本地校验拦下，运营除了刷新浏览器没有别的出路。</p>
+ * <p><b>每次打开弹窗都重新取，不做跨次缓存。</b>景点资料是共用资源：别的成员可能刚给某个景点
+ * 补齐坐标、新建景点或停用景点；同一个会话里先去「景点资料库」补完坐标再回到本页，浏览器
+ * 也不会刷新。缓存住首次结果的话，这些景点在下拉里根本不存在，页面会把其实合法的地点标成
+ * "已停用或缺坐标，请替换"，保存又被本地校验拦下，而且关闭重开依然无效 —— 只能刷新整页。</p>
+ *
+ * <p>取数失败时<b>保留上一次成功的结果</b>，不把候选清空：宁可让运营继续用略旧的候选列表
+ * （提交时后端仍按真实数据校验，不合法会回 422 并给出可读提示），也不要在一次网络抖动之后
+ * 让整份候选消失、连改个标题都保存不了。从未取到过候选时列表本来就是空的，
+ * 这时由 {@code optionsError} 就地说明原因。</p>
  */
-async function loadOptions() {
-  if (optionsLoaded.value) return
+function loadOptions() {
+  if (optionsRequest) return optionsRequest
   optionsLoading.value = true
   optionsError.value = ''
-  try {
-    const all = await fetchAllPages(adminApi.attractions)
-    attractionOptions.value = all.filter((item) => item.status === 'ACTIVE' && hasCoordinates(item))
-    optionsLoaded.value = true
-  } catch {
-    // 候选项加载失败不阻塞文案编辑；提交时后端仍会校验。错误提示已由 axios 拦截器弹出。
-    attractionOptions.value = []
-    optionsLoaded.value = false
-    optionsError.value = '候选景点加载失败，请关闭后重新打开本弹窗重试。'
-  } finally {
-    optionsLoading.value = false
-  }
+  optionsRequest = (async () => {
+    try {
+      const all = await fetchAllPages(adminApi.attractions)
+      attractionOptions.value = all.filter((item) => item.status === 'ACTIVE' && hasCoordinates(item))
+    } catch {
+      // 错误提示已由 axios 拦截器弹出；这里再给一句可就地重试的说明。
+      optionsError.value = '候选景点加载失败，请关闭后重新打开本弹窗重试。'
+    } finally {
+      optionsLoading.value = false
+      optionsRequest = null
+    }
+  })()
+  return optionsRequest
 }
 
 /**
@@ -217,6 +225,10 @@ function validate() {
   // 会让运营去替换一个其实正确的选择，因此先要求等待取数完成。
   if (optionsLoading.value) {
     return '正在加载候选景点，请稍候再保存'
+  }
+  // 候选为空且取数失败过：真正的原因是"没取到数据"，不是"地点不合法"，照实说明。
+  if (!attractionOptions.value.length && optionsError.value) {
+    return optionsError.value
   }
   const invalid = places.value.find((place) =>
     !attractionOptions.value.some((item) => String(item.id) === String(place.attractionId)))

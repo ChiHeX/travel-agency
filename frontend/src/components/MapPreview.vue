@@ -47,16 +47,18 @@ function points() {
       .filter((item) => Number.isFinite(item.position[0]) && Number.isFinite(item.position[1])
         && Math.abs(item.position[0]) <= 90 && Math.abs(item.position[1]) <= 180)
   }
+  // 行程点位先过滤掉经纬度不成对、非数字和越界（历史数据）的点，再编号：
+  // 编号是给用户看的"第几站"，被丢弃的点不该占用编号（否则第二个可见点会显示成"第 4 站"）。
   return props.itinerary
     .flatMap((day) => day.items || [])
     .filter((item) => item.longitude != null && item.latitude != null)
-    .map((item, index) => ({
+    .map((item) => ({
       position: [Number(item.latitude), Number(item.longitude)],
-      name: item.name,
-      order: index + 1
+      name: item.name
     }))
     .filter((item) => Number.isFinite(item.position[0]) && Number.isFinite(item.position[1])
       && Math.abs(item.position[0]) <= 90 && Math.abs(item.position[1]) <= 180)
+    .map((item, index) => ({ ...item, order: index + 1 }))
 }
 
 function renderMap() {

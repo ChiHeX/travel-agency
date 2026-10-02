@@ -114,7 +114,7 @@ function validate() {
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
   if (latitude.error) return latitude.error
-  // 经纬度必须成对（契约 AttractionUpsertRequest 的 dependentRequired / 后端 @AssertTrue）：
+  // 经纬度必须成对（契约 CoordinatePairRule / 后端 @CoordinatePairComplete）：
   // 只填一个的点无法在地图上定位，会被静默丢弃，因此提交前后端都会 422。
   if ((longitude.value == null) !== (latitude.value == null)) {
     return '经度和纬度需要同时填写，或同时留空'

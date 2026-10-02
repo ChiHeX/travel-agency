@@ -12,16 +12,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 地图坐标数据的一致性约束：经纬度必须成对提供（不依赖 Spring 容器与数据库）。
  *
  * <p>契约里 {@code AttractionUpsertRequest} / {@code HotelCreateRequest} /
- * {@code HotelUpdateRequest} / {@code ItineraryItemRequest} 都用
- * {@code dependentRequired: longitude ↔ latitude} 表达这条规则，四个请求模型分别用
- * {@code @AssertTrue} 实现同一口径。这里的用例逐一把四档都钉住：</p>
+ * {@code HotelUpdateRequest} / {@code ItineraryItemRequest} 都引用 {@code CoordinatePairRule}
+ * （"提供了经度就必须提供纬度"，字段缺失与显式 {@code null} 等价），四个请求模型分别用
+ * {@code @CoordinatePairComplete} 实现同一口径。这里的用例逐一把四档都钉住：</p>
  * <ul>
  *   <li>只给经度、或只给纬度 —— 拒绝（单点坐标在用户端地图上无法落点，会被静默丢弃）；</li>
  *   <li>两个都留空 —— 允许（表示未录入坐标；行程项此时整对继承所关联景点的坐标）；</li>
  *   <li>两个都给 —— 允许。</li>
  * </ul>
  *
- * <p>按约束文案断言，不依赖 {@code @AssertTrue} 方法在 Hibernate Validator 里的属性命名，
+ * <p>按约束文案断言，不依赖约束在 Hibernate Validator 里生成的属性路径，
  * 避免因为字段命名差异造成脆弱的测试。</p>
  */
 class CoordinatePairValidationTest {

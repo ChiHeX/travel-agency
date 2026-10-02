@@ -450,7 +450,7 @@ describe('HotelFormDialog', () => {
     expect(createHotel).toHaveBeenCalledTimes(1)
   })
 
-  it('经纬度必须成对：只填其中一个时不发请求（契约 dependentRequired）', async () => {
+  it('经纬度必须成对：只填其中一个时不发请求（契约 CoordinatePairRule）', async () => {
     const wrapper = mountDialog()
     await flushPromises()
 

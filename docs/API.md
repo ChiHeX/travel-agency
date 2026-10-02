@@ -141,6 +141,24 @@ POST /api/admin/orders/{orderNo}/confirm
   在资料维护端点（如 `PUT /admin/guides/{guideId}`、`PUT /admin/staff/{staffId}`）提交 `password`
   属于契约外字段，按 **400** 拒绝，且整个请求不产生任何写入。
 
+### 4.3 经纬度必须成对提交
+
+涉及地图坐标的请求体，`longitude` 与 `latitude` **要么都提供，要么都不提供**，只给其中一个
+按 **422 `VALIDATION_ERROR`** 拒绝（在 `errors[]` 中指向 `longitude`）：
+
+| 请求模型 | 端点 |
+|---|---|
+| `AttractionUpsertRequest` | `POST /admin/attractions`、`PUT /admin/attractions/{attractionId}` |
+| `HotelCreateRequest` / `HotelUpdateRequest` | `POST /admin/hotels`、`PUT /admin/hotels/{hotelId}` |
+| `ItineraryItemRequest` | `POST /admin/itinerary-days/{dayId}/items`、`PUT /admin/itinerary-items/{itemId}` |
+
+原因：用户端地图只在经纬度**都非空**时落点。只填一个的坐标会被静默丢弃，运营以为录入了位置、
+地图上却什么都没有，且没有任何提示 —— 与其让数据悄悄失效，不如在写入前明确拒绝。
+契约用 JSON Schema 的 `dependentRequired` 表达该约束。
+
+两个字段的取值范围仍各自独立校验（经度 ±180、纬度 ±90）；两者都留空是合法的，表示未录入坐标。
+行程项两者都留空时，会**整对**继承所关联景点的坐标（见 `AdminRouteService`），这与"只填一个"不同。
+
 ## 5. 统一响应
 
 除 `204 No Content`、文件下载和明确约定的第三方回调外，所有接口使用同一响应结构。

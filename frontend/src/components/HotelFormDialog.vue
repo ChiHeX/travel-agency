@@ -148,6 +148,11 @@ function validate() {
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
   if (latitude.error) return latitude.error
+  // 经纬度必须成对（契约 HotelCreate/UpdateRequest 的 dependentRequired / 后端 @AssertTrue）：
+  // 只填一个的坐标在地图上无法落点，会被静默丢弃。
+  if ((longitude.value == null) !== (latitude.value == null)) {
+    return '经度和纬度需要同时填写，或同时留空'
+  }
   return ''
 }
 

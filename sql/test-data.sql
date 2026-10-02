@@ -37,8 +37,8 @@ SET @route_id = (SELECT id FROM travel_route WHERE name = '彩云之南经典 6 
 SET @dali_id = (SELECT id FROM attraction WHERE name = '大理古城' ORDER BY id LIMIT 1);
 SET @lijiang_id = (SELECT id FROM attraction WHERE name = '丽江古城' ORDER BY id LIMIT 1);
 
-INSERT INTO hotel (name, address, contact_phone, intro, data_source, status)
-SELECT '彩云之南演示酒店', '云南省大理市古城区', '000-00000000', '课程演示用酒店资料，不提供独立预订。', '团队原创测试资料', 1
+INSERT INTO hotel (name, address, contact_phone, longitude, latitude, intro, data_source, status)
+SELECT '彩云之南演示酒店', '云南省大理市古城区', '000-00000000', 100.1650000, 25.6940000, '课程演示用酒店资料，不提供独立预订。', '团队原创测试资料', 1
 WHERE NOT EXISTS (SELECT 1 FROM hotel WHERE name = '彩云之南演示酒店');
 SET @hotel_id = (SELECT id FROM hotel WHERE name = '彩云之南演示酒店' ORDER BY id LIMIT 1);
 

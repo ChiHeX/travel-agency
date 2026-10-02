@@ -192,6 +192,35 @@ describe('AttractionFormDialog', () => {
     expect(createAttraction).toHaveBeenCalledTimes(1)
   })
 
+  it('经纬度必须成对：只填其中一个时不发请求（契约 dependentRequired）', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '景点名称').setValue('西湖')
+    await field(wrapper, '所属城市').setValue('杭州')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+
+    // 只填经度：单点坐标在用户端地图上无法落点，后端同样会回 422。
+    await field(wrapper, '经度').setValue('120.13')
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+    expect(createAttraction).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('经度和纬度需要同时填写，或同时留空')
+
+    // 只填纬度同样被拦。
+    await field(wrapper, '经度').setValue('')
+    await field(wrapper, '纬度').setValue('30.24')
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+    expect(createAttraction).not.toHaveBeenCalled()
+
+    // 成对补齐后放行。
+    await field(wrapper, '经度').setValue('120.13')
+    await buttonByText(wrapper, '保存景点').trigger('click')
+    await flushPromises()
+    expect(createAttraction).toHaveBeenCalledTimes(1)
+  })
+
   it('后端校验失败时就地展示 message，且不关闭弹窗、不丢用户输入', async () => {
     createAttraction.mockRejectedValue(
       Object.assign(new Error('数据来源说明不能为空'), { status: 422, code: 'VALIDATION_ERROR' })

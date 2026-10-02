@@ -172,6 +172,19 @@ class AttractionAdminWebContractTest {
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("latitude")));
 
+        // 经纬度必须成对（契约 AttractionUpsertRequest 的 dependentRequired）：只填一个的坐标
+        // 在地图上无法落点、会被静默丢弃，必须在写库前就以 422 拦下，并给出可定位的错误。
+        for (String half : new String[]{
+                VALID_BODY.replace("\"latitude\":25.694", "\"latitude\":null"),
+                VALID_BODY.replace("\"longitude\":100.165", "\"longitude\":null")}) {
+            mvc().perform(post("/api/admin/attractions").with(user("staff").roles("STAFF"))
+                            .contentType(MediaType.APPLICATION_JSON).content(half))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                    .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")))
+                    .andExpect(jsonPath("$.errors[0].message").value("经度和纬度需要同时填写，或同时留空"));
+        }
+
         // 状态只接受契约 AccountStatus 枚举，不能用 1/0 或其它取值
         mvc().perform(post("/api/admin/attractions").with(user("staff").roles("STAFF"))
                         .contentType(MediaType.APPLICATION_JSON)

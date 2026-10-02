@@ -276,6 +276,25 @@ class HotelAdminWebContractTest {
                         .content(VALID_UPDATE_BODY.replace("\"longitude\":102.832", "\"longitude\":-180.5")))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")));
+
+        // 经纬度必须成对（契约 HotelCreate/UpdateRequest 的 dependentRequired）：只填一个的坐标
+        // 在地图上无法落点、会被静默丢弃，建档与修改都必须以 422 拦下。
+        for (String half : new String[]{
+                VALID_BODY.replace("\"latitude\":24.88", "\"latitude\":null"),
+                VALID_BODY.replace("\"longitude\":102.832", "\"longitude\":null")}) {
+            mvc().perform(post("/api/admin/hotels").with(user("staff").roles("STAFF"))
+                            .contentType(MediaType.APPLICATION_JSON).content(half))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                    .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")))
+                    .andExpect(jsonPath("$.errors[0].message").value("经度和纬度需要同时填写，或同时留空"));
+        }
+
+        mvc().perform(put("/api/admin/hotels/1").with(user("staff").roles("STAFF"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_UPDATE_BODY.replace("\"latitude\":24.88", "\"latitude\":null")))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.errors[0].message").value("经度和纬度需要同时填写，或同时留空"));
     }
 
     /**

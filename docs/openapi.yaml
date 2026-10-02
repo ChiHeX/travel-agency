@@ -2740,6 +2740,13 @@ components:
       type: object
       additionalProperties: false
       required: [sortNo, itemType, name]
+      description: |
+        经纬度必须成对提供：只给其中一个（另一个为 `null` 或省略）时按 422 `VALIDATION_ERROR` 拒绝 ——
+        只填一个的坐标在地图上无法落点，会被静默丢弃。两个都不提供表示"不单独指定坐标"，
+        此时期末项会整对继承所关联景点的坐标（见 `AdminRouteService`）。
+      dependentRequired:
+        longitude: [latitude]
+        latitude: [longitude]
       properties:
         sortNo: { type: integer, minimum: 1 }
         itemType: { type: string, enum: [ATTRACTION, TRANSPORT, MEAL, ACTIVITY, OTHER] }
@@ -2900,6 +2907,12 @@ components:
       type: object
       additionalProperties: false
       required: [name, city, dataSource]
+      description: |
+        经纬度必须成对提供：只给其中一个（另一个为 `null` 或省略）时按 422 `VALIDATION_ERROR` 拒绝，
+        因为只填一个的坐标无法在地图上定位；两个都不给表示未录入坐标（景点不出现在地图上）。
+      dependentRequired:
+        longitude: [latitude]
+        latitude: [longitude]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         city: { type: string, minLength: 1, maxLength: 64 }
@@ -2957,6 +2970,9 @@ components:
         创建酒店资料。**不含 `version`**：新建由服务端从 0 起算，客户端不参与版本决定，
         提交该字段会被严格反序列化拒绝（400）。
       required: [name, dataSource]
+      dependentRequired:
+        longitude: [latitude]
+        latitude: [longitude]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         address: { type: [string, 'null'], maxLength: 255 }
@@ -2981,6 +2997,9 @@ components:
         版本不一致说明资料已被他人修改，返回 `409 HOTEL_VERSION_CONFLICT`，本次修改不生效。
         缺 `version` 按字段语义校验失败处理（422），不会静默当成 0。
       required: [name, dataSource, version]
+      dependentRequired:
+        longitude: [latitude]
+        latitude: [longitude]
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         address: { type: [string, 'null'], maxLength: 255 }

@@ -1,5 +1,7 @@
 package com.travelagency.domain.dto;
 
+import com.travelagency.common.validation.CoordinatePairComplete;
+import com.travelagency.common.validation.HasCoordinatePair;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
@@ -37,7 +39,11 @@ import org.hibernate.validator.constraints.CodePointLength;
  * <p>{@code status} 是契约 {@code AccountStatus} 枚举，映射到库内 {@code status} 的 1/0。
  * 它在契约里<b>不是必填</b>：新增时缺省按 {@code ACTIVE} 建档，修改时缺省表示
  * "保持库内当前状态"，避免漏传字段就把一家已停用的酒店悄悄重新启用。</p>
+ *
+ * <p><b>经纬度必须成对</b>（{@link CoordinatePairComplete}，对应契约的
+ * {@code dependentRequired}）：只填一个的坐标在用户端地图上无法落点，会被静默丢弃。</p>
  */
+@CoordinatePairComplete
 public record HotelCreateRequest(
         @NotBlank(message = "酒店名称不能为空")
         @CodePointLength(max = 128, message = "酒店名称最多 128 个字符") String name,
@@ -57,7 +63,8 @@ public record HotelCreateRequest(
         @NotBlank(message = "数据来源说明不能为空")
         @CodePointLength(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
 
-        @Pattern(regexp = "ACTIVE|DISABLED", message = "酒店状态只能是 ACTIVE 或 DISABLED") String status) {
+        @Pattern(regexp = "ACTIVE|DISABLED", message = "酒店状态只能是 ACTIVE 或 DISABLED") String status)
+        implements HasCoordinatePair {
 
     /**
      * 判断本次请求是否显式提交了状态。

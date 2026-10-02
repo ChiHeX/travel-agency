@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import HotelFormDialog from '../HotelFormDialog.vue'
 
 /**
@@ -444,6 +445,27 @@ describe('HotelFormDialog', () => {
 
     // 坐标全部合法后应当放行，避免上面的断言因为"永远不发请求"而假通过。
     await field(wrapper, '纬度').setValue('25.694')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+  })
+
+  it('经纬度必须成对：只填其中一个时不发请求（契约 CoordinatePairRule）', async () => {
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+
+    // 只填纬度：单点坐标在用户端地图上无法落点，后端同样会回 422。
+    await field(wrapper, '纬度').setValue('25.694')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('经度和纬度需要同时填写，或同时留空')
+
+    // 补齐经度后放行。
+    await field(wrapper, '经度').setValue('100.165')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
     expect(createHotel).toHaveBeenCalledTimes(1)

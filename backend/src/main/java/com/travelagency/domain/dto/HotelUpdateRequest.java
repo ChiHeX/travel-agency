@@ -1,5 +1,7 @@
 package com.travelagency.domain.dto;
 
+import com.travelagency.common.validation.CoordinatePairComplete;
+import com.travelagency.common.validation.HasCoordinatePair;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
@@ -20,7 +22,11 @@ import org.hibernate.validator.constraints.CodePointLength;
  * 地址 / 联系电话 / 状态改动"（丢失更新）。契约把 {@code version} 列为必填，
  * 缺字段按 422 处理而不是静默当成 0 —— 静默按 0 会把"忘了回传版本"变成一次必然的冲突或
  * 一次意外的覆盖。</p>
+ *
+ * <p><b>经纬度必须成对</b>（{@link CoordinatePairComplete}，对应契约的
+ * {@code CoordinatePairRule}）：与建档请求同口径。</p>
  */
+@CoordinatePairComplete
 public record HotelUpdateRequest(
         @NotBlank(message = "酒店名称不能为空")
         @CodePointLength(max = 128, message = "酒店名称最多 128 个字符") String name,
@@ -43,7 +49,8 @@ public record HotelUpdateRequest(
         @Pattern(regexp = "ACTIVE|DISABLED", message = "酒店状态只能是 ACTIVE 或 DISABLED") String status,
 
         @NotNull(message = "酒店版本号不能为空")
-        @Min(value = 0, message = "酒店版本号不能为负数") Integer version) {
+        @Min(value = 0, message = "酒店版本号不能为负数") Integer version)
+        implements HasCoordinatePair {
 
     /** 可编辑字段部分，供服务层复用建档请求的同一套赋值与校验口径。 */
     public HotelCreateRequest editableFields() {

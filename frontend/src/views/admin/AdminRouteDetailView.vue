@@ -274,14 +274,22 @@ async function saveItem() {
   const description = optional(itemForm.description)
   if (codePointLength(description) > 10000) return ElMessage.warning('行程项目说明最多 10000 个字符')
 
+  // 经纬度必须成对（契约 CoordinatePairRule / 后端 @CoordinatePairComplete）：
+  // 只填一个的点在用户端地图上会被静默丢弃。两个都留空是允许的，此时后端会整对继承关联景点的坐标。
+  const longitude = coordinate(itemForm.longitude)
+  const latitude = coordinate(itemForm.latitude)
+  if ((longitude == null) !== (latitude == null)) {
+    return ElMessage.warning('经度和纬度需要同时填写，或同时留空')
+  }
+
   const payload = {
     sortNo,
     itemType: itemForm.itemType,
     name,
     description,
     attractionId: optional(itemForm.attractionId),
-    longitude: coordinate(itemForm.longitude),
-    latitude: coordinate(itemForm.latitude)
+    longitude,
+    latitude
   }
 
   itemSaving.value = true

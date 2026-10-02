@@ -361,14 +361,15 @@ public class AdminRouteService {
         if (sortNoExists(item.dayId, request.sortNo(), itemId)) {
             throw new BusinessException(422, "VALIDATION_ERROR", "排序号 " + request.sortNo() + " 已存在，请调整排序");
         }
+        Coordinates coordinates = resolveCoordinates(request, attraction);
         itemMapper.update(null, new UpdateWrapper<RouteItineraryItem>().eq("id", itemId)
                 .set("sort_no", request.sortNo())
                 .set("item_type", request.itemType())
                 .set("name", trimToNull(request.name()))
                 .set("description", trimToNull(request.description()))
                 .set("attraction_id", request.attractionId())
-                .set("longitude", coordinates(request.longitude(), attraction == null ? null : attraction.longitude))
-                .set("latitude", coordinates(request.latitude(), attraction == null ? null : attraction.latitude)));
+                .set("longitude", coordinates.longitude())
+                .set("latitude", coordinates.latitude()));
         operationLog.record(operatorId, "行程", "UPDATE", "ITINERARY_ITEM", itemId,
                 "修改行程项目：" + trimToNull(request.name()));
         return ItineraryItemView.from(requireItem(itemId));
@@ -517,16 +518,38 @@ public class AdminRouteService {
         item.name = trimToNull(request.name());
         item.description = trimToNull(request.description());
         item.attractionId = request.attractionId();
-        item.longitude = coordinates(request.longitude(), attraction == null ? null : attraction.longitude);
-        item.latitude = coordinates(request.latitude(), attraction == null ? null : attraction.latitude);
+        Coordinates coordinates = resolveCoordinates(request, attraction);
+        item.longitude = coordinates.longitude();
+        item.latitude = coordinates.latitude();
+    }
+
+    /** 行程项目的经纬度对：两个字段必须同时写入或同时为空。 */
+    private record Coordinates(BigDecimal longitude, BigDecimal latitude) {
     }
 
     /**
-     * 项目经纬度：优先使用请求值；未填写时沿用所关联景点的坐标，
+     * 项目经纬度：优先使用请求值；请求未提供坐标时<b>整对</b>沿用所关联景点的坐标，
      * 保证"景点坐标"数据可以直接用于行程地图展示。
+     *
+     * <p><b>继承必须以整对为单位</b>：请求只给一个坐标的情况在进入本方法前就被
+     * {@code ItineraryItemRequest} 上的类型级约束 {@code @CoordinatePairComplete} 以 422 拒绝；
+     * 景点侧则可能因为历史数据只填了经度或只填了纬度（见迁移 009），逐字段继承会把这种
+     * "半截坐标"复制进行程项 —— 用户端地图要求两个坐标都非空才落点，复制过去的点照样
+     * 不会显示，等于把同一个问题换个表继续藏下去。此时保持为空，让运营重新成对录入。</p>
      */
-    private static BigDecimal coordinates(Double requested, BigDecimal fromAttraction) {
-        return requested == null ? fromAttraction : BigDecimal.valueOf(requested);
+    private static Coordinates resolveCoordinates(ItineraryItemRequest request, Attraction attraction) {
+        if (request.longitude() != null || request.latitude() != null) {
+            return new Coordinates(decimal(request.longitude()), decimal(request.latitude()));
+        }
+        if (attraction == null || attraction.longitude == null || attraction.latitude == null) {
+            return new Coordinates(null, null);
+        }
+        return new Coordinates(attraction.longitude, attraction.latitude);
+    }
+
+    /** 契约 Longitude / Latitude 是 JSON number，库内是 DECIMAL(10,7)。 */
+    private static BigDecimal decimal(Double value) {
+        return value == null ? null : BigDecimal.valueOf(value);
     }
 
     private TravelRoute requireRoute(Long routeId) {

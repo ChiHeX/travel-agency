@@ -2316,6 +2316,25 @@ components:
       minimum: -90
       maximum: 90
       example: 24.8800950
+    CoordinatePairRule:
+      description: |
+        经纬度必须成对提供：只给其中一个（另一个缺失或为 `null`，两者在这里等价）时按
+        422 `VALIDATION_ERROR` 拒绝 —— 用户端地图只在经纬度都非空时落点，只填一个的坐标
+        会被静默丢弃，运营以为录入了位置、地图上却什么都没有。两个都不提供（都缺失或都为
+        `null`）是合法的，表示未录入坐标。
+      allOf:
+        - if:
+            properties: { longitude: { type: number } }
+            required: [longitude]
+          then:
+            properties: { latitude: { type: number } }
+            required: [latitude]
+        - if:
+            properties: { latitude: { type: number } }
+            required: [latitude]
+          then:
+            properties: { longitude: { type: number } }
+            required: [longitude]
     AccountStatus:
       type: string
       enum: [ACTIVE, DISABLED]
@@ -2740,6 +2759,12 @@ components:
       type: object
       additionalProperties: false
       required: [sortNo, itemType, name]
+      description: |
+        经纬度必须成对（见 `CoordinatePairRule`）。两个都不提供坐标时，行程项会整对继承
+        所关联景点的坐标（见 `AdminRouteService`）；景点坐标之后被修改不会回填已存在的行程项，
+        需要重新保存该行程项才会继承新坐标。
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         sortNo: { type: integer, minimum: 1 }
         itemType: { type: string, enum: [ATTRACTION, TRANSPORT, MEAL, ACTIVITY, OTHER] }
@@ -2900,6 +2925,11 @@ components:
       type: object
       additionalProperties: false
       required: [name, city, dataSource]
+      description: |
+        经纬度必须成对（见 `CoordinatePairRule`）。两个都不提供表示未录入坐标，
+        此时该景点不会出现在用户端地图上。
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         city: { type: string, minLength: 1, maxLength: 64 }
@@ -2955,8 +2985,10 @@ components:
       additionalProperties: false
       description: |
         创建酒店资料。**不含 `version`**：新建由服务端从 0 起算，客户端不参与版本决定，
-        提交该字段会被严格反序列化拒绝（400）。
+        提交该字段会被严格反序列化拒绝（400）。经纬度必须成对（见 `CoordinatePairRule`）。
       required: [name, dataSource]
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         address: { type: [string, 'null'], maxLength: 255 }
@@ -2980,7 +3012,10 @@ components:
         后端执行 `UPDATE ... WHERE id = ? AND version = ?`，成功后版本加一；
         版本不一致说明资料已被他人修改，返回 `409 HOTEL_VERSION_CONFLICT`，本次修改不生效。
         缺 `version` 按字段语义校验失败处理（422），不会静默当成 0。
+        经纬度必须成对（见 `CoordinatePairRule`）。
       required: [name, dataSource, version]
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         address: { type: [string, 'null'], maxLength: 255 }

@@ -132,10 +132,26 @@ class RouteRequestContractTest {
                 1, "ATTRACTION", "大理古城", null, null, 181.0, null), "longitude"));
         assertTrue(hasViolation(new ItineraryItemRequest(
                 1, "ATTRACTION", "大理古城", null, null, null, -91.0), "latitude"));
+
+        // 经纬度必须成对（契约 CoordinatePairRule）：只给一个会被 422 拒绝，
+        // 因为单点坐标在用户端地图上无法落点，会被静默丢弃。按文案断言，不依赖约束的字段命名。
+        assertTrue(hasMessage(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, 100.1, null), "经度和纬度需要同时填写，或同时留空"));
+        assertTrue(hasMessage(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, null, 25.2), "经度和纬度需要同时填写，或同时留空"));
+        // 两个都留空是合法的：此时行程项整对继承所关联景点的坐标（见 AdminRouteService）。
+        assertTrue(VALIDATOR.validate(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, null, null)).isEmpty());
     }
 
     private static boolean hasViolation(Object target, String property) {
         return VALIDATOR.validate(target).stream()
                 .anyMatch(violation -> violation.getPropertyPath().toString().equals(property));
+    }
+
+    /** 按约束文案判断，避免类级/方法级约束的字段命名差异影响断言。 */
+    private static boolean hasMessage(Object target, String message) {
+        return VALIDATOR.validate(target).stream()
+                .anyMatch(violation -> message.equals(violation.getMessage()));
     }
 }

@@ -24,7 +24,7 @@ import org.hibernate.validator.constraints.CodePointLength;
  * 一次意外的覆盖。</p>
  *
  * <p><b>经纬度必须成对</b>（{@link CoordinatePairComplete}，对应契约的
- * {@code dependentRequired}）：与建档请求同口径。</p>
+ * {@code CoordinatePairRule}）：与建档请求同口径。</p>
  */
 @CoordinatePairComplete
 public record HotelUpdateRequest(

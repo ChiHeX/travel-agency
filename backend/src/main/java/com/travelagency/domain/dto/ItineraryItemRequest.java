@@ -21,8 +21,9 @@ import org.hibernate.validator.constraints.CodePointLength;
  * 库内列宽同样是码点口径（{@code VARCHAR(200)} 在 utf8mb4 下就是 200 个字符），两边一致。</p>
  *
  * <p><b>经纬度必须成对</b>（{@link CoordinatePairComplete}，对应契约的
- * {@code dependentRequired}）：只填一个的坐标在用户端地图上无法落点。两个都留空是合法的，
- * 此时行程项会<b>整对</b>继承所关联景点的坐标（见 {@code AdminRouteService.coordinates}）。</p>
+ * {@code CoordinatePairRule}）：只填一个的坐标在用户端地图上无法落点。两个都留空是合法的，
+ * 此时行程项会<b>整对</b>继承所关联景点的坐标（见 {@code AdminRouteService}）；景点坐标
+ * 不成对（历史数据）时不继承。</p>
  */
 @CoordinatePairComplete
 public record ItineraryItemRequest(

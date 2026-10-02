@@ -277,7 +277,7 @@ class HotelAdminWebContractTest {
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("longitude")));
 
-        // 经纬度必须成对（契约 HotelCreate/UpdateRequest 的 dependentRequired）：只填一个的坐标
+        // 经纬度必须成对（契约 CoordinatePairRule）：只填一个的坐标
         // 在地图上无法落点、会被静默丢弃，建档与修改都必须以 422 拦下。
         for (String half : new String[]{
                 VALID_BODY.replace("\"latitude\":24.88", "\"latitude\":null"),

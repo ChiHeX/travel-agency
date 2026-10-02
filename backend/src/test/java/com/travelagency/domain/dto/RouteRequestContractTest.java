@@ -133,7 +133,7 @@ class RouteRequestContractTest {
         assertTrue(hasViolation(new ItineraryItemRequest(
                 1, "ATTRACTION", "大理古城", null, null, null, -91.0), "latitude"));
 
-        // 经纬度必须成对（契约 ItineraryItemRequest 的 dependentRequired）：只给一个会被 422 拒绝，
+        // 经纬度必须成对（契约 CoordinatePairRule）：只给一个会被 422 拒绝，
         // 因为单点坐标在用户端地图上无法落点，会被静默丢弃。按文案断言，不依赖约束的字段命名。
         assertTrue(hasMessage(new ItineraryItemRequest(
                 1, "ATTRACTION", "大理古城", null, null, 100.1, null), "经度和纬度需要同时填写，或同时留空"));

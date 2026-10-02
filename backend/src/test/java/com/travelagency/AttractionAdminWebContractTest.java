@@ -172,7 +172,7 @@ class AttractionAdminWebContractTest {
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.errors[0].field").value(endsWith("latitude")));
 
-        // 经纬度必须成对（契约 AttractionUpsertRequest 的 dependentRequired）：只填一个的坐标
+        // 经纬度必须成对（契约 CoordinatePairRule）：只填一个的坐标
         // 在地图上无法落点、会被静默丢弃，必须在写库前就以 422 拦下，并给出可定位的错误。
         for (String half : new String[]{
                 VALID_BODY.replace("\"latitude\":25.694", "\"latitude\":null"),

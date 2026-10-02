@@ -17,8 +17,9 @@ import java.lang.annotation.Target;
  * 与其让数据悄悄失效，不如在写入前以 422 拒绝。</p>
  *
  * <p>对应契约里 {@code AttractionUpsertRequest} / {@code HotelCreateRequest} /
- * {@code HotelUpdateRequest} / {@code ItineraryItemRequest} 的
- * {@code dependentRequired: longitude ↔ latitude}。约束作用于类型级，配合
+ * {@code HotelUpdateRequest} / {@code ItineraryItemRequest} 共同引用的
+ * {@code CoordinatePairRule}："提供了经度就必须提供纬度"（字段缺失与显式 {@code null} 等价）。
+ * 约束作用于类型级，配合
  * {@link HasCoordinatePair} 读取坐标。{@code null} 值本身不判错：两个都为空是合法的
  * （表示未录入坐标）。</p>
  */

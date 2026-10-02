@@ -41,7 +41,7 @@ import org.hibernate.validator.constraints.CodePointLength;
  * "保持库内当前状态"，避免漏传字段就把一家已停用的酒店悄悄重新启用。</p>
  *
  * <p><b>经纬度必须成对</b>（{@link CoordinatePairComplete}，对应契约的
- * {@code dependentRequired}）：只填一个的坐标在用户端地图上无法落点，会被静默丢弃。</p>
+ * {@code CoordinatePairRule}）：只填一个的坐标在用户端地图上无法落点，会被静默丢弃。</p>
  */
 @CoordinatePairComplete
 public record HotelCreateRequest(

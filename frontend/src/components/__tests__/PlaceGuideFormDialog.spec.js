@@ -181,4 +181,48 @@ describe('PlaceGuideFormDialog', () => {
     expect(payload.places.map((place) => place.attractionId)).toEqual(['13', '12'])
     expect(wrapper.emitted('saved')[0][0]).toMatchObject({ created: false })
   })
+
+  it('候选景点取数失败时给出可重试的提示，重新打开会再取一次', async () => {
+    fetchAttractions.mockRejectedValueOnce(new Error('网络异常'))
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    // 失败提示必须出现在表单里：候选为空时保存会被本地校验拦下，
+    // 只说「地点不合法」会让运营以为是自己的选择有问题。
+    expect(wrapper.find('.hint-error').text()).toContain('候选景点加载失败')
+    expect(fetchAttractions).toHaveBeenCalledTimes(1)
+
+    // 关掉再打开：失败不应被当成"已经取过"，否则整个会话都选不到景点。
+    await wrapper.setProps({ modelValue: false })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    expect(fetchAttractions).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.hint-error').exists()).toBe(false)
+    expect(wrapper.findAll('.place-select option').map((option) => option.text()).join())
+      .toContain('西湖')
+  })
+
+  it('候选景点仍在加载时不提交：提示等待而不是把地点判为不合法', async () => {
+    // 永不 resolve：模拟候选取数尚未返回时运营就点了保存。
+    fetchAttractions.mockReturnValue(new Promise(() => {}))
+    const guide = {
+      id: '7',
+      title: '杭州双景点地图指南',
+      city: '杭州',
+      destination: '杭州',
+      places: [
+        { attractionId: '12', name: '西湖', city: '杭州', longitude: 120.13, latitude: 30.24, note: '第一站', sortOrder: 1 },
+        { attractionId: '13', name: '灵隐寺', city: '杭州', longitude: 120.1, latitude: 30.241, note: '第二站', sortOrder: 2 }
+      ]
+    }
+    const wrapper = mountDialog(guide)
+    await flushPromises()
+
+    await buttonByText(wrapper, '保存指南').trigger('click')
+    await flushPromises()
+
+    expect(warning).toHaveBeenCalledWith('正在加载候选景点，请稍候再保存')
+    expect(updatePlaceGuide).not.toHaveBeenCalled()
+  })
 })

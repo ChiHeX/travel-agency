@@ -58,6 +58,8 @@ const places = ref([])
 const attractionOptions = ref([])
 const optionsLoading = ref(false)
 const optionsLoaded = ref(false)
+/** 候选景点取数失败的原因；失败后必须让运营能重试，而不是整个会话都卡在空候选上。 */
+const optionsError = ref('')
 
 const editing = computed(() => Boolean(props.guide?.id))
 
@@ -65,16 +67,26 @@ const editing = computed(() => Boolean(props.guide?.id))
 const hasCoordinates = (attraction) =>
   attraction?.longitude != null && attraction?.latitude != null
 
+/**
+ * 取候选景点。
+ *
+ * <p>失败时必须把 {@code optionsLoaded} 复位：这个标记只是"本次会话不必重复取"的缓存，
+ * 若失败后仍然保留，一处网络抖动就会让整个页面会话再也取不到候选景点 ——
+ * 下拉永远只剩"请选择景点"，而保存又会被本地校验拦下，运营除了刷新浏览器没有别的出路。</p>
+ */
 async function loadOptions() {
   if (optionsLoaded.value) return
-  optionsLoaded.value = true
   optionsLoading.value = true
+  optionsError.value = ''
   try {
     const all = await fetchAllPages(adminApi.attractions)
     attractionOptions.value = all.filter((item) => item.status === 'ACTIVE' && hasCoordinates(item))
+    optionsLoaded.value = true
   } catch {
-    // 候选项加载失败不阻塞文案编辑；提交时后端仍会校验。
+    // 候选项加载失败不阻塞文案编辑；提交时后端仍会校验。错误提示已由 axios 拦截器弹出。
     attractionOptions.value = []
+    optionsLoaded.value = false
+    optionsError.value = '候选景点加载失败，请关闭后重新打开本弹窗重试。'
   } finally {
     optionsLoading.value = false
   }
@@ -201,10 +213,13 @@ function validate() {
   if (places.value.length < MIN_PLACES || places.value.length > MAX_PLACES) {
     return `指南需要 ${MIN_PLACES} 到 ${MAX_PLACES} 个地点`
   }
-  const invalid = places.value.find((place) => {
-    const attraction = attractionOptions.value.find((item) => String(item.id) === String(place.attractionId))
-    return !attraction
-  })
+  // 候选景点还没取回来时无法判断地点是否"启用且有坐标"。此时若直接判定"地点不合法"，
+  // 会让运营去替换一个其实正确的选择，因此先要求等待取数完成。
+  if (optionsLoading.value) {
+    return '正在加载候选景点，请稍候再保存'
+  }
+  const invalid = places.value.find((place) =>
+    !attractionOptions.value.some((item) => String(item.id) === String(place.attractionId)))
   if (invalid) {
     return '指南地点必须是带经纬度的已启用景点，请替换停用或缺坐标的地点'
   }
@@ -318,6 +333,7 @@ async function save() {
         <p class="form-hint">
           地点顺序即用户端地图的展示顺序。只能选择已启用且带经纬度的景点，所选景点将决定指南地图的聚焦区域。
           <span v-if="optionsLoading">正在加载景点候选…</span>
+          <span v-else-if="optionsError" class="hint-error" role="alert">{{ optionsError }}</span>
         </p>
 
         <div v-for="(place, index) in places" :key="place.attractionId || `row-${index}`" class="place-row">
@@ -389,6 +405,10 @@ async function save() {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.hint-error {
+  color: var(--danger-red);
 }
 
 .form-counter {

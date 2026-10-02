@@ -148,7 +148,7 @@ function validate() {
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
   if (latitude.error) return latitude.error
-  // 经纬度必须成对（契约 HotelCreate/UpdateRequest 的 dependentRequired / 后端 @AssertTrue）：
+  // 经纬度必须成对（契约 CoordinatePairRule / 后端 @CoordinatePairComplete）：
   // 只填一个的坐标在地图上无法落点，会被静默丢弃。
   if ((longitude.value == null) !== (latitude.value == null)) {
     return '经度和纬度需要同时填写，或同时留空'
@@ -463,7 +463,8 @@ async function save() {
       </div>
 
       <p class="form-hint wide">
-        经纬度用于每日行程的地图标注，请填写 WGS-84 坐标；未填写坐标的酒店仍可保存并安排进行程。
+        经纬度用于登记酒店的 WGS-84 位置，供资料核对与后续扩展；用户端地图只标注每日行程项目
+        与地点指南的景点坐标，<strong>酒店不参与地图标注</strong>。未填写坐标的酒店仍可保存并安排进行程。
         酒店只作为行程资源使用，本项目不提供酒店订单、库存、房型销售与单独下单。
         停用只是把资料标记为不再使用：既不删除资料，也不改动已引用它的行程，但停用后这家酒店
         不能再被安排进新的每日行程；删除则要求没有任何行程还在引用该酒店，否则后端会拒绝并提示被线路行程占用。

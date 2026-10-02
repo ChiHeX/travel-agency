@@ -683,7 +683,7 @@ onMounted(load)
               <td>
                 {{ row.longitude ?? '—' }}, {{ row.latitude ?? '—' }}
                 <div v-if="row.longitude === null || row.latitude === null" class="muted-text">
-                  未填写坐标，行程地图上不会标注该酒店
+                  未填写坐标（仅作资料登记，酒店不参与用户端地图标注）
                 </div>
               </td>
               <td>{{ row.dataSource || '—' }}</td>

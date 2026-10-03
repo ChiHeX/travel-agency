@@ -14,22 +14,11 @@ const emit = defineEmits(['update:modelValue', 'saved'])
 const submitting = ref(false)
 const formError = ref('')
 
-/**
- * 打开弹窗时表单里回填的状态（新建时为契约默认的 ACTIVE）。
- * 编辑时用它判断用户是否真的改过状态 —— 只有改过才提交 `status`，见 `shouldSubmitStatus()`。
- */
+// Only submit status when explicitly changed to preserve concurrent updates.
 const originalStatus = ref('ACTIVE')
 
-/**
- * 本次修改要提交的乐观锁版本号：以服务端确认的状态为准。
- * - 打开弹窗时取 `props.hotel.version`；
- * - 保存成功后更新为响应里的新版本（否则第二次保存会拿着过期版本必然冲突）；
- * - 冲突面板里"覆盖"时更新为服务器最新版本。
- * 新建时为 `null`，请求体不带该字段。
- */
 const baseVersion = ref(null)
 
-/** 冲突面板状态：服务端最新资料、加载中、以及是否已经取到。 */
 const conflictMessage = ref('')
 const conflictLatest = ref(null)
 const conflictLoading = ref(false)
@@ -82,24 +71,12 @@ watch(() => [props.modelValue, props.hotel], () => {
   if (props.modelValue) reset()
 }, { immediate: true })
 
-/** 空串与纯空白一律按"未填写"处理，提交 null 而不是空字符串。 */
 function optional(value) {
   const text = String(value ?? '').trim()
   return text === '' ? null : text
 }
 
-/**
- * 文本长度一律按 Unicode 码点校验（`@/utils/text` 的 codePointLength）。
- *
- * 契约的 `maxLength` 是 JSON Schema 口径，数的是字符（码点），后端的
- * `@CodePointLength` 也是这个口径；而 JS 的 `String#length` 与 HTML 的 `maxlength`
- * 数的是 UTF-16 码元，一个 emoji 会被算成 2。用 `.length` 做校验会把契约允许的内容
- * 误判成超长（例如 100 个 emoji 的酒店名：码点 100 ≤ 128 合法，码元却是 200）；
- * 而输入框上的 `maxlength` 更糟 —— 它会在打字过程中把同样的内容静默截断成 50 个 emoji。
- * 因此模板里不设 `maxlength`，改为「不截断 + 实时计数（超出变红）+ 提交时校验」。
- */
-
-/** 各字段的码点上限，与契约 HotelCreateRequest / HotelUpdateRequest 和后端 @CodePointLength 一致。 */
+// Count Unicode code points; HTML maxlength counts UTF-16 units.
 const NAME_MAX = 128
 const CITY_MAX = 64
 const ADDRESS_MAX = 255
@@ -117,7 +94,6 @@ const IMAGE_URL_RE = /^https?:\/\/\S+$/
 
 const STAR_RATINGS = ['1', '2', '3', '4', '5']
 
-/** 坐标必须是契约允许范围内的数字；未填写返回 null。 */
 function coordinate(value, min, max, label) {
   const text = String(value ?? '').trim()
   if (text === '') return { value: null }
@@ -190,8 +166,6 @@ function validate() {
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
   if (latitude.error) return latitude.error
-  // 经纬度必须成对（契约 CoordinatePairRule / 后端 @CoordinatePairComplete）：
-  // 只填一个的坐标在地图上无法落点，会被静默丢弃。
   if ((longitude.value == null) !== (latitude.value == null)) {
     return '经度和纬度需要同时填写，或同时留空'
   }
@@ -213,17 +187,6 @@ function toggleFacility(value) {
   else form.facilities.splice(index, 1)
 }
 
-/**
- * 这次保存是否要把 `status` 一起提交。
- *
- * 编辑时**只在用户真的改了状态之后**才提交它。后端的口径是：契约里 `status` 不是必填，
- * 未提交表示"保持库内现值"，只有显式提交才写这一列 —— 每次编辑都顺手带上表单里的旧状态
- * 会让这个保护完全失效：管理员只改地址时，用的是打开弹窗那一刻读到的旧 `ACTIVE`，
- * 而另一位管理员可能刚好在这期间把这家酒店停用了，于是这次"只改地址"的保存
- * 会把它重新启用（读旧值 → 对方停用并提交 → 本事务把 ACTIVE 写回）。
- *
- * 新建没有"库内现值"可言，状态是本次建档的明确意图，一律提交。
- */
 function shouldSubmitStatus() {
   if (!props.hotel?.id) return true
   return form.status !== originalStatus.value
@@ -273,14 +236,6 @@ const conflictRows = computed(() => {
       server: displayConflictValue(key, server[key]), mine: displayConflictValue(key, mine[key]) }))
 })
 
-/**
- * 取回服务器最新资料：走契约的 `GET /admin/hotels/{hotelId}`，**按主键**读取。
- *
- * <p>不用列表端点按名称检索：另一位管理员可能已经改过名称（旧名称检索不到），
- * 同名资料也可能超过一页 —— 那样接口正确报了冲突，用户却「载入最新数据」和
- * 「保留我的修改并覆盖」都做不了，冲突提示等于没有出口。
- * 取不到时（例如资料已被删除）面板会提示重新打开表单，不会假装已同步。</p>
- */
 async function loadLatest() {
   const hotelId = props.hotel?.id
   if (!hotelId) return
@@ -294,7 +249,6 @@ async function loadLatest() {
   }
 }
 
-/** 采用服务器最新数据：表单回到服务器状态，之后的保存以最新版本号为基准。 */
 function adoptLatest() {
   if (!conflictLatest.value) return
   const latest = conflictLatest.value
@@ -304,12 +258,6 @@ function adoptLatest() {
   ElMessage.success('已载入服务器最新资料，请确认后再保存')
 }
 
-/**
- * 保留我的修改并覆盖：把基准版本换成服务器最新版本号后重新提交。
- *
- * <p>这是用户明确选择的覆盖动作 —— 版本号只负责发现"基于过期数据提交"，
- * 不阻止用户在知情后覆盖；本次覆盖同样会记入操作日志。</p>
- */
 async function overwriteLatest() {
   if (!conflictLatest.value) return
   baseVersion.value = conflictLatest.value.version ?? baseVersion.value
@@ -318,7 +266,6 @@ async function overwriteLatest() {
   await save()
 }
 
-/** 用一份酒店数据回填表单（打开弹窗与"载入服务器最新数据"共用）。 */
 function applyHotel(source) {
   const status = source?.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
   Object.assign(form, {
@@ -369,9 +316,7 @@ async function save() {
     latitude: coordinate(form.latitude, -90, 90, '纬度').value,
     intro: optional(form.intro),
     dataSource: form.dataSource.trim(),
-    // 未改状态时不带这个字段，交给后端保留库内现值（并发停用不会被覆盖）。
     ...(shouldSubmitStatus() ? { status: form.status } : {}),
-    // 修改必填 version（契约 HotelUpdateRequest 的乐观锁）；新建不带（版本由服务端从 0 起算）。
     ...(editing ? { version: baseVersion.value } : {})
   }
 
@@ -380,8 +325,6 @@ async function save() {
     const saved = editing
       ? await adminApi.updateHotel(props.hotel.id, payload)
       : await adminApi.createHotel(payload)
-    // 保存成功后，"原始值"与基准版本都要以服务端确认的结果为准：否则"先停用保存、再改回启用保存"
-    // 的第二次保存会因为值等于打开弹窗时的旧值而漏掉 status，第二次提交也会拿着过期版本必冲突。
     if (saved?.status === 'ACTIVE' || saved?.status === 'DISABLED') {
       originalStatus.value = saved.status
     }
@@ -389,19 +332,15 @@ async function save() {
       baseVersion.value = saved.version
     }
     ElMessage.success(editing ? '酒店资料已更新' : '酒店资料已新增')
-    // 带上 created：POST 和 PUT 对列表的影响不同 —— 新建的记录排在第一页，
-    // 修改的记录留在原来的位置（created_at 不变），页面据此决定刷新哪一页。
     emit('saved', { hotel: saved, created: !editing })
     close()
   } catch (cause) {
     if (editing && cause.status === 409 && cause.code === 'HOTEL_VERSION_CONFLICT') {
-      // 另一位工作人员在本次编辑期间改过这份资料：不丢弃用户输入，交给冲突面板处理。
       conflictMessage.value = cause.message || '这份酒店资料已被他人修改'
       conflictLatest.value = null
       await loadLatest()
       return
     }
-    // 后端 422（字段语义）与 404（记录已被删除）的 message 都可读，就地展示。
     formError.value = cause.message || '酒店资料保存失败，请稍后重试'
   } finally {
     submitting.value = false
@@ -423,10 +362,6 @@ async function save() {
     <div class="dialog-form-grid">
       <p v-if="formError" class="form-error wide" role="alert">{{ formError }}</p>
 
-      <!--
-        版本冲突（409 HOTEL_VERSION_CONFLICT）：另一位工作人员在本次编辑期间改过这份资料。
-        不丢弃用户已经填写的内容：先列出服务器最新值与差异字段，再由用户决定采用哪一份。
-      -->
       <div v-if="conflictMessage" class="conflict-panel wide" role="alert">
         <p class="conflict-title">{{ conflictMessage }}</p>
         <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
@@ -468,7 +403,6 @@ async function save() {
 
       <div class="form-field wide">
         <label>酒店名称 <span class="req">*</span></label>
-        <!-- 不设 maxlength：HTML 数的是 UTF-16 码元，会把契约允许的 emoji 名称静默截断 -->
         <input v-model="form.name" placeholder="例如：大理古城演示酒店" />
         <p class="form-counter" :class="{ over: overCodePoints(form.name, NAME_MAX) }">
           {{ codePointLength(form.name) }} / {{ NAME_MAX }}
@@ -687,7 +621,6 @@ async function save() {
   color: var(--text-secondary);
 }
 
-/* 实时码点计数：超过契约上限时变红，用户不用等提交才知道超了 */
 .form-counter {
   margin: 4px 0 0;
   font-size: 12px;
@@ -700,7 +633,6 @@ async function save() {
   font-weight: 700;
 }
 
-/* 版本冲突面板：与团期表单同一套视觉口径，避免同一个系统里出现两种冲突提示。 */
 .conflict-panel {
   display: grid;
   gap: 8px;

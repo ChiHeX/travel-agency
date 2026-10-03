@@ -37,16 +37,51 @@ SET @route_id = (SELECT id FROM travel_route WHERE name = '彩云之南经典 6 
 SET @dali_id = (SELECT id FROM attraction WHERE name = '大理古城' ORDER BY id LIMIT 1);
 SET @lijiang_id = (SELECT id FROM attraction WHERE name = '丽江古城' ORDER BY id LIMIT 1);
 
-INSERT INTO hotel (name, address, contact_phone, longitude, latitude, intro, data_source, status)
-SELECT '彩云之南演示酒店', '云南省大理市古城区', '000-00000000', 100.1650000, 25.6940000, '课程演示用酒店资料，不提供独立预订。', '团队原创测试资料', 1
+-- 演示住宿资料（酒店、酒店图片、每天的住宿安排）全部是课程虚构数据，不代表任何真实酒店。
+INSERT INTO hotel (name, city, address, contact_phone, cover_url, longitude, latitude, star_rating,
+                   intro, facilities, check_in_time, check_out_time, data_source, status)
+SELECT '彩云之南演示酒店', '大理', '云南省大理市古城区', '000-00000000',
+       'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80',
+       100.1650000, 25.6940000, 4,
+       '课程演示用酒店资料，不提供独立预订。',
+       '["WIFI","PARKING","RESTAURANT","BREAKFAST_SERVICE","LUGGAGE_STORAGE"]',
+       '14:00', '12:00', '团队原创测试资料', 1
 WHERE NOT EXISTS (SELECT 1 FROM hotel WHERE name = '彩云之南演示酒店');
 SET @hotel_id = (SELECT id FROM hotel WHERE name = '彩云之南演示酒店' ORDER BY id LIMIT 1);
 
-INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals, hotel_id)
+-- 存量库里这家酒店由早先的种子数据建立，当时的 INSERT 带 WHERE NOT EXISTS，重复导入补不了新列。
+-- 这里按主键只补"仍然为空"的字段（city 由迁移脚本补成空串；星级等新列为 NULL），不覆盖已填写的内容。
+UPDATE hotel SET
+    city = IF(city = '', '大理', city),
+    cover_url = COALESCE(cover_url, 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80'),
+    star_rating = COALESCE(star_rating, 4),
+    facilities = COALESCE(facilities, '["WIFI","PARKING","RESTAURANT","BREAKFAST_SERVICE","LUGGAGE_STORAGE"]'),
+    check_in_time = COALESCE(check_in_time, '14:00'),
+    check_out_time = COALESCE(check_out_time, '12:00')
+WHERE id = @hotel_id;
+
+-- 酒店详情图片：故意按 3、1、2 的顺序写入，接口必须按 sort_order 升序返回（同序时按写入顺序）。
+INSERT INTO hotel_image (hotel_id, url, alt, sort_order)
+SELECT @hotel_id, source_data.url, source_data.alt, source_data.sort_order
+FROM (
+    SELECT 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80' AS url, '酒店外景（课程演示图片）' AS alt, 3 AS sort_order UNION ALL
+    SELECT 'https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80', '酒店客房（课程演示图片）', 1 UNION ALL
+    SELECT 'https://images.unsplash.com/photo-1582719508461-905c673771fd?auto=format&fit=crop&w=1200&q=80', '酒店餐厅（课程演示图片）', 2
+) AS source_data
+WHERE @hotel_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM hotel_image i WHERE i.hotel_id = @hotel_id AND i.url = source_data.url);
+
+-- 每天的住宿安排：有酒店的当天是 HOTEL，没有酒店的当天按 PENDING（"没填酒店"不等于"不含住宿"）。
+-- 房型 / 是否含早餐 / 补充说明是当天的行程安排，与酒店基础资料里的早餐服务互不推断。
+INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals, hotel_id,
+                                 accommodation_type, room_type, breakfast_included, accommodation_note)
 VALUES
-    (@route_id, 1, '上海 · 昆明', '抵达昆明，完成集合与入住。', '飞机 / 大巴', '晚餐自理', @hotel_id),
-    (@route_id, 2, '昆明 · 大理', '前往大理古城，感受苍山洱海风光。', '旅游大巴', '早、午餐', @hotel_id),
-    (@route_id, 3, '大理 · 丽江', '游览古城，前往丽江。', '旅游大巴', '早、午餐', @hotel_id)
+    (@route_id, 1, '上海 · 昆明', '抵达昆明，完成集合与入住。', '飞机 / 大巴', '晚餐自理', @hotel_id,
+     'HOTEL', '双床房', NULL, '当天为集合日，入住手续由领队统一办理。'),
+    (@route_id, 2, '昆明 · 大理', '前往大理古城，感受苍山洱海风光。', '旅游大巴', '早、午餐', @hotel_id,
+     'HOTEL', '双床房', TRUE, NULL),
+    (@route_id, 3, '大理 · 丽江', '游览古城，前往丽江。', '旅游大巴', '早、午餐', @hotel_id,
+     'HOTEL', '大床房', TRUE, '如需拼房请在出发前告知客服。')
 ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), hotel_id = VALUES(hotel_id);
 
 SET @day1_id = (SELECT id FROM route_itinerary_day WHERE route_id = @route_id AND day_number = 1 LIMIT 1);
@@ -176,20 +211,49 @@ WHERE NOT EXISTS (
     SELECT 1 FROM attraction a WHERE a.name = source_data.name AND a.city = source_data.city
 );
 
-INSERT INTO hotel (name, address, contact_phone, longitude, latitude, intro, data_source, status)
-SELECT source_data.name, source_data.address, source_data.phone, source_data.longitude, source_data.latitude,
-       '课程演示用酒店资料，不提供独立预订。', '团队原创测试资料', 1
+INSERT INTO hotel (name, city, address, contact_phone, cover_url, longitude, latitude, star_rating,
+                   intro, facilities, check_in_time, check_out_time, data_source, status)
+SELECT source_data.name, source_data.city, source_data.address, source_data.phone, source_data.cover_url,
+       source_data.longitude, source_data.latitude, source_data.star_rating,
+       '课程演示用酒店资料，不提供独立预订。', source_data.facilities,
+       source_data.check_in_time, source_data.check_out_time, '团队原创测试资料', 1
 FROM (
-    SELECT '杭州湖畔演示酒店' AS name, '浙江省杭州市西湖区' AS address, '000-00000001' AS phone, 120.1390000 AS longitude, 30.2290000 AS latitude UNION ALL
-    SELECT '北京中轴线演示酒店', '北京市东城区', '000-00000002', 116.4070000, 39.9040000 UNION ALL
-    SELECT '成都锦里演示酒店', '四川省成都市武侯区', '000-00000003', 104.0420000, 30.6500000 UNION ALL
-    SELECT '张家界武陵源演示酒店', '湖南省张家界市武陵源区', '000-00000004', 110.5490000, 29.3470000 UNION ALL
-    SELECT '厦门环岛路演示酒店', '福建省厦门市思明区', '000-00000005', 118.1120000, 24.4460000 UNION ALL
-    SELECT '乌鲁木齐天山演示酒店', '新疆维吾尔自治区乌鲁木齐市', '000-00000006', 87.6170000, 43.8250000 UNION ALL
-    SELECT '广州珠江演示酒店', '广东省广州市海珠区', '000-00000007', 113.3290000, 23.1080000 UNION ALL
-    SELECT '平遥古城演示客栈', '山西省晋中市平遥县', '000-00000008', 112.1760000, 37.1900000
+    SELECT '杭州湖畔演示酒店' AS name, '杭州' AS city, '浙江省杭州市西湖区' AS address, '000-00000001' AS phone, 120.1390000 AS longitude, 30.2290000 AS latitude, 4 AS star_rating,
+           'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80' AS cover_url,
+           '["WIFI","PARKING","BREAKFAST_SERVICE","FRONT_DESK_24H"]' AS facilities, '14:00' AS check_in_time, '12:00' AS check_out_time UNION ALL
+    SELECT '北京中轴线演示酒店', '北京', '北京市东城区', '000-00000002', 116.4070000, 39.9040000, 5,
+           'https://images.unsplash.com/photo-1445019980597-93fa8acb246c?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","PARKING","RESTAURANT","GYM"]', '15:00', '12:00' UNION ALL
+    SELECT '成都锦里演示酒店', '成都', '四川省成都市武侯区', '000-00000003', 104.0420000, 30.6500000, 4,
+           'https://images.unsplash.com/photo-1611892440504-42a792e24d32?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","RESTAURANT","LAUNDRY"]', '14:00', '12:00' UNION ALL
+    SELECT '张家界武陵源演示酒店', '张家界', '湖南省张家界市武陵源区', '000-00000004', 110.5490000, 29.3470000, 3,
+           'https://images.unsplash.com/photo-1582719508461-905c673771fd?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","PARKING","LUGGAGE_STORAGE"]', '14:00', '11:00' UNION ALL
+    SELECT '厦门环岛路演示酒店', '厦门', '福建省厦门市思明区', '000-00000005', 118.1120000, 24.4460000, 4,
+           'https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","SWIMMING_POOL","AIR_CONDITIONING"]', '14:00', '12:00' UNION ALL
+    SELECT '乌鲁木齐天山演示酒店', '乌鲁木齐', '新疆维吾尔自治区乌鲁木齐市', '000-00000006', 87.6170000, 43.8250000, 4,
+           'https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","PARKING","AIRPORT_SHUTTLE"]', '14:00', '12:00' UNION ALL
+    SELECT '广州珠江演示酒店', '广州', '广东省广州市海珠区', '000-00000007', 113.3290000, 23.1080000, 5,
+           'https://images.unsplash.com/photo-1445019980597-93fa8acb246c?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","RESTAURANT","GYM","FRONT_DESK_24H"]', '15:00', '12:00' UNION ALL
+    SELECT '平遥古城演示客栈', '平遥', '山西省晋中市平遥县', '000-00000008', 112.1760000, 37.1900000, 3,
+           'https://images.unsplash.com/photo-1611892440504-42a792e24d32?auto=format&fit=crop&w=1200&q=80',
+           '["WIFI","LUGGAGE_STORAGE","NON_SMOKING_ROOM"]', '14:00', '12:00'
 ) AS source_data
 WHERE NOT EXISTS (SELECT 1 FROM hotel h WHERE h.name = source_data.name);
+
+-- 杭州线路演示酒店的详情图片（按 sort_order 升序展示；重复导入按 url 去重）。
+INSERT INTO hotel_image (hotel_id, url, alt, sort_order)
+SELECT h.id, source_data.url, source_data.alt, source_data.sort_order
+FROM (
+    SELECT '杭州湖畔演示酒店' AS hotel_name, 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80' AS url, '酒店外景（课程演示图片）' AS alt, 1 AS sort_order UNION ALL
+    SELECT '杭州湖畔演示酒店', 'https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80', '酒店客房（课程演示图片）', 2
+) AS source_data
+JOIN hotel h ON h.name = source_data.hotel_name
+WHERE NOT EXISTS (SELECT 1 FROM hotel_image i WHERE i.hotel_id = h.id AND i.url = source_data.url);
 
 INSERT INTO travel_route (name, departure_city, destination, duration_days, description, cover_url, included, excluded, booking_notice, status, rating_avg, rating_count, valid_booking_count, created_by)
 SELECT source_data.name, source_data.departure_city, source_data.destination, source_data.duration_days,
@@ -227,9 +291,13 @@ FROM (
 LEFT JOIN sys_user staff_user ON staff_user.username = 'demo_staff'
 WHERE NOT EXISTS (SELECT 1 FROM travel_route r WHERE r.name = source_data.name AND r.deleted = 0);
 
-INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals, hotel_id)
+INSERT INTO route_itinerary_day (route_id, day_number, title, description, transportation, meals, hotel_id,
+                                 accommodation_type)
 SELECT r.id, source_data.day_number, source_data.title, source_data.description, source_data.transportation,
-       source_data.meals, h.id
+       source_data.meals, h.id,
+       -- 类型与 hotel_id 必须一致：有酒店的当天是 HOTEL，没有酒店的当天是 PENDING。
+       -- 不使用 NONE —— "没填酒店"不等于"当天不含住宿"（NONE 只能由人工明确指定，见下方示例）。
+       IF(h.id IS NULL, 'PENDING', 'HOTEL')
 FROM (
     SELECT '杭州西湖人文 3 日跟团游' AS route_name, 1 AS day_number, '上海 · 杭州' AS title, '抵达杭州，入住后自由活动。' AS description, '高铁 / 旅游大巴' AS transportation, '晚餐自理' AS meals, '杭州湖畔演示酒店' AS hotel_name UNION ALL
     SELECT '杭州西湖人文 3 日跟团游', 2, '西湖 · 灵隐', '游览西湖与灵隐寺，体验杭州人文风景。', '旅游大巴', '早、午餐', '杭州湖畔演示酒店' UNION ALL
@@ -269,6 +337,29 @@ LEFT JOIN hotel h ON h.name = source_data.hotel_name
 WHERE NOT EXISTS (
     SELECT 1 FROM route_itinerary_day d WHERE d.route_id = r.id AND d.day_number = source_data.day_number
 );
+
+-- 住宿安排类型的课程演示数据（全部为虚构测试资料，取值是显式指定的，不由其它字段推断）：
+--   1) 只确定住宿标准、不指定具体酒店 → STANDARD（hotel_id 必须为空）；
+--   2) 一日游当天返程、确实不含住宿 → NONE（hotel_id 必须为空）。
+UPDATE route_itinerary_day d
+JOIN travel_route r ON r.id = d.route_id
+SET d.accommodation_type = 'STANDARD',
+    d.hotel_id = NULL,
+    d.accommodation_standard = '都江堰景区周边舒适型酒店（同级酒店随机安排）',
+    d.room_type = '双床房',
+    d.breakfast_included = TRUE,
+    d.accommodation_note = '具体酒店以出团通知为准。'
+WHERE r.name = '成都熊猫与都江堰 4 日跟团游' AND r.deleted = 0 AND d.day_number = 3;
+
+UPDATE route_itinerary_day d
+JOIN travel_route r ON r.id = d.route_id
+SET d.accommodation_type = 'NONE',
+    d.hotel_id = NULL,
+    d.accommodation_standard = NULL,
+    d.room_type = NULL,
+    d.breakfast_included = NULL,
+    d.accommodation_note = '一日游当天返程，不含住宿。'
+WHERE r.name = '大理古城单地点演示团' AND r.deleted = 0 AND d.day_number = 1;
 
 INSERT INTO route_itinerary_item (day_id, sort_no, item_type, name, description, attraction_id, longitude, latitude)
 SELECT d.id, source_data.sort_no, source_data.item_type, source_data.name, source_data.description,

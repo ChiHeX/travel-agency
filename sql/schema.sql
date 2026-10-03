@@ -107,16 +107,41 @@ CREATE TABLE IF NOT EXISTS attraction (
 CREATE TABLE IF NOT EXISTS hotel (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(128) NOT NULL,
+    city VARCHAR(64) NOT NULL DEFAULT '',
     address VARCHAR(255),
     contact_phone VARCHAR(20),
+    cover_url VARCHAR(500),
     longitude DECIMAL(10,7),
     latitude DECIMAL(10,7),
+    star_rating TINYINT,
     intro TEXT,
+    -- 设施标签：契约 HotelFacility 枚举组成的 JSON 数组（如 ["WIFI","PARKING"]），
+    -- 用 JSON 列而不是逗号分隔文本，避免写入非法内容；未录入时为 NULL，接口返回 []。
+    facilities JSON,
+    -- 通常的入住/退房时刻，契约 ClockTime 的 HH:mm 文本（不是时间戳，不参与时区换算）。
+    check_in_time VARCHAR(5),
+    check_out_time VARCHAR(5),
     data_source VARCHAR(500),
     status TINYINT NOT NULL DEFAULT 1,
     version INT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    -- 后台酒店列表按城市精确筛选（与 attraction.city 同口径）
+    KEY idx_hotel_city (city)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 酒店详情图片：一张酒店多条，按 sort_order 升序展示（同序时按 id，即提交顺序）。
+-- 只登记外部图片 URL（第一版不提供图片上传服务）；删除记录不会删除图片文件本身。
+CREATE TABLE IF NOT EXISTS hotel_image (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    hotel_id BIGINT NOT NULL,
+    url VARCHAR(500) NOT NULL,
+    alt VARCHAR(200),
+    sort_order INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_hotel_image_hotel (hotel_id, sort_order, id),
+    CONSTRAINT fk_hotel_image_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS route_itinerary_day (
@@ -128,10 +153,32 @@ CREATE TABLE IF NOT EXISTS route_itinerary_day (
     transportation VARCHAR(255),
     meals VARCHAR(255),
     hotel_id BIGINT,
+    -- 当天的住宿安排类型（契约 AccommodationType）。默认 PENDING 而不是 NONE：
+    -- "没填酒店"不等于"不含住宿"，只有明确写入 NONE 才表示当天不含住宿。
+    -- HOTEL 才允许 hotel_id 非空（STANDARD / NONE / PENDING 必须为空，由服务层校验）。
+    accommodation_type VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    accommodation_standard VARCHAR(500),
+    room_type VARCHAR(100),
+    -- 三态：1 含早餐 / 0 不含 / NULL 尚未说明（与酒店的早餐服务无关，互不推断）
+    breakfast_included TINYINT,
+    accommodation_note VARCHAR(1000),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_route_day (route_id, day_number),
     KEY idx_day_route (route_id),
+    -- 线路下的酒店公开详情按 (route_id, hotel_id) 判定关联；酒店删除前的引用检查也走 hotel_id
+    KEY idx_day_hotel (hotel_id),
+    -- 住宿类型与酒店关联/住宿标准必须自洽（契约 ItineraryDayRequest 的住宿规则）。
+    -- 服务层已经拦下不一致的请求，这里再加一道是为了挡住绕过服务层的写入（导入脚本、手工 SQL）：
+    -- accommodation_type 有默认值 PENDING，只写 hotel_id 而不写类型会静默产出一行
+    -- "关联了酒店、类型却是待确认"的自相矛盾数据，接口层再也看不出它是错的。
+    CONSTRAINT ck_day_accommodation CHECK (
+           (accommodation_type = 'HOTEL'    AND hotel_id IS NOT NULL)
+        OR (accommodation_type = 'STANDARD' AND hotel_id IS NULL
+            AND accommodation_standard IS NOT NULL AND TRIM(accommodation_standard) <> '')
+        OR (accommodation_type = 'NONE'     AND hotel_id IS NULL)
+        OR (accommodation_type = 'PENDING'  AND hotel_id IS NULL)
+    ),
     CONSTRAINT fk_day_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_day_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

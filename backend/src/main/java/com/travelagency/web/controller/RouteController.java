@@ -6,9 +6,11 @@ import com.travelagency.common.security.CurrentUser;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.common.validation.PriceRules;
+import com.travelagency.domain.dto.PublicHotelDetailView;
 import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
+import com.travelagency.domain.service.HotelService;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.constraints.Max;
@@ -29,10 +31,12 @@ public class RouteController {
 
     private final RouteService routeService;
     private final OrderService orderService;
+    private final HotelService hotelService;
 
-    public RouteController(RouteService routeService, OrderService orderService) {
+    public RouteController(RouteService routeService, OrderService orderService, HotelService hotelService) {
         this.routeService = routeService;
         this.orderService = orderService;
+        this.hotelService = hotelService;
     }
 
     /**
@@ -86,6 +90,21 @@ public class RouteController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(orderService.listRouteReviews(id, page, size));
+    }
+
+    /**
+     * 线路行程中安排的酒店公开资料，对齐契约 {@code GET /routes/{routeId}/hotels/{hotelId}}
+     * （无需登录，{@code PublicHotelDetailEnvelope}）。
+     *
+     * <p>详情挂在<b>线路之下</b>而不是做成公开的 {@code /hotels/{hotelId}}：酒店在本项目里只是
+     * 线路行程资源（PRD §10），整表公开等于把后台维护的、可能与任何线路都无关的酒店资料一起放出去。
+     * "线路已发布 + 酒店启用 + 确实被这条线路的行程引用"三条不满足时统一 404，
+     * 判定与响应组装都在 {@link HotelService#publicDetail}（同一份数据在两个入口上只有一种口径）。</p>
+     */
+    @GetMapping("/{id}/hotels/{hotelId}")
+    public ApiResponse<PublicHotelDetailView> hotel(
+            @PathVariable Long id, @PathVariable Long hotelId) {
+        return ApiResponse.ok(hotelService.publicDetail(id, hotelId));
     }
 
     /**

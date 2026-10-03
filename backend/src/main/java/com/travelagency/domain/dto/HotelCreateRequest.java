@@ -1,16 +1,26 @@
 package com.travelagency.domain.dto;
 
+import com.travelagency.common.enums.HotelFacility;
 import com.travelagency.common.validation.CoordinatePairComplete;
 import com.travelagency.common.validation.HasCoordinatePair;
+import com.travelagency.common.validation.HotelProfileRules;
+import com.travelagency.common.validation.UniqueElements;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import org.hibernate.validator.constraints.CodePointLength;
+
+import java.util.List;
 
 /**
  * 酒店建档请求，对齐契约 {@code HotelCreateRequest}（{@code additionalProperties: false}，
- * 必填 {@code name/dataSource}）。
+ * 必填 {@code name/city/dataSource}）。
  *
  * <p>只声明契约允许客户端提交的字段：主键由服务端生成，{@code createdAt} / {@code updatedAt}
  * 由数据库维护，{@code version} 由服务端从 0 起算。此前 {@code AdminController} 直接把
@@ -21,9 +31,10 @@ import org.hibernate.validator.constraints.CodePointLength;
  * <p>修改走 {@link HotelUpdateRequest}（比本文多一个必填的 {@code version}），
  * 两者刻意分开定义：创建也要传版本号会变成语义不清的契约（版本由服务端决定）。</p>
  *
- * <p>酒店资料不含 {@code city}：契约 {@code Hotel} 只有 {@code name/address/contactPhone}，
- * 城市信息属于景点（{@code Attraction}）与地点指南（{@code PlaceGuide}）的口径，
- * 不要为了对齐界面而给酒店加上契约里不存在的字段。</p>
+ * <p>{@code city} 是必填项（契约 {@code minLength: 1, maxLength: 64}）：它既用于用户端酒店卡片，
+ * 也是后台列表的筛选维度，留空等于这条资料无法被城市检索到。注意这是相对旧契约的
+ * <b>破坏性变更</b>，已在 {@code docs/API.md} §12.2 登记；存量数据的 {@code city} 由迁移脚本
+ * 补成空串（表示尚未录入），后台补录后即可正常筛选。</p>
  *
  * <p>坐标的约束与 {@link AttractionUpsertRequest}、{@link ItineraryItemRequest} 保持一致
  * （经度 ±180、纬度 ±90），与契约 {@code Longitude} / {@code Latitude} 一一对应：
@@ -48,9 +59,38 @@ public record HotelCreateRequest(
         @NotBlank(message = "酒店名称不能为空")
         @CodePointLength(max = 128, message = "酒店名称最多 128 个字符") String name,
 
+        @NotBlank(message = "酒店城市不能为空")
+        @CodePointLength(max = HotelProfileRules.CITY_MAX_CHARS,
+                message = HotelProfileRules.CITY_LENGTH_MESSAGE) String city,
+
         @CodePointLength(max = 255, message = "酒店地址最多 255 个字符") String address,
 
         @CodePointLength(max = 20, message = "联系电话最多 20 个字符") String contactPhone,
+
+        @CodePointLength(max = HotelProfileRules.IMAGE_URL_MAX_CHARS,
+                message = HotelProfileRules.IMAGE_URL_LENGTH_MESSAGE)
+        @Pattern(regexp = HotelProfileRules.IMAGE_URL_PATTERN,
+                message = HotelProfileRules.IMAGE_URL_MESSAGE) String coverUrl,
+
+        @Size(max = HotelProfileRules.MAX_IMAGES, message = HotelProfileRules.IMAGE_COUNT_MESSAGE)
+        // 元素必须非空：JSON 里的 null 元素会绕过 @Valid（级联校验对 null 直接放行），
+        // 直到装配实体取 url 时才 NPE 变成 500。
+        List<@NotNull(message = "图片不能为空") @Valid HotelImageRequest> images,
+
+        @Min(value = 1, message = "官方星级只能是 1 到 5")
+        @Max(value = 5, message = "官方星级只能是 1 到 5") Integer starRating,
+
+        // 设施标签：元素级 @Pattern 直接作用在集合元素上（不需要级联校验），空串与枚举外的取值都会被拒；
+        // @UniqueElements 对应契约的 uniqueItems: true，重复取值作为字段级错误进 errors[]（field=facilities），
+        // 服务层 HotelFacility.normalize 仍保留同一份判定作为兜底。
+        @UniqueElements
+        List<@Pattern(regexp = HotelFacility.PATTERN, message = HotelFacility.MESSAGE) String> facilities,
+
+        @Pattern(regexp = HotelProfileRules.CLOCK_TIME_PATTERN,
+                message = HotelProfileRules.CHECK_IN_TIME_MESSAGE) String checkInTime,
+
+        @Pattern(regexp = HotelProfileRules.CLOCK_TIME_PATTERN,
+                message = HotelProfileRules.CHECK_OUT_TIME_MESSAGE) String checkOutTime,
 
         @DecimalMin(value = "-180", message = "经度应在 -180 到 180 之间")
         @DecimalMax(value = "180", message = "经度应在 -180 到 180 之间") Double longitude,

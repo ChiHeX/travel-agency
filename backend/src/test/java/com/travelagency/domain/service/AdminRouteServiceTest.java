@@ -75,6 +75,10 @@ import static org.mockito.Mockito.when;
  *   <li>没有每日行程不允许上架（409）；已上架线路的行程结构冻结（409），文案仍可修改；</li>
  *   <li>同一线路 dayNumber 唯一、同一日 sortNo 唯一，非法值返回 422 而不是数据库报错 500；</li>
  *   <li>行程引用的酒店必须真实存在且未被停用（422），景点必须真实存在（422）；项目未填坐标时继承景点坐标；</li>
+ *   <li>住宿安排（{@code accommodationType} / {@code accommodationStandard} / {@code roomType} /
+ *       {@code breakfastIncluded} / {@code accommodationNote}）按契约落库，并与酒店关联保持自洽：
+ *       {@code HOTEL} 才带酒店，{@code STANDARD} 只带住宿标准，{@code NONE} 是"当天不含住宿"这一
+ *       明确事实（不是错误）；</li>
  *   <li>删除每日行程必须先删行程项目（外键与级联语义）；</li>
  *   <li>视图映射与契约一致（实体字段不外泄、可空联查键不触发 NPE）。</li>
  * </ul>
@@ -372,6 +376,9 @@ class AdminRouteServiceTest {
         assertEquals(1, days.size());
         assertNull(days.get(0).hotelId());
         assertNull(days.get(0).hotelName(), "没有酒店时应返回 null，而不是抛 NullPointerException");
+        assertEquals("PENDING", days.get(0).accommodationType(),
+                "未记录住宿类型的存量行按「待确认」处理，不得推断成 NONE（没填酒店不等于不含住宿）");
+        assertNull(days.get(0).hotel(), "没有酒店就没有摘要");
         assertTrue(days.get(0).items().isEmpty());
     }
 
@@ -379,9 +386,7 @@ class AdminRouteServiceTest {
     @DisplayName("行程查询：带上酒店名与按排序的行程项目")
     void itineraryDaysCarriesHotelNameAndItems() {
         RouteItineraryDay day = day(11L, 21L, 1, "上海 → 昆明", 5L);
-        Hotel hotel = new Hotel();
-        hotel.id = 5L;
-        hotel.name = "昆明测试酒店";
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
         RouteItineraryItem item = item(31L, 11L, 1, "ATTRACTION", "大理古城");
         when(dayMapper.selectList(any())).thenReturn(List.of(day));
         when(itemMapper.selectList(any())).thenReturn(List.of(item));
@@ -394,13 +399,47 @@ class AdminRouteServiceTest {
         assertEquals("大理古城", view.items().get(0).name());
     }
 
+    /**
+     * 停用酒店在行程里必须<b>两种信息同时正确</b>：{@code hotelName} 仍要返回，摘要要为空。
+     *
+     * <p>停用不改写历史事实：这一天确实安排过这家酒店，后台也不会因为停用就去改动已上架线路的行程，
+     * 因此 {@code hotelId} / {@code hotelName} 照旧。但公开详情只对启用中的酒店开放
+     * （{@code GET /routes/{routeId}/hotels/{hotelId}} 对停用酒店返回 404），若这里照旧给出摘要，
+     * 用户端就会出现一个"点了必然报错"的酒店详情入口 —— 页面上的错误只好由用户来承担。</p>
+     *
+     * <p>住宿安排字段（类型 / 房型 / 早餐 / 说明）是本视图新增的对外字段，
+     * 它们与酒店摘要走的是不同的判定：前者只是把当天的事实读出来，后者才取决于酒店是否停用。</p>
+     */
+    @Test
+    @DisplayName("行程查询：住宿安排字段照旧透出，停用酒店只回 hotelName 不给摘要")
+    void itineraryDaysCarriesAccommodationFieldsAndHidesSummaryForDisabledHotel() {
+        RouteItineraryDay day = day(11L, 21L, 1, "上海 → 昆明", 6L);
+        day.accommodationType = "HOTEL";
+        day.roomType = "标准双床房";
+        day.breakfastIncluded = 0;
+        day.accommodationNote = "含双早，如遇满房换同级酒店";
+        when(dayMapper.selectList(any())).thenReturn(List.of(day));
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+        when(hotelMapper.selectByIds(any())).thenReturn(List.of(hotel(6L, "已停用酒店", 0)));
+
+        ItineraryDayView view = service.itineraryDays(21L).get(0);
+
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals("标准双床房", view.roomType());
+        assertEquals(Boolean.FALSE, view.breakfastIncluded(), "库内 0 要还原成契约的 false，而不是 null");
+        assertEquals("含双早，如遇满房换同级酒店", view.accommodationNote());
+        assertEquals(6L, view.hotelId());
+        assertEquals("已停用酒店", view.hotelName(), "停用不改写历史：酒店名仍要返回");
+        assertNull(view.hotel(), "停用酒店没有公开详情，摘要必须为 null，避免给出必然 404 的入口");
+    }
+
     @Test
     @DisplayName("新增行程：已上架线路的行程结构冻结（409），且不写库")
     void createDayOnPublishedRouteIsRejected() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "已上架", "PUBLISHED"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR));
+                () -> service.createDay(21L, dayRequest(2, "第二天", null), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("ROUTE_STATE_CONFLICT", ex.getCode());
@@ -413,12 +452,12 @@ class AdminRouteServiceTest {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
         when(hotelMapper.selectOne(any())).thenReturn(null);
         BusinessException hotelMissing = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 999L), ACTOR));
+                () -> service.createDay(21L, dayRequest(1, "第一天", 999L), ACTOR));
         assertEquals(422, hotelMissing.getStatus());
 
         when(dayMapper.selectCount(any())).thenReturn(1L);
         BusinessException duplicated = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, null), ACTOR));
+                () -> service.createDay(21L, dayRequest(1, "第一天", null), ACTOR));
         assertEquals(409, duplicated.getStatus());
         verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
     }
@@ -435,7 +474,7 @@ class AdminRouteServiceTest {
         when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
+                () -> service.createDay(21L, dayRequest(1, "第一天", 6L), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -454,7 +493,7 @@ class AdminRouteServiceTest {
         when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.updateDay(11L, new ItineraryDayRequest(1, "第一天", null, null, null, 6L), ACTOR));
+                () -> service.updateDay(11L, dayRequest(1, "第一天", 6L), ACTOR));
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
         verify(dayMapper, never()).update(any(), any());
@@ -465,7 +504,7 @@ class AdminRouteServiceTest {
         when(itemMapper.selectList(any())).thenReturn(List.of());
 
         ItineraryDayView view = service.updateDay(12L,
-                new ItineraryDayRequest(1, "第一天（改文案）", null, null, null, 6L), ACTOR);
+                dayRequest(1, "第一天（改文案）", 6L), ACTOR);
 
         // 回查走的是 Mapper 替身，标题仍是打桩时的旧值；这里断言的是"写入没有被拦下"与酒店名回填。
         assertEquals("已停用酒店", view.hotelName(), "保留停用酒店时仍要回填酒店名");
@@ -490,7 +529,8 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, " 上海 → 昆明 ", 5L));
 
         ItineraryDayView view = service.createDay(21L,
-                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ", 5L), ACTOR);
+                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ",
+                        null, null, null, null, null, 5L), ACTOR);
 
         ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
         verify(dayMapper).insert(captor.capture());
@@ -509,7 +549,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(1L);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.updateDay(11L, new ItineraryDayRequest(2, "冲突", null, null, null, null), ACTOR));
+                () -> service.updateDay(11L, dayRequest(2, "冲突", null), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -523,13 +563,240 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(itemMapper.selectList(any())).thenReturn(List.of());
 
-        service.updateDay(11L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
+        service.updateDay(11L, dayRequest(2, "第二天", null), ACTOR);
 
         ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(dayMapper).update(isNull(), captor.capture());
         UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
         assertTrue(wrapper.getSqlSet().contains("hotel_id"), "允许把酒店清空");
         assertTrue(wrapper.getParamNameValuePairs().containsValue(null), "可空字段应写入 NULL");
+    }
+
+    // ------------------------------------------------------------------
+    // 住宿安排（accommodationType 与酒店关联、住宿标准、早餐三态）
+    // ------------------------------------------------------------------
+
+    /**
+     * {@code HOTEL} 是唯一允许携带 {@code hotelId} 的类型，落地时必须把类型与酒店关联
+     * <b>一起</b>写下去：只写 {@code hotel_id} 而不写 {@code accommodation_type}，用户端就会把
+     * "已指定酒店"读成"待确认"，工作人员在后台明明选好了酒店，前台却显示"住宿安排暂未提供"。
+     *
+     * <p>同时把房型、早餐、补充说明一次落库：契约把 {@code ItineraryDayRequest} 定义为整体替换，
+     * 漏写其中任何一列都会让它们永远停在旧值。</p>
+     */
+    @Test
+    @DisplayName("新增行程：HOTEL 落库类型/房型/早餐/说明，并回填酒店名与非空摘要")
+    void createDayPersistsHotelAccommodationFields() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
+        hotel.starRating = 5;
+        when(hotelMapper.selectOne(any())).thenReturn(hotel);
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        // 回查返回刚写入的那一行：断言的是"写进去的内容能被视图如实还原"，而不是另打一份桩。
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(1, "第 1 天", "HOTEL",
+                null, "标准双床房", Boolean.TRUE, "含双早，满房换同级酒店", 5L), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("HOTEL", saved.accommodationType, "类型必须与酒店关联一起落库");
+        assertEquals(5L, saved.hotelId);
+        assertEquals("标准双床房", saved.roomType);
+        assertEquals(1, saved.breakfastIncluded, "契约的 true 落库为 1");
+        assertEquals("含双早，满房换同级酒店", saved.accommodationNote);
+        assertNull(saved.accommodationStandard, "指定了具体酒店时住宿标准不是必填");
+
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals(5L, view.hotelId());
+        assertEquals("昆明测试酒店", view.hotelName());
+        assertNotNull(view.hotel(), "启用中的酒店必须给出摘要，用户端据此进入酒店详情");
+        assertEquals(5L, view.hotel().id());
+        assertEquals("昆明", view.hotel().city(), "摘要要带城市，卡片上直接展示");
+        assertEquals(Integer.valueOf(5), view.hotel().starRating());
+        assertEquals(Boolean.TRUE, view.breakfastIncluded());
+    }
+
+    /**
+     * {@code STANDARD} 表达"只确定了住宿标准，还没定具体哪家酒店"。
+     *
+     * <p>这正是新增 {@code accommodationType} 的原因：过去 {@code hotelId} 为空只有一种含义，
+     * 用户端只能把"当地四星标准"和"还没确认"显示成同一句"住宿安排暂未提供"。
+     * 因此 {@code STANDARD} 必须落成类型 + 住宿标准，并且 <b>{@code hotel_id} 为 NULL</b>：
+     * 一旦挂上酒店，类型与关联就自相矛盾（用户端要么显示一家其实没安排的酒店，
+     * 要么把已定标准的那天显示成待确认）。</p>
+     */
+    @Test
+    @DisplayName("新增行程：STANDARD 落库住宿标准且不查、不写酒店")
+    void createDayPersistsStandardAccommodationWithoutHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(2, "第二天", "STANDARD",
+                " 当地四星标准 ", null, null, null, null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("STANDARD", saved.accommodationType);
+        assertEquals("当地四星标准", saved.accommodationStandard, "住宿标准首尾空白应被去除");
+        assertNull(saved.hotelId, "STANDARD 不得关联酒店");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("STANDARD", view.accommodationType());
+        assertNull(view.hotelId());
+        assertNull(view.hotelName(), "没有酒店就没有名称，不得用住宿标准冒充酒店名");
+        assertNull(view.hotel(), "没有酒店就没有摘要");
+    }
+
+    /** 修改路径同样要写 {@code accommodation_type}，并把原来的 {@code hotel_id} 清空。 */
+    @Test
+    @DisplayName("修改行程：STANDARD 写入类型与住宿标准，并把原酒店清空")
+    void updateDayPersistsStandardAccommodationWithoutHotel() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", 5L),
+                standardDay(11L, 21L, 1, "第一天", "当地四星标准"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(11L, accommodationRequest(1, "第一天", "STANDARD",
+                "当地四星标准", null, null, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getSqlSet().contains("accommodation_type"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("STANDARD"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("当地四星标准"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(null),
+                "从「指定酒店」改成「只定标准」必须把 hotel_id 清空，否则类型与关联自相矛盾");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("STANDARD", view.accommodationType());
+        assertNull(view.hotelId());
+        assertNull(view.hotel());
+    }
+
+    /**
+     * {@code NONE} 是"当天确实不含住宿"这一<b>明确事实</b>（例如当晚夜车返程），不是错误、
+     * 也不能被当成"没填酒店"。
+     *
+     * <p>正因为它是主动声明，{@code AccommodationType.infer} 永远不会推断出 {@code NONE}：
+     * 推断一旦能得出"不含住宿"，一个漏填酒店的正常行程就会被系统对外宣布成不含住宿。</p>
+     */
+    @Test
+    @DisplayName("新增行程：NONE 是合法安排（当天不含住宿），不查酒店也不被当成错误")
+    void createDayAcceptsNoneWithoutHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(1, "第一天", "NONE",
+                null, null, null, "当晚夜车返程，不含住宿", null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("NONE", saved.accommodationType, "NONE 必须原样落库，不能被改写成 PENDING");
+        assertNull(saved.hotelId);
+        assertEquals("当晚夜车返程，不含住宿", saved.accommodationNote, "不含住宿时补充说明仍可填写");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("NONE", view.accommodationType());
+        assertNull(view.hotelName());
+        assertNull(view.hotel());
+    }
+
+    /**
+     * 原样保留已停用酒店时，写入的依然是 {@code HOTEL} 与同一个 {@code hotel_id}。
+     *
+     * <p>与 {@link #updateDayOnlyRejectsNewlyAssigningDisabledHotel} 互补：那条用例只看"有没有被拦下"，
+     * 这条盯住"放行之后落库的内容对不对" —— 放行却把 {@code accommodation_type} 写成别的值，
+     * 或者把 {@code hotel_id} 清掉，等于用另一种方式弄丢了当天的住宿安排。</p>
+     */
+    @Test
+    @DisplayName("修改行程：原样保留已停用酒店时仍写入 HOTEL 与同一个 hotel_id")
+    void updateDayKeepsDisabledHotelAndPersistsHotelType() {
+        RouteItineraryDay before = day(11L, 21L, 1, "第一天", 6L);
+        RouteItineraryDay after = day(11L, 21L, 1, "第一天（改文案）", 6L);
+        after.accommodationType = "HOTEL";
+        when(dayMapper.selectById(11L)).thenReturn(before, after);
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(11L, accommodationRequest(1, "第一天（改文案）", "HOTEL",
+                null, null, null, null, 6L), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("HOTEL"),
+                "类型必须与酒店关联一起写入，不能只保留 hotel_id");
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(6L),
+                "酒店原样保留时应写入同一个 hotel_id");
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals("已停用酒店", view.hotelName(), "停用不改写历史：酒店名仍要回填");
+        assertNull(view.hotel(), "停用酒店不给摘要");
+    }
+
+    /**
+     * {@code breakfastIncluded} 是<b>三态</b>：{@code true} / {@code false} / 未提交（{@code null}）。
+     *
+     * <p>契约的请求体是整体替换，因此 {@code false} 与"未提交"必须落成不同的库内值
+     * （{@code 0} 与 {@code NULL}）：把 {@code false} 写成 {@code NULL}，后台明明把"含早"取消了，
+     * 用户端却退回"早餐情况未说明"；反过来把未提交当成 {@code false}，就会替运营宣布"不含早"。
+     * 库内列 {@code TINYINT} 正好能表达这三态，映射见 {@code AdminRouteService#booleanValue}。</p>
+     */
+    @Test
+    @DisplayName("新增行程：breakfastIncluded=false 落库为 0（与未提交的 NULL 可区分），视图回 false")
+    void createDayDistinguishesFalseBreakfastFromUnsubmitted() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(5L, "昆明测试酒店", 1));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        Map<Long, RouteItineraryDay> persisted = new LinkedHashMap<>();
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L + persisted.size();
+            persisted.put(inserted.id, inserted);
+            return 1;
+        });
+        when(dayMapper.selectById(any())).thenAnswer(invocation -> persisted.get(invocation.getArgument(0)));
+
+        ItineraryDayView explicitFalse = service.createDay(21L, accommodationRequest(1, "第一天", "HOTEL",
+                null, "标准双床房", Boolean.FALSE, null, 5L), ACTOR);
+
+        assertEquals(0, persisted.get(11L).breakfastIncluded, "false 必须落库成 0，不能写成 NULL");
+        assertEquals(Boolean.FALSE, explicitFalse.breakfastIncluded(), "库内 0 要还原成契约的 false");
+        assertFalse(explicitFalse.breakfastIncluded());
+
+        ItineraryDayView unsubmitted = service.createDay(21L, accommodationRequest(2, "第二天", "HOTEL",
+                null, "标准双床房", null, null, 5L), ACTOR);
+
+        assertNull(persisted.get(12L).breakfastIncluded, "未提交时落 NULL，而不是默认成 0（不含早）");
+        assertNull(unsubmitted.breakfastIncluded(), "未提交时视图回 null，与 false 是两种结果");
     }
 
     @Test
@@ -848,7 +1115,7 @@ class AdminRouteServiceTest {
             return 1;
         });
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 2, "第二天", null));
-        service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
+        service.createDay(21L, dayRequest(2, "第二天", null), ACTOR);
         verify(operationLog).record(ACTOR, "行程", "CREATE", "ITINERARY_DAY", 11L,
                 "线路 21 新增第 2 天行程");
 
@@ -927,13 +1194,53 @@ class AdminRouteServiceTest {
     }
 
     /**
+     * 只关心"第几天 + 关联哪家酒店"的行程请求：住宿安排类型留空，交给服务端按 {@code hotelId} 推断
+     * （非空 → {@code HOTEL}，为空 → {@code PENDING}）。
+     *
+     * <p>本文件多数用例测的是天数唯一性、线路状态与酒店可用性，与当天具体怎么安排住宿无关；
+     * 显式写类型反而会把"断言点"从被测规则挪开。需要断言住宿安排本身时用
+     * {@link #accommodationRequest}。</p>
+     */
+    private static ItineraryDayRequest dayRequest(int dayNumber, String title, Long hotelId) {
+        return new ItineraryDayRequest(dayNumber, title, null, null, null,
+                null, null, null, null, null, hotelId);
+    }
+
+    /**
+     * 显式提交住宿安排的行程请求（住宿规则的用例使用）。
+     *
+     * <p>参数顺序与 {@link ItineraryDayRequest} 一致：住宿类型 → 住宿标准 → 房型 → 是否含早 → 补充说明。</p>
+     */
+    private static ItineraryDayRequest accommodationRequest(int dayNumber, String title, String accommodationType,
+                                                            String accommodationStandard, String roomType,
+                                                            Boolean breakfastIncluded, String accommodationNote,
+                                                            Long hotelId) {
+        return new ItineraryDayRequest(dayNumber, title, null, null, null, accommodationType,
+                accommodationStandard, roomType, breakfastIncluded, accommodationNote, hotelId);
+    }
+
+    /** 只定了住宿标准、没有关联酒店的那一天（模拟库里 {@code accommodation_type = 'STANDARD'} 的行）。 */
+    private static RouteItineraryDay standardDay(Long id, Long routeId, int dayNumber, String title,
+                                                 String standard) {
+        RouteItineraryDay day = day(id, routeId, dayNumber, title, null);
+        day.accommodationType = "STANDARD";
+        day.accommodationStandard = standard;
+        return day;
+    }
+
+    /**
      * 酒店替身。{@code status} 必须显式给出：库内列是 {@code TINYINT NOT NULL DEFAULT 1}，
      * 而行程写入口把"非 ACTIVE"一律当成停用（null 也会被判成停用），不设置会误拦用例。
+     *
+     * <p>{@code city} 一并给出：契约 {@code HotelCreateRequest} 已把城市列为必填，
+     * 酒店摘要 {@code HotelSummaryView} 也带着它，替身缺了城市会让"摘要有哪些字段"的断言失去意义。</p>
      */
     private static Hotel hotel(Long id, String name, int status) {
         Hotel hotel = new Hotel();
         hotel.id = id;
         hotel.name = name;
+        hotel.city = "昆明";
+        hotel.address = "云南省昆明市测试路 1 号";
         hotel.status = status;
         return hotel;
     }
@@ -987,5 +1294,47 @@ class AdminRouteServiceTest {
     @SuppressWarnings("unused")
     private static int availableSeats(int max, int reserved, int confirmed) {
         return Math.max(max - reserved - confirmed, 0);
+    }
+
+    /**
+     * 住宿自洽规则必须在服务层也复核一次：请求层的 {@code @AccommodationConsistent} 只保护 HTTP
+     * 入口，直接构造请求对象调用 Service 的代码（数据导入、修复脚本、后续的内部接口）绕不过这一道。
+     *
+     * <p>数据库层面同样拦不住：外键只保证 {@code hotel_id} 指向的行存在，不保证它和
+     * {@code accommodation_type} 语义一致 —— "指定了酒店却没有酒店"的行落库后，
+     * 用户端这一天会同时显示"行程安排酒店"和"住宿待确认"，且没有任何地方能看出它是错的。</p>
+     */
+    @Test
+    @DisplayName("新增行程：绕过请求校验的调用方也写不进自相矛盾的住宿安排（422，不落库）")
+    void createDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿", "DRAFT"));
+
+        // HOTEL 却没有酒店；STANDARD 却没有住宿标准；NONE 却带了酒店
+        for (ItineraryDayRequest inconsistent : List.of(
+                new ItineraryDayRequest(1, "第一天", null, null, null, "HOTEL", null, null, null, null, null),
+                new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD", "  ", null, null, null, null),
+                new ItineraryDayRequest(1, "第一天", null, null, null, "NONE", null, null, null, null, 5L))) {
+            BusinessException error = assertThrows(BusinessException.class,
+                    () -> service.createDay(21L, inconsistent, ACTOR));
+            assertEquals(422, error.getStatus(), "不一致的住宿安排必须按字段语义失败处理");
+            assertEquals("VALIDATION_ERROR", error.getCode());
+        }
+
+        verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
+    }
+
+    /** 修改路径同样要有这一道兜底，否则"先合规建档、再绕过校验改歪"可以绕过上面的检查。 */
+    @Test
+    @DisplayName("修改行程：绕过请求校验的调用方同样改不出自相矛盾的住宿安排（422，不写库）")
+    void updateDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.updateDay(11L,
+                new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD", null, null, null, null, null),
+                ACTOR));
+
+        assertEquals(422, error.getStatus());
+        assertEquals("VALIDATION_ERROR", error.getCode());
+        verify(dayMapper, never()).update(any(), any());
     }
 }

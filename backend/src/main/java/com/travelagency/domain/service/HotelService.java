@@ -6,54 +6,81 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.AccountStatus;
+import com.travelagency.common.enums.HotelFacility;
+import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.HotelCreateRequest;
+import com.travelagency.domain.dto.HotelImageRequest;
 import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.dto.HotelView;
+import com.travelagency.domain.dto.PublicHotelDetailView;
 import com.travelagency.domain.entity.Hotel;
+import com.travelagency.domain.entity.HotelImage;
 import com.travelagency.domain.entity.RouteItineraryDay;
+import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.mapper.HotelImageMapper;
 import com.travelagency.domain.mapper.HotelMapper;
 import com.travelagency.domain.mapper.RouteItineraryDayMapper;
+import com.travelagency.domain.mapper.TravelRouteMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
- * 酒店模块 Service：后台酒店资料维护（契约 {@code Admin Resources} 的 {@code /admin/hotels} 一组端点）。
+ * 酒店模块 Service：后台酒店资料维护（契约 {@code Admin Resources} 的 {@code /admin/hotels} 一组端点）
+ * 与线路下的酒店公开详情（契约 {@code GET /routes/{routeId}/hotels/{hotelId}}）。
  *
  * <p>酒店在 PRD 里只作为<b>线路行程资源</b>存在（PRD §10 酒店模型、§36 酒店资料管理）：
- * 不提供酒店订单、库存、房型销售与单独下单，因此本模块只有后台 CRUD，
- * 没有对外的公开浏览端点 —— 用户端看到酒店信息的唯一入口是线路详情的每日行程
- * （{@code RouteItineraryDay.hotelName}，由 {@code RouteService} / {@code AdminRouteService} 联查）。</p>
+ * 不提供酒店订单、库存、房型销售与单独下单。用户端能看到酒店资料的两个入口是
+ * 线路详情每日行程里的 {@code HotelSummaryView}（摘要）与本类提供的
+ * {@link #publicDetail}（详情，图片与完整简介按需获取）——
+ * 公开面刻意挂在<b>线路之下</b>：以"这条已发布线路确实安排了它"为门槛，
+ * 才不会把后台维护的、与当前线路无关的酒店资料一并公开。</p>
  *
- * <p><b>{@code status} 的语义（两个端点共同保证）</b>：{@code DISABLED} 表示这家酒店不再使用 ——
+ * <p><b>{@code status} 的语义（三个端点共同保证）</b>：{@code DISABLED} 表示这家酒店不再使用 ——
  * 不能再被安排进新的每日行程（{@code AdminRouteService} 在写行程时以 422 拒绝），
- * 已引用它的行程不受影响（不停用就是删除的替代品：被行程引用的酒店不允许删除，见 {@link #delete}）。
- * 只写状态、不拦新安排会让"停用"退化成没有效果的标记。</p>
+ * 已引用它的行程不受影响（行程继续显示名称，但摘要与公开详情都不再给出，见
+ * {@link #publicDetail}），停用也是删除的替代品：被行程引用的酒店不允许删除，见 {@link #delete}。</p>
  *
  * <p><b>修改带乐观锁</b>：{@link #update} 要求回传读取时的 {@code version}，
  * 与库内不一致时返回 {@code 409 HOTEL_VERSION_CONFLICT}，避免两位工作人员先后保存时
- * 后保存的人静默覆盖前一位的改动（与团期 {@code DepartureService#update} 同一口径）。</p>
+ * 后保存的人静默覆盖前一位的改动（与团期 {@code DepartureService#update} 同一口径）。
+ * 酒店基础资料与图片在<b>同一个事务</b>内替换，不会出现"资料改了、图片还是旧的"。</p>
  *
- * <p>写接口此前直接写在 {@code AdminController} 里用 Mapper 操作数据库，本次迁移到 Service 层，
- * Controller 只做参数接收与响应封装（见 docs/DEVELOPMENT_GUIDE.md §3）。</p>
+ * <p><b>图片只登记外部 URL</b>：第一版由后台填写图片地址，项目不提供图片上传服务，
+ * 因此替换 / 删除图片只删除 {@code hotel_image} 记录，<b>不会去删除外部图片文件</b>。</p>
  */
 @Service
 public class HotelService {
 
-    private final HotelMapper hotels;
-    private final RouteItineraryDayMapper itineraryDays;
-    private final OperationLogRecorder operationLog;
+    private static final Logger log = LoggerFactory.getLogger(HotelService.class);
 
-    public HotelService(HotelMapper hotels, RouteItineraryDayMapper itineraryDays,
-                        OperationLogRecorder operationLog) {
+    private final HotelMapper hotels;
+    private final HotelImageMapper hotelImages;
+    private final RouteItineraryDayMapper itineraryDays;
+    private final TravelRouteMapper routes;
+    private final OperationLogRecorder operationLog;
+    private final JsonMapper json;
+
+    public HotelService(HotelMapper hotels, HotelImageMapper hotelImages,
+                        RouteItineraryDayMapper itineraryDays, TravelRouteMapper routes,
+                        OperationLogRecorder operationLog, JsonMapper json) {
         this.hotels = hotels;
+        this.hotelImages = hotelImages;
         this.itineraryDays = itineraryDays;
+        this.routes = routes;
         this.operationLog = operationLog;
+        this.json = json;
     }
 
     /**
@@ -67,17 +94,27 @@ public class HotelService {
      * 翻页会出现重复或漏项。</p>
      *
      * <p>{@code keyword} 与 {@code AdminController} 时期的实现同口径，匹配名称、地址与简介：
-     * 契约只声明了该参数存在与长度上限，未限定字段，沿用既有语义以免调用方行为发生变化。</p>
+     * 契约只声明了该参数存在与长度上限，未限定字段，沿用既有语义以免调用方行为发生变化。
+     * {@code city} 是新增的精确筛选（与公开景点列表的 {@code city} 同口径）：
+     * 城市是酒店最主要的分组维度，靠 {@code keyword} 模糊匹配会把"杭州"和"杭州路"混在一起。</p>
+     *
+     * <p>图片按本页酒店批量查询一次（{@link #imagesByHotel}），不做"每家酒店查一次"的 N+1。</p>
      */
-    public PageResponse<HotelView> page(String keyword, long page, long size) {
+    public PageResponse<HotelView> page(String keyword, String city, long page, long size) {
         QueryWrapper<Hotel> query = new QueryWrapper<>();
         if (keyword != null && !keyword.isBlank()) {
             String value = keyword.trim();
             query.and(w -> w.like("name", value).or().like("address", value).or().like("intro", value));
         }
+        if (city != null && !city.isBlank()) {
+            query.eq("city", city.trim());
+        }
         Page<Hotel> result = hotels.selectPage(newPage(page, size),
                 query.orderByDesc("created_at").orderByDesc("id"));
-        List<HotelView> items = result.getRecords().stream().map(HotelView::from).toList();
+        Map<Long, List<HotelImage>> images = imagesByHotel(result.getRecords().stream().map(h -> h.id).toList());
+        List<HotelView> items = result.getRecords().stream()
+                .map(hotel -> HotelView.from(hotel, images.get(hotel.id), facilitiesOf(hotel)))
+                .toList();
         return new PageResponse<>(items, (int) result.getCurrent(), (int) result.getSize(),
                 (int) result.getTotal(), (int) result.getPages());
     }
@@ -93,7 +130,7 @@ public class HotelService {
      * <p>未提交 {@code status} 时按 {@link AccountStatus#ACTIVE} 建档，与库内
      * {@code status TINYINT NOT NULL DEFAULT 1} 的默认值一致；其它字段全部来自请求。
      * {@code version} 由服务端从 0 起算（契约 {@code HotelCreateRequest} 不含该字段，
-     * 客户端提交会被严格反序列化拒绝）。</p>
+     * 客户端提交会被严格反序列化拒绝）。图片与资料在同一事务内写入。</p>
      */
     @Transactional
     public HotelView create(HotelCreateRequest request, Long operatorId) {
@@ -102,6 +139,7 @@ public class HotelService {
         hotel.status = statusValue(request.hasStatus() ? request.status() : AccountStatus.ACTIVE);
         hotel.version = 0;
         hotels.insert(hotel);
+        replaceImages(hotel.id, request.images());
         operationLog.record(operatorId, "酒店", "CREATE", "HOTEL", hotel.id,
                 "新增酒店资料：" + hotel.name);
         // 回查以带回 created_at / updated_at 等数据库维护的字段，保证响应满足契约必填项。
@@ -122,12 +160,16 @@ public class HotelService {
      * 本事务在读取之后、写回之前，另一位管理员完成的停用会被这次编辑悄悄撤销
      * （读到 ACTIVE → 对方停用并提交 → 本事务把 ACTIVE 写回，酒店被重新启用）。</p>
      *
+     * <p>其余可空字段则一律写入（含 {@code null}）：契约把它们定义为"整体替换"，
+     * 提交 {@code null} 就是清空旧资料。图片同样整体替换 —— 先删除该酒店的全部
+     * {@code hotel_image} 记录，再按提交顺序重建；只删除记录，不删除外部图片文件。</p>
+     *
      * <p>目标不存在时返回 404。旧实现是无条件 {@code updateById}：影响 0 行也照回 200 +
      * 请求体，调用方会以为一条不存在的酒店保存成功了。</p>
      *
      * <p><b>乐观锁</b>：提交的 {@code version} 与库内不一致说明这份资料已被他人修改，
-     * 直接返回 409 {@code HOTEL_VERSION_CONFLICT}，本次修改不生效 —— 两位工作人员各自
-     * 打开同一条资料、先后保存时，后保存的人不会静默覆盖前一位的改动。
+     * 直接返回 409 {@code HOTEL_VERSION_CONFLICT}，本次修改不生效（图片也不会被替换）——
+     * 两位工作人员各自打开同一条资料、先后保存时，后保存的人不会静默覆盖前一位的改动。
      * 版本判定用 {@link #lockHotel} 的当前读，与写入同处一把行锁内；
      * UPDATE 的 {@code WHERE version = ?} 是第二道防线。</p>
      *
@@ -145,6 +187,9 @@ public class HotelService {
      * 两人同时显式提交状态时，后者读到的是前者已提交的结果（而不是自己事务开始时的旧值），
      * 因此不会把"早已是 DISABLED"重复记成一次 ACTIVE → DISABLED（多记），
      * 也不会把 DISABLED → ACTIVE 这种真实变化漏掉（漏记）。</p>
+     *
+     * <p>修改的是<b>酒店基础资料</b>：历史订单保存的价格与出行人快照不受影响，
+     * 也不会被这次修改覆盖（订单快照在下单时冻结，见 {@code OrderService}）。</p>
      */
     @Transactional
     public HotelView update(Long hotelId, HotelUpdateRequest request, Long operatorId) {
@@ -156,8 +201,14 @@ public class HotelService {
                 // 乐观锁：版本不一致说明有人先改过，这条语句会匹配 0 行。
                 .eq("version", request.version())
                 .set("name", current.name)
+                .set("city", current.city)
                 .set("address", current.address)
                 .set("contact_phone", current.contactPhone)
+                .set("cover_url", current.coverUrl)
+                .set("star_rating", current.starRating)
+                .set("facilities", current.facilities)
+                .set("check_in_time", current.checkInTime)
+                .set("check_out_time", current.checkOutTime)
                 .set("longitude", current.longitude)
                 .set("latitude", current.latitude)
                 .set("intro", current.intro)
@@ -171,6 +222,7 @@ public class HotelService {
             // 让"行不在了"与"版本对不上"各自得到正确的结论（404 / 409）。
             throw updateConflict(hotelId, request.version());
         }
+        replaceImages(hotelId, request.images());
         operationLog.record(operatorId, "酒店", "UPDATE", "HOTEL", hotelId,
                 "修改酒店资料：" + current.name);
         if (request.hasStatus() && !AccountStatus.of(current.status).equals(request.status())) {
@@ -189,6 +241,10 @@ public class HotelService {
      * 会让外键拒绝删除并抛出 {@code DataIntegrityViolationException}，被全局兜底处理成 <b>500</b>，
      * 而契约在这里声明的语义是 409 冲突 —— 工作人员只会看到"服务暂时不可用"，
      * 无从知道真正的原因是"这家酒店还在某条线路的行程里"。</p>
+     *
+     * <p>删除前先删该酒店的图片记录（{@code fk_hotel_image_hotel} 没有级联）：
+     * 图片是酒店的从属数据，酒店都没了就不该留下悬挂行。仍然只删除记录，
+     * <b>不删除外部图片文件</b>。</p>
      *
      * <p>删除只对"未被引用"的酒店开放，不提供级联：把每日行程里的酒店一起清掉会静默改变
      * 已上架线路的行程内容（用户端线路详情的"住宿"一行会凭空消失）。需要让酒店停止使用时
@@ -210,6 +266,7 @@ public class HotelService {
         }
         int deleted;
         try {
+            hotelImages.delete(new QueryWrapper<HotelImage>().eq("hotel_id", hotelId));
             deleted = hotels.deleteById(hotelId);
         } catch (DataIntegrityViolationException ex) {
             // 竞态兜底：引用检查与删除之间，另一个事务把该酒店排进了某天的行程（外键拒绝删除）。
@@ -239,14 +296,73 @@ public class HotelService {
         if (hotel == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "酒店不存在");
         }
-        return HotelView.from(hotel);
+        return HotelView.from(hotel, imagesOf(hotelId), facilitiesOf(hotel));
     }
 
-    /** 把契约允许的字段写进实体；文本字段去掉首尾空白，避免"看起来同名"的重复酒店。 */
-    private static void applyEditableFields(Hotel hotel, HotelCreateRequest request) {
+    /**
+     * 线路下的酒店公开详情，对齐契约 {@code GET /routes/{routeId}/hotels/{hotelId}}。
+     *
+     * <p><b>三个条件同时成立才返回数据</b>：线路存在且已发布、酒店存在且启用、
+     * 该线路的每日行程里确实安排了这家酒店。任何一条不满足都返回<b>同一个</b>
+     * 404 {@code RESOURCE_NOT_FOUND}（文案也一致）：若按原因给出不同提示，
+     * 无需登录的调用方就能用它枚举出后台有哪些酒店、哪家被停用了。</p>
+     *
+     * <p>为什么把门槛放在"线路确实安排了它"而不是直接开放 {@code /hotels/{hotelId}}：
+     * 酒店在本项目里只是线路行程资源，整表公开等于把后台维护的、可能与任何线路都无关的
+     * 酒店资料一起放出去（见类注释）。</p>
+     *
+     * <p>返回 {@link PublicHotelDetailView} 而不是后台 {@code HotelView}：
+     * 不含 {@code version} / {@code status} / 审计时间，也不含后台的对接人电话。
+     * 图片与设施由本方法装配，未录入时按契约返回 {@code []}。</p>
+     */
+    public PublicHotelDetailView publicDetail(Long routeId, Long hotelId) {
+        TravelRoute route = routes.selectById(routeId);
+        if (route == null || !RouteStatus.PUBLISHED.equals(route.status)
+                || Integer.valueOf(1).equals(route.deleted)) {
+            throw publicHotelNotFound();
+        }
+        Hotel hotel = hotels.selectById(hotelId);
+        if (hotel == null || !AccountStatus.ACTIVE.equals(AccountStatus.of(hotel.status))) {
+            throw publicHotelNotFound();
+        }
+        if (itineraryDays.selectCount(new QueryWrapper<RouteItineraryDay>()
+                .eq("route_id", routeId).eq("hotel_id", hotelId)) == 0) {
+            throw publicHotelNotFound();
+        }
+        return PublicHotelDetailView.from(hotel, imagesOf(hotelId), facilitiesOf(hotel));
+    }
+
+    /**
+     * 公开详情统一的 404。三种不满足的条件共用同一条文案，避免把"酒店被停用"
+     * 与"这家酒店根本不存在"区分出来（那是一次无需登录即可完成的后台状态探测）。
+     */
+    private static BusinessException publicHotelNotFound() {
+        return new BusinessException(404, "RESOURCE_NOT_FOUND",
+                "酒店资料不存在，或未在这条线路中公开");
+    }
+
+    // ------------------------------------------------------------------
+    // 私有辅助
+    // ------------------------------------------------------------------
+
+    /**
+     * 把契约允许的字段写进实体；文本字段去掉首尾空白，避免"看起来同名"的重复酒店。
+     *
+     * <p>{@code facilities} 在这里就转成 JSON 文本（库内是 JSON 列）并做枚举 / 去重校验：
+     * 校验放在写入实体的同一处，创建与修改两条路径不会各漏一半。
+     * {@code images} 不写实体 —— 它们是 {@code hotel_image} 的独立行，由
+     * {@link #replaceImages} 处理。</p>
+     */
+    private void applyEditableFields(Hotel hotel, HotelCreateRequest request) {
         hotel.name = trim(request.name());
+        hotel.city = trim(request.city());
         hotel.address = trim(request.address());
         hotel.contactPhone = trim(request.contactPhone());
+        hotel.coverUrl = trim(request.coverUrl());
+        hotel.starRating = request.starRating();
+        hotel.facilities = facilitiesJson(request.facilities());
+        hotel.checkInTime = trim(request.checkInTime());
+        hotel.checkOutTime = trim(request.checkOutTime());
         hotel.longitude = decimal(request.longitude());
         hotel.latitude = decimal(request.latitude());
         hotel.intro = request.intro();
@@ -265,6 +381,90 @@ public class HotelService {
     /** 契约 {@code AccountStatus} → 库内 {@code TINYINT} 1/0 的唯一转换点。 */
     private static int statusValue(String status) {
         return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
+    }
+
+    /**
+     * 设施标签 → 库内 JSON 数组文本（契约 {@code HotelFacility} 枚举，顺序按提交顺序保留）。
+     *
+     * <p>{@code @Pattern} 已经在请求层挡掉枚举外的取值，这里再走一次
+     * {@link HotelFacility#normalize}：它同时负责"契约 {@code uniqueItems: true}"的去重校验，
+     * 并保证写进 JSON 列的内容一定合法（JSON 列本身不认枚举）。
+     * 空列表按 {@code null} 落库（未录入），读出来仍是契约要求的 {@code []}。</p>
+     */
+    private String facilitiesJson(List<String> facilities) {
+        List<String> normalized;
+        try {
+            normalized = HotelFacility.normalize(facilities);
+        } catch (IllegalArgumentException ex) {
+            // 契约的 uniqueItems 违反：重复标签属于字段语义校验失败，按 docs/API.md 第 7 节回 422。
+            throw new BusinessException(422, "VALIDATION_ERROR", ex.getMessage());
+        }
+        return normalized.isEmpty() ? null : json.writeValueAsString(normalized);
+    }
+
+    /**
+     * 库内 JSON 文本 → 契约的字符串数组（无数据时给 {@code []}）。
+     *
+     * <p>解析失败只记警告并返回空列表：列类型是 JSON，正常写入的内容一定合法，
+     * 走到这里说明有人直接改过库。为一行的脏数据让整张酒店列表接口回 500，
+     * 会让工作人员连"把这条资料改回来"的入口都打不开。</p>
+     */
+    private List<String> facilitiesOf(Hotel hotel) {
+        if (hotel == null || hotel.facilities == null || hotel.facilities.isBlank()) {
+            return List.of();
+        }
+        try {
+            String[] values = json.readValue(hotel.facilities, String[].class);
+            return values == null ? List.of() : List.of(values);
+        } catch (JacksonException ex) {
+            log.warn("酒店 {} 的 facilities 不是合法 JSON 数组，按未录入处理", hotel.id, ex);
+            return List.of();
+        }
+    }
+
+    /**
+     * 整体替换某家酒店的图片：先删除既有记录，再按提交顺序写入。
+     *
+     * <p>契约把 {@code images} 定义为整份资料的一部分（{@code PUT} 整体替换），
+     * 省略或传空集合都表示"这家酒店不再有图片"。只删除 {@code hotel_image} 记录，
+     * 不删除外部图片文件。</p>
+     */
+    private void replaceImages(Long hotelId, List<HotelImageRequest> images) {
+        hotelImages.delete(new QueryWrapper<HotelImage>().eq("hotel_id", hotelId));
+        if (images == null || images.isEmpty()) {
+            return;
+        }
+        for (HotelImageRequest submitted : images) {
+            HotelImage image = new HotelImage();
+            image.hotelId = hotelId;
+            image.url = trim(submitted.url());
+            image.alt = trim(submitted.alt());
+            image.sortOrder = submitted.sortOrder();
+            hotelImages.insert(image);
+        }
+    }
+
+    /** 某家酒店的图片，按 {@code sort_order} 升序、同序按主键（写入顺序）返回。 */
+    private List<HotelImage> imagesOf(Long hotelId) {
+        return hotelImages.selectList(new QueryWrapper<HotelImage>()
+                .eq("hotel_id", hotelId).orderByAsc("sort_order").orderByAsc("id"));
+    }
+
+    /**
+     * 一页酒店的图片，一次查询取回后按酒店分组（避免每家酒店各查一次）。
+     * 排序与 {@link #imagesOf} 保持一致：{@code sort_order} 升序、同序按主键。
+     */
+    private Map<Long, List<HotelImage>> imagesByHotel(List<Long> hotelIds) {
+        if (hotelIds == null || hotelIds.isEmpty()) {
+            return Map.of();
+        }
+        List<HotelImage> images = hotelImages.selectList(new QueryWrapper<HotelImage>()
+                .in("hotel_id", hotelIds).orderByAsc("sort_order").orderByAsc("id"));
+        Map<Long, List<HotelImage>> grouped = new LinkedHashMap<>();
+        for (HotelImage image : images) {
+            grouped.computeIfAbsent(image.hotelId, key -> new java.util.ArrayList<>()).add(image);
+        }
+        return grouped;
     }
 
     /**
@@ -289,7 +489,8 @@ public class HotelService {
 
     /** 写入后回查并转契约视图；此时本事务已持有该行锁，回查走同一把锁。 */
     private HotelView requireView(Long hotelId) {
-        return HotelView.from(lockHotel(hotelId));
+        Hotel hotel = lockHotel(hotelId);
+        return HotelView.from(hotel, imagesOf(hotelId), facilitiesOf(hotel));
     }
 
     /**

@@ -71,12 +71,14 @@ class CoordinatePairValidationTest {
     }
 
     private static HotelCreateRequest hotelCreate(Double longitude, Double latitude) {
-        return new HotelCreateRequest("演示酒店", "云南省大理市", "000-00000000",
+        return new HotelCreateRequest("演示酒店", "大理", "云南省大理市", "000-00000000",
+                null, null, null, null, null, null,
                 longitude, latitude, "演示简介", "团队测试数据", "ACTIVE");
     }
 
     private static HotelUpdateRequest hotelUpdate(Double longitude, Double latitude) {
-        return new HotelUpdateRequest("演示酒店", "云南省大理市", "000-00000000",
+        return new HotelUpdateRequest("演示酒店", "大理", "云南省大理市", "000-00000000",
+                null, null, null, null, null, null,
                 longitude, latitude, "演示简介", "团队测试数据", "ACTIVE", 0);
     }
 

@@ -32,7 +32,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,7 +93,8 @@ class HotelAdminContractIntegrationTest {
         MockHttpServletResponse created = mvc()
                 .perform(post("/api/admin/hotels").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"" + name + "\",\"address\":\"云南省昆明市测试路 1 号\","
+                        .content("{\"name\":\"" + name + "\",\"city\":\"昆明\","
+                                + "\"address\":\"云南省昆明市测试路 1 号\","
                                 + "\"contactPhone\":\"087112345678\",\"longitude\":102.832,\"latitude\":24.88,"
                                 + "\"intro\":\"演示简介\",\"dataSource\":\"团队测试数据\"}"))
                 .andExpect(status().isCreated())
@@ -110,15 +110,17 @@ class HotelAdminContractIntegrationTest {
 
         // 响应字段形状：契约 Hotel 必填项齐全，status 是枚举、坐标是 JSON number
         JsonNode body = data(created);
-        for (String required : new String[]{"id", "name", "status", "version", "createdAt", "updatedAt"}) {
+        for (String required : new String[]{"id", "name", "city", "status", "version", "images",
+                "facilities", "createdAt", "updatedAt"}) {
             assertNotNull(body.get(required), "响应缺少契约必填字段：" + required);
         }
         assertEquals(0, body.path("version").asInt(), "新建的乐观锁版本号从 0 起算");
         assertTrue(body.get("longitude").isNumber(), "坐标必须是 JSON number，不能是 BigDecimal 字符串");
         assertEquals(102.832, body.get("longitude").asDouble(), 0.0000001);
         assertEquals(24.88, body.get("latitude").asDouble(), 0.0000001);
-        // 契约 Hotel 没有 city：多出来的字段会让严格模式的前端契约校验失败
-        assertFalse(body.has("city"), "契约 Hotel 不含 city，不得由实体带出契约外字段");
+        // city 是本次契约新增的**必填**字段（docs/API.md §12.2 的破坏性变更）：
+        // 提交什么就必须回显什么，它既是用户端卡片的展示字段，也是后台列表的筛选依据。
+        assertEquals("昆明", body.path("city").asString(), "city 必须原样回显提交的城市");
 
         // 列表：keyword 命中，且形状与创建响应同口径
         JsonNode found = null;
@@ -131,13 +133,14 @@ class HotelAdminContractIntegrationTest {
         assertNotNull(found, "keyword 应能检索到刚创建的酒店");
         assertEquals("ACTIVE", found.path("status").asString());
         assertEquals("087112345678", found.path("contactPhone").asString());
+        assertEquals("昆明", found.path("city").asString(), "列表与创建响应必须给出同一个城市");
         assertEquals(0, found.path("version").asInt(), "列表与创建响应必须给出同一个版本号");
 
         // 修改：200 + 修改后的酒店，且 status 未提交时保持 ACTIVE
         JsonNode updated = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"" + name + "-改名\",\"address\":null,\"contactPhone\":null,"
-                        + "\"longitude\":102.733,\"latitude\":25.044,\"intro\":null,"
+                .content("{\"name\":\"" + name + "-改名\",\"city\":\"昆明\",\"address\":null,"
+                        + "\"contactPhone\":null,\"longitude\":102.733,\"latitude\":25.044,\"intro\":null,"
                         + "\"dataSource\":\"团队测试数据\",\"version\":0}"));
         assertEquals(name + "-改名", updated.path("name").asString());
         assertTrue(updated.get("address").isNull(), "PUT 需要能清空可选字段");
@@ -148,7 +151,7 @@ class HotelAdminContractIntegrationTest {
         // 停用：状态必须真的落库成 0
         JsonNode disabled = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"" + name + "-改名\",\"dataSource\":\"团队测试数据\","
+                .content("{\"name\":\"" + name + "-改名\",\"city\":\"昆明\",\"dataSource\":\"团队测试数据\","
                         + "\"status\":\"DISABLED\",\"version\":1}"));
         assertEquals(0, hotels.selectById(Long.parseLong(id)).status,
                 "停用必须真的落库成 0");
@@ -160,8 +163,8 @@ class HotelAdminContractIntegrationTest {
         // 它挡的是另一类回归：把"未提交 status"当成"按 ACTIVE 建档"。
         JsonNode editedWhileDisabled = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"" + name + "-再次编辑\",\"dataSource\":\"团队测试数据\","
-                        + "\"version\":2}"));
+                .content("{\"name\":\"" + name + "-再次编辑\",\"city\":\"昆明\","
+                        + "\"dataSource\":\"团队测试数据\",\"version\":2}"));
         assertEquals("DISABLED", editedWhileDisabled.path("status").asString(),
                 "不带 status 的资料编辑不得改变已停用酒店的状态");
         assertEquals(0, hotels.selectById(Long.parseLong(id)).status,
@@ -171,7 +174,7 @@ class HotelAdminContractIntegrationTest {
         // 乐观锁：拿旧版本再提交一次必须 409，且不改动任何数据（版本也不前进）。
         mvc().perform(put("/api/admin/hotels/" + id).header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"陈旧表单提交\",\"dataSource\":\"团队测试数据\","
+                        .content("{\"name\":\"陈旧表单提交\",\"city\":\"昆明\",\"dataSource\":\"团队测试数据\","
                                 + "\"version\":2}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("HOTEL_VERSION_CONFLICT"));
@@ -186,7 +189,7 @@ class HotelAdminContractIntegrationTest {
         assertEquals(name + "-再次编辑", latest.path("name").asString());
         assertEquals("DISABLED", latest.path("status").asString());
         assertEquals(3, latest.path("version").asInt(), "详情必须给出最新版本号");
-        for (String required : new String[]{"id", "name", "status", "version", "createdAt", "updatedAt"}) {
+        for (String required : new String[]{"id", "name", "city", "status", "version", "createdAt", "updatedAt"}) {
             assertNotNull(latest.get(required), "详情缺少契约必填字段：" + required);
         }
 
@@ -211,7 +214,8 @@ class HotelAdminContractIntegrationTest {
         // 修改不存在的酒店：404（旧实现是无条件 updateById，影响 0 行也回 200 + 请求体）
         mvc().perform(put("/api/admin/hotels/999999999").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"不存在\",\"dataSource\":\"团队测试数据\",\"version\":0}"))
+                        .content("{\"name\":\"不存在\",\"city\":\"昆明\",\"dataSource\":\"团队测试数据\","
+                                + "\"version\":0}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("RESOURCE_NOT_FOUND"));
     }
@@ -252,8 +256,8 @@ class HotelAdminContractIntegrationTest {
 
         okData(put("/api/admin/hotels/" + hotel.id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"name\":\"" + hotel.name + "\",\"dataSource\":\"团队测试数据\","
-                        + "\"status\":\"DISABLED\",\"version\":0}"));
+                .content("{\"name\":\"" + hotel.name + "\",\"city\":\"大理\","
+                        + "\"dataSource\":\"团队测试数据\",\"status\":\"DISABLED\",\"version\":0}"));
 
         assertNotNull(hotels.selectById(hotel.id), "停用不得删除资料");
         assertEquals(0, hotels.selectById(hotel.id).status);
@@ -279,7 +283,7 @@ class HotelAdminContractIntegrationTest {
         MockHttpServletResponse created = mvc()
                 .perform(post("/api/admin/hotels").header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"" + name + "\",\"address\":\"" + address + "\","
+                        .content("{\"name\":\"" + name + "\",\"city\":\"昆明\",\"address\":\"" + address + "\","
                                 + "\"contactPhone\":\"" + contactPhone + "\",\"intro\":\"" + intro + "\","
                                 + "\"dataSource\":\"" + dataSource + "\"}"))
                 .andExpect(status().isCreated())
@@ -311,6 +315,7 @@ class HotelAdminContractIntegrationTest {
     @DisplayName("创建：长度按码点计数，码元超限但码点合法的内容必须被接受")
     void createCountsTextLimitsInCodePointsNotUtf16Units() throws Exception {
         String name = "😀".repeat(100);        // 100 码点 / 200 码元
+        String city = "😀".repeat(30);         // 30 码点 / 60 码元
         String address = "😀".repeat(200);     // 200 码点 / 400 码元
         String contactPhone = "😀".repeat(15); // 15 码点 / 30 码元
         String dataSource = "😀".repeat(400);  // 400 码点 / 800 码元
@@ -320,13 +325,14 @@ class HotelAdminContractIntegrationTest {
         JsonNode created = data(mvc()
                 .perform(post("/api/admin/hotels").header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"" + name + "\",\"address\":\"" + address + "\","
+                        .content("{\"name\":\"" + name + "\",\"city\":\"" + city + "\",\"address\":\"" + address + "\","
                                 + "\"contactPhone\":\"" + contactPhone + "\","
                                 + "\"dataSource\":\"" + dataSource + "\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse());
 
         assertEquals(name, created.path("name").asString(), "名称必须原样返回，不能在写库时被截断");
+        assertEquals(city, created.path("city").asString(), "city 与其它文本字段同一口径：按码点计数");
         assertEquals(address, created.path("address").asString());
         assertEquals(contactPhone, created.path("contactPhone").asString());
         assertEquals(dataSource, created.path("dataSource").asString());
@@ -334,10 +340,12 @@ class HotelAdminContractIntegrationTest {
         Hotel stored = hotels.selectById(Long.parseLong(created.path("id").asString()));
         assertEquals(100, stored.name.codePointCount(0, stored.name.length()),
                 "库内应完整保存 100 个码点");
+        assertEquals(30, stored.city.codePointCount(0, stored.city.length()),
+                "city 列宽是 64 个字符（码点），30 个 emoji 必须完整保存");
         assertEquals(200, stored.address.codePointCount(0, stored.address.length()));
     }
 
-    /** 契约里除 {@code name}/{@code dataSource} 外都是可选字段：只提交必填项必须能建档。 */
+    /** 契约里除 {@code name}/{@code city}/{@code dataSource} 外都是可选字段：只提交必填项必须能建档。 */
     @Test
     @DisplayName("创建：只提交契约必填字段时建档成功，可选列为 NULL")
     void createWithOnlyRequiredFieldsLeavesOptionalColumnsNull() throws Exception {
@@ -345,17 +353,23 @@ class HotelAdminContractIntegrationTest {
         JsonNode created = data(mvc()
                 .perform(post("/api/admin/hotels").header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"" + name + "\",\"dataSource\":\"团队测试数据\"}"))
+                        .content("{\"name\":\"" + name + "\",\"city\":\"大理\","
+                                + "\"dataSource\":\"团队测试数据\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse());
 
         assertEquals(name, created.path("name").asString());
+        assertEquals("大理", created.path("city").asString(), "city 是必填项，提交了就应原样回显");
         assertEquals("ACTIVE", created.path("status").asString(), "未提交 status 时按 ACTIVE 建档");
         assertTrue(created.get("address").isNull(), "未提交的可选字段应为 null 而不是空串");
         assertTrue(created.get("contactPhone").isNull());
         assertTrue(created.get("longitude").isNull());
         assertTrue(created.get("latitude").isNull());
         assertTrue(created.get("intro").isNull());
+        assertTrue(created.get("starRating").isNull(), "没有可靠依据时星级必须是 null，不能用 0 凑数");
+        assertTrue(created.get("coverUrl").isNull());
+        assertTrue(created.get("checkInTime").isNull());
+        assertTrue(created.get("checkOutTime").isNull());
 
         Hotel stored = hotels.selectById(Long.parseLong(created.path("id").asString()));
         assertNull(stored.address, "库内应是真的 NULL");
@@ -373,8 +387,8 @@ class HotelAdminContractIntegrationTest {
         String name = "停用酒店-" + shortId();
         data(mvc().perform(post("/api/admin/hotels").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"" + name + "\",\"dataSource\":\"团队测试数据\","
-                                + "\"status\":\"DISABLED\"}"))
+                        .content("{\"name\":\"" + name + "\",\"city\":\"大理\","
+                                + "\"dataSource\":\"团队测试数据\",\"status\":\"DISABLED\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse());
 
@@ -395,7 +409,8 @@ class HotelAdminContractIntegrationTest {
         String mark = shortId();
         data(mvc().perform(post("/api/admin/hotels").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"检索酒店-" + mark + "\",\"address\":\"地址标记" + mark + "\","
+                        .content("{\"name\":\"检索酒店-" + mark + "\",\"city\":\"大理\","
+                                + "\"address\":\"地址标记" + mark + "\","
                                 + "\"intro\":\"简介标记" + mark + "\",\"dataSource\":\"团队测试数据\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse());
@@ -446,6 +461,87 @@ class HotelAdminContractIntegrationTest {
         assertEquals(1, negative.path("size").asInt(), "size 小于 1 时按 1 处理，不能回全量");
     }
 
+    /**
+     * 本次契约新增的酒店资料字段在真实落库后的读回结果：图片按 {@code sortOrder} 升序、
+     * 设施按提交顺序读回、星级"未提交就是 null、提交了就落库"、城市原样回显，
+     * 以及 {@code PUT} 省略 {@code images} / {@code facilities} 时的清空语义。
+     *
+     * <p>这些字段都不是"存下去就算对"：{@code hotel_image} 是独立行，顺序由 {@code sort_order}
+     * 决定（若按写入顺序返回，运营把封面图排到第 1 位就不生效）；{@code facilities} 在库内是 JSON
+     * 列，由服务层序列化与解析；{@code star_rating} 必须可空 —— 契约明确要求没有可靠依据时给
+     * {@code null}，不得用网站评分或 0 凑数。任何一处映射写反，用户端看到的顺序、标签或星级就都是错的，
+     * 而接口本身仍然回 200。</p>
+     *
+     * <p>{@code PUT} 的"整体替换"同样是契约的一部分：省略或提交空集合表示"这家酒店不再有这些内容"。
+     * 如果省略时保留旧值，"删掉几张旧图"就没有任何写法 —— 调用方只能靠猜。</p>
+     */
+    @Test
+    @DisplayName("酒店资料字段的落库读回：图片按 sortOrder 排序、设施保序、星级可空、PUT 可清空")
+    void profileFieldsRoundTripThroughTheDatabase() throws Exception {
+        String token = adminToken();
+        String name = "资料字段回归酒店-" + shortId();
+        // 故意乱序提交（3、1、2）：读回必须按 sort_order 升序，而不是按写入顺序。
+        String submittedImages = "[{\"url\":\"https://cdn.example.com/hotels/c.jpg\",\"alt\":\"第三张\",\"sortOrder\":3},"
+                + "{\"url\":\"https://cdn.example.com/hotels/a.jpg\",\"alt\":\"第一张\",\"sortOrder\":1},"
+                + "{\"url\":\"https://cdn.example.com/hotels/b.jpg\",\"alt\":\"第二张\",\"sortOrder\":2}]";
+
+        JsonNode created = data(mvc().perform(post("/api/admin/hotels").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + name + "\",\"city\":\"大理\","
+                                + "\"dataSource\":\"团队测试数据\","
+                                + "\"images\":" + submittedImages + ","
+                                + "\"facilities\":[\"PARKING\",\"WIFI\"],"
+                                + "\"starRating\":4,\"checkInTime\":\"14:00\",\"checkOutTime\":\"12:00\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse());
+        String id = created.path("id").asString();
+
+        assertEquals("大理", created.path("city").asString(), "city 必须原样回显");
+        assertEquals(4, created.path("starRating").asInt(), "提交了星级就必须落库读出");
+        assertEquals("14:00", created.path("checkInTime").asString());
+        assertEquals("12:00", created.path("checkOutTime").asString());
+
+        JsonNode images = created.path("images");
+        assertEquals(3, images.size(), "三张图片都要落库");
+        assertEquals(List.of("https://cdn.example.com/hotels/a.jpg",
+                        "https://cdn.example.com/hotels/b.jpg",
+                        "https://cdn.example.com/hotels/c.jpg"),
+                List.of(images.get(0).path("url").asString(), images.get(1).path("url").asString(),
+                        images.get(2).path("url").asString()),
+                "图片必须按 sortOrder 升序返回，而不是按提交或写入顺序");
+        assertEquals(1, images.get(0).path("sortOrder").asInt());
+        assertEquals(2, images.get(1).path("sortOrder").asInt());
+        assertEquals(3, images.get(2).path("sortOrder").asInt());
+
+        assertEquals(List.of("PARKING", "WIFI"),
+                List.of(created.path("facilities").get(0).asString(),
+                        created.path("facilities").get(1).asString()),
+                "设施标签必须按提交顺序读回（库内是 JSON 数组，顺序即契约顺序）");
+
+        // 未提交的可选字段：星级是 null（不得编造），图片与设施按契约回 []。
+        JsonNode minimal = data(mvc().perform(post("/api/admin/hotels").header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"星级未填-" + shortId() + "\",\"city\":\"大理\","
+                                + "\"dataSource\":\"团队测试数据\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse());
+        assertTrue(minimal.get("starRating").isNull(), "未提交星级时必须回 null，不能编造一个星级");
+        assertTrue(minimal.path("images").isArray(), "images 必须是数组");
+        assertEquals(0, minimal.path("images").size(), "没有图片时按契约回 []");
+        assertEquals(0, minimal.path("facilities").size(), "没有设施时按契约回 []");
+
+        // PUT 整体替换：省略 images / facilities / starRating 表示这些内容被清空。
+        JsonNode cleared = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"" + name + "\",\"city\":\"大理\","
+                        + "\"dataSource\":\"团队测试数据\",\"version\":0}"));
+        assertTrue(cleared.path("images").isArray());
+        assertEquals(0, cleared.path("images").size(), "PUT 省略 images 必须清空既有图片，而不是保留旧值");
+        assertEquals(0, cleared.path("facilities").size(), "PUT 省略 facilities 必须清空既有设施");
+        assertTrue(cleared.get("starRating").isNull(), "PUT 省略 starRating 必须清成 null");
+        assertEquals("大理", cleared.path("city").asString());
+    }
+
     // ===================== 夹具与断言工具 =====================
 
     /** 一个可用的管理员账号：JwtAuthenticationFilter 会回查账号状态，所以必须真实落库。 */
@@ -473,6 +569,8 @@ class HotelAdminContractIntegrationTest {
     private Hotel hotel(String name) {
         Hotel hotel = new Hotel();
         hotel.name = name;
+        // city 是契约新增的必填项（库内 NOT NULL DEFAULT ''）：夹具按真实建档口径填写。
+        hotel.city = "大理";
         hotel.address = "云南省昆明市测试路 1 号";
         hotel.contactPhone = "087112345678";
         hotel.longitude = new BigDecimal("102.8320000");
@@ -502,6 +600,9 @@ class HotelAdminContractIntegrationTest {
         day.dayNumber = 1;
         day.title = "抵达并入住";
         day.hotelId = hotel.id;
+        // 数据库约束 ck_day_accommodation 要求"关联了酒店"就必须是 HOTEL，
+        // 直接落库的夹具因此必须显式写明类型（列默认值是 PENDING）。
+        day.accommodationType = "HOTEL";
         days.insert(day);
         return day;
     }

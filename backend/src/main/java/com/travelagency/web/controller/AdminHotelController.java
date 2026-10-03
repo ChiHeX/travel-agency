@@ -3,6 +3,7 @@ package com.travelagency.web.controller;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
+import com.travelagency.common.validation.HotelProfileRules;
 import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.HotelCreateRequest;
 import com.travelagency.domain.dto.HotelUpdateRequest;
@@ -62,17 +63,23 @@ public class AdminHotelController {
 
     /**
      * 分页查询酒店资料，对齐契约 {@code GET /admin/hotels}
-     * （分页信封 + {@code keyword} 筛选，{@code keyword} 按契约限制为 100 个码点）。
+     * （分页信封 + {@code keyword} / {@code city} 筛选，两者按契约分别限制为 100 / 64 个码点）。
      *
      * <p>后台列表不过滤状态：停用的酒店也要能被看到并改回来。</p>
+     *
+     * <p>{@code city} 是精确筛选（与公开景点列表同口径）：城市是酒店最主要的分组维度，
+     * 用 {@code keyword} 模糊匹配会把"杭州"和"杭州路"混在一起。</p>
      */
     @GetMapping("/hotels")
     public ApiResponse<PageResponse<HotelView>> hotels(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
             @RequestParam(required = false)
-            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword) {
-        return ApiResponse.ok(hotelService.page(keyword, page, size));
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = HotelProfileRules.CITY_MAX_CHARS,
+                    message = HotelProfileRules.CITY_LENGTH_MESSAGE) String city) {
+        return ApiResponse.ok(hotelService.page(keyword, city, page, size));
     }
 
     /**

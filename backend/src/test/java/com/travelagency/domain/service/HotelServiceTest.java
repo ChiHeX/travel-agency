@@ -6,17 +6,25 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.HotelCreateRequest;
+import com.travelagency.domain.dto.HotelImageRequest;
+import com.travelagency.domain.dto.HotelImageView;
 import com.travelagency.domain.dto.HotelUpdateRequest;
 import com.travelagency.domain.dto.HotelView;
+import com.travelagency.domain.dto.PublicHotelDetailView;
 import com.travelagency.domain.entity.Hotel;
+import com.travelagency.domain.entity.HotelImage;
+import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.mapper.HotelImageMapper;
 import com.travelagency.domain.mapper.HotelMapper;
 import com.travelagency.domain.mapper.RouteItineraryDayMapper;
+import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.springframework.dao.DataIntegrityViolationException;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -24,19 +32,22 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 酒店模块 Service 单测：后台管理（契约 {@code Admin Resources} 的 {@code /admin/hotels}）的
- * 业务规则与映射。
+ * 酒店模块 Service 单测：后台管理（契约 {@code Admin Resources} 的 {@code /admin/hotels}）、
+ * 酒店详情图片与线路下的公开详情（契约 {@code GET /routes/{routeId}/hotels/{hotelId}}）
+ * 的业务规则与映射。
  *
- * <p>不需要数据库：DB 级往返（201/204/409 的真实落库行为）由
+ * <p>不需要数据库：DB 级往返（201/204/409 的真实落库行为、图片排序的真实读取顺序）由
  * {@code HotelAdminContractIntegrationTest} 在 {@code TRAVEL_MYSQL_TEST=true} 时覆盖，
  * 字段校验与权限由 {@code HotelAdminWebContractTest} 覆盖。</p>
  *
@@ -47,9 +58,14 @@ import static org.mockito.Mockito.when;
 class HotelServiceTest {
 
     private final HotelMapper hotels = mock(HotelMapper.class);
+    private final HotelImageMapper hotelImages = mock(HotelImageMapper.class);
     private final RouteItineraryDayMapper itineraryDays = mock(RouteItineraryDayMapper.class);
+    private final TravelRouteMapper routes = mock(TravelRouteMapper.class);
     private final OperationLogRecorder operationLog = mock(OperationLogRecorder.class);
-    private final HotelService service = new HotelService(hotels, itineraryDays, operationLog);
+    /** 设施标签在库内是 JSON 数组文本，用真实的 JsonMapper 验证编解码，而不是打桩掉。 */
+    private final JsonMapper json = JsonMapper.builder().build();
+    private final HotelService service =
+            new HotelService(hotels, hotelImages, itineraryDays, routes, operationLog, json);
 
     /**
      * MyBatis-Plus 的 {@code update} / {@code deleteById} 返回受影响行数，而 {@code HotelService}
@@ -62,6 +78,8 @@ class HotelServiceTest {
         // 必须写 any(Long.class)：BaseMapper 上 deleteById 有 (Serializable) 与 (T) 两个重载，
         // 无类型的 any() 会让编译器无法在两者之间选择。
         when(hotels.deleteById(any(Long.class))).thenReturn(1);
+        // 图片查询默认返回空列表：不打桩时 Mockito 返回 null，会让列表/详情装配 NPE。
+        when(hotelImages.selectList(any())).thenReturn(List.of());
     }
 
     // ===================== 后台列表 =====================
@@ -74,7 +92,7 @@ class HotelServiceTest {
         result.setTotal(1);
         when(hotels.selectPage(any(), any())).thenReturn(result);
 
-        var page = service.page("  昆明  ", 0, 5000);
+        var page = service.page("  昆明  ", null, 0, 5000);
 
         ArgumentCaptor<QueryWrapper<Hotel>> query = captor();
         ArgumentCaptor<Page<Hotel>> requested = pageCaptor();
@@ -91,6 +109,26 @@ class HotelServiceTest {
         assertEquals("ACTIVE", page.items().get(0).status());
     }
 
+    /**
+     * 契约 {@code GET /admin/hotels} 的 {@code city} 是**精确**筛选（与公开景点列表同口径）：
+     * 用模糊匹配会把"杭州"和"杭州路"混在一起，工作人员按城市盘点时页面会多出无关酒店。
+     */
+    @Test
+    @DisplayName("后台列表：city 按精确值筛选，未提交时不加该条件")
+    void pageFiltersByCityExactly() {
+        Page<Hotel> result = new Page<>(1, 20);
+        result.setRecords(List.of(hotel(7L, 1)));
+        when(hotels.selectPage(any(), any())).thenReturn(result);
+
+        service.page(null, "  杭州  ", 1, 20);
+
+        ArgumentCaptor<QueryWrapper<Hotel>> query = captor();
+        verify(hotels).selectPage(any(), query.capture());
+        assertTrue(query.getValue().getSqlSegment().contains("city"), "应按 city 过滤：" + query.getValue().getSqlSegment());
+        assertTrue(query.getValue().getParamNameValuePairs().containsValue("杭州"),
+                "city 应去掉首尾空白后按精确值匹配");
+    }
+
     @Test
     @DisplayName("后台列表：不过滤 status，已停用的酒店仍要能被工作人员看到")
     void pageKeepsDisabledHotelsVisible() {
@@ -99,7 +137,7 @@ class HotelServiceTest {
         result.setTotal(1);
         when(hotels.selectPage(any(), any())).thenReturn(result);
 
-        var page = service.page(null, 1, 20);
+        var page = service.page(null, null, 1, 20);
 
         assertEquals(1, page.items().size());
         assertEquals("DISABLED", page.items().get(0).status());
@@ -115,20 +153,47 @@ class HotelServiceTest {
      * （直出实体时 {@code JacksonConfig} 会把 102.8320000 写成 "102.83"）。
      */
     @Test
-    @DisplayName("列表把实体映射成契约形状：status=ACTIVE、坐标保留 7 位小数")
+    @DisplayName("列表把实体映射成契约形状：status=ACTIVE、坐标保留 7 位小数、设施/图片带出来")
     void pageMapsEntityToContractShape() {
         Page<Hotel> result = new Page<>(1, 20);
         result.setRecords(List.of(hotel(9L, 1)));
         result.setTotal(1);
         when(hotels.selectPage(any(), any())).thenReturn(result);
+        when(hotelImages.selectList(any())).thenReturn(List.of(image(9L, "https://example.com/a.jpg", 1)));
 
-        HotelView item = service.page(null, 1, 20).items().get(0);
+        HotelView item = service.page(null, null, 1, 20).items().get(0);
 
         assertEquals("ACTIVE", item.status());
         assertEquals("酒店 9", item.name());
+        assertEquals("大理", item.city());
         assertEquals("087112345678", item.contactPhone());
         assertEquals(new BigDecimal("102.8320000").doubleValue(), item.longitude(), 0.0);
         assertEquals(new BigDecimal("24.8800000").doubleValue(), item.latitude(), 0.0);
+        assertEquals(List.of("WIFI"), item.facilities(), "库内 JSON 文本应还原成字符串数组");
+        assertEquals(1, item.images().size());
+        assertEquals("https://example.com/a.jpg", item.images().get(0).url());
+    }
+
+    /**
+     * 一页酒店的图片只查一次：{@code HotelPage} 每页最多 100 家酒店，
+     * 逐家查询就是 100 次往返（列表页会明显变慢）。
+     */
+    @Test
+    @DisplayName("后台列表：图片按本页酒店批量查询一次，不做 N+1")
+    void pageLoadsImagesForTheWholePageAtOnce() {
+        Page<Hotel> result = new Page<>(1, 20);
+        result.setRecords(List.of(hotel(71L, 1), hotel(72L, 1)));
+        result.setTotal(2);
+        when(hotels.selectPage(any(), any())).thenReturn(result);
+
+        service.page(null, null, 1, 20);
+
+        ArgumentCaptor<QueryWrapper<HotelImage>> query = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(hotelImages, times(1)).selectList(query.capture());
+        assertTrue(query.getValue().getSqlSegment().contains("hotel_id"),
+                "应按本页酒店主键批量取图：" + query.getValue().getSqlSegment());
+        assertTrue(query.getValue().getSqlSegment().contains("sort_order"),
+                "排序必须落在 SQL 里，返回顺序才稳定：" + query.getValue().getSqlSegment());
     }
 
     // ===================== 后台创建 =====================
@@ -149,14 +214,23 @@ class HotelServiceTest {
         });
 
         HotelView created = service.create(new HotelCreateRequest(
-                "  大理演示酒店  ", " 云南省大理市 ", " 0872-1234567 ", 100.165, 25.694,
+                "  大理演示酒店  ", "  大理  ", " 云南省大理市 ", " 0872-1234567 ",
+                " https://example.com/cover.jpg ", null, 4, List.of("WIFI", "PARKING"),
+                " 14:00 ", " 12:00 ", 100.165, 25.694,
                 "简介", " 团队测试数据 ", null), 7L);
 
         ArgumentCaptor<Hotel> inserted = ArgumentCaptor.forClass(Hotel.class);
         verify(hotels).insert(inserted.capture());
         assertEquals("大理演示酒店", inserted.getValue().name, "名称首尾空白应被去掉");
+        assertEquals("大理", inserted.getValue().city, "城市首尾空白应被去掉");
         assertEquals("云南省大理市", inserted.getValue().address);
         assertEquals("0872-1234567", inserted.getValue().contactPhone);
+        assertEquals("https://example.com/cover.jpg", inserted.getValue().coverUrl);
+        assertEquals(4, inserted.getValue().starRating);
+        assertEquals("14:00", inserted.getValue().checkInTime);
+        assertEquals("12:00", inserted.getValue().checkOutTime);
+        // 设施以 JSON 数组文本落库，顺序按提交顺序保留
+        assertEquals("[\"WIFI\",\"PARKING\"]", inserted.getValue().facilities);
         assertEquals("团队测试数据", inserted.getValue().dataSource);
         assertEquals(1, inserted.getValue().status, "契约未提交 status 时按 ACTIVE(1) 建档");
         // BigDecimal.valueOf 的标度是 3，库内 DECIMAL(10,7) 落库时补零；这里按数值比较，不约束标度。
@@ -177,12 +251,62 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(32L, 0));
 
         HotelView created = service.create(new HotelCreateRequest(
-                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED"), 7L);
+                "停用酒店", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", "DISABLED"), 7L);
 
         ArgumentCaptor<Hotel> inserted = ArgumentCaptor.forClass(Hotel.class);
         verify(hotels).insert(inserted.capture());
         assertEquals(0, inserted.getValue().status);
         assertEquals("DISABLED", created.status());
+    }
+
+    /**
+     * 图片按提交时的 {@code sortOrder} 落库（这里故意按 3、1、2 提交）。
+     * 排序发生在读取侧（{@code ORDER BY sort_order, id}），因此写入侧必须原样保留顺序信息，
+     * 不能在插入时"顺手排一遍"——那样同序图片之间的相对顺序就丢了。
+     */
+    @Test
+    @DisplayName("创建：图片按提交顺序逐条写入，保留 sortOrder")
+    void createInsertsImagesInSubmittedOrder() {
+        when(hotels.insert(any(Hotel.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Hotel.class).id = 33L;
+            return 1;
+        });
+        when(hotels.selectOne(any())).thenReturn(hotel(33L, 1));
+
+        service.create(new HotelCreateRequest(
+                "有图酒店", "杭州", null, null, null,
+                List.of(new HotelImageRequest("https://example.com/3.jpg", "外景", 3),
+                        new HotelImageRequest("https://example.com/1.jpg", null, 1),
+                        new HotelImageRequest("https://example.com/2.jpg", "客房", 2)),
+                null, null, null, null, null, null, null, "团队测试数据", null), 7L);
+
+        ArgumentCaptor<HotelImage> inserted = ArgumentCaptor.forClass(HotelImage.class);
+        verify(hotelImages, times(3)).insert(inserted.capture());
+        assertEquals(List.of("https://example.com/3.jpg", "https://example.com/1.jpg",
+                        "https://example.com/2.jpg"),
+                inserted.getAllValues().stream().map(image -> image.url).toList(),
+                "写入顺序必须与提交顺序一致");
+        assertEquals(List.of(3, 1, 2), inserted.getAllValues().stream().map(image -> image.sortOrder).toList());
+        assertEquals(33L, inserted.getAllValues().get(0).hotelId);
+        assertEquals("外景", inserted.getAllValues().get(0).alt);
+    }
+
+    /**
+     * 契约把 {@code facilities} 声明为 {@code uniqueItems: true}，重复标签属于违反契约的输入。
+     * 静默去重会让调用方以为"提交什么都成功了"，而重复项往往意味着前端拼错了数据。
+     */
+    @Test
+    @DisplayName("创建：设施标签重复时按 422 拒绝，且不写库")
+    void createRejectsDuplicateFacilities() {
+        BusinessException error = assertThrows(BusinessException.class, () -> service.create(
+                new HotelCreateRequest("重复设施酒店", "杭州", null, null, null, null, null,
+                        List.of("WIFI", "WIFI"), null, null, null, null, null, "团队测试数据", null),
+                7L));
+
+        assertEquals(422, error.getStatus());
+        assertEquals("VALIDATION_ERROR", error.getCode());
+        verify(hotels, never()).insert(any(Hotel.class));
     }
 
     // ===================== 后台修改 =====================
@@ -193,7 +317,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(null);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(404L,
-                new HotelUpdateRequest("名称", null, null, null, null, null, "来源", null, 0), 7L));
+                new HotelUpdateRequest("名称", "大理", null, null, null, null, null, null, null, null,
+                        null, null, null, "来源", null, 0), 7L));
 
         assertEquals(404, error.getStatus());
         assertEquals("RESOURCE_NOT_FOUND", error.getCode());
@@ -217,8 +342,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(41L, 0));
 
         service.update(41L, new HotelUpdateRequest(
-                "改名后的酒店", "新地址", "0872-0000000", 100.2, 26.8, "新简介",
-                "团队测试数据", null, 0), 7L);
+                "改名后的酒店", "昆明", "新地址", "0872-0000000", null, null, null, null, null, null,
+                100.2, 26.8, "新简介", "团队测试数据", null, 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertFalse(wrapper.getSqlSet().contains("status"),
@@ -227,6 +352,7 @@ class HotelServiceTest {
                 "不得把读到的旧状态当作新值写回");
         assertTrue(wrapper.getSqlSet().contains("data_source"));
         assertTrue(wrapper.getSqlSet().contains("contact_phone"));
+        assertTrue(wrapper.getSqlSet().contains("city"));
         assertTrue(wrapper.getSqlSet().contains("longitude"));
         assertFalse(wrapper.getSqlSet().contains("created_at"), "created_at 不由业务写入");
         assertFalse(wrapper.getSqlSet().contains("updated_at"),
@@ -241,7 +367,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(42L, 0));
 
         service.update(42L, new HotelUpdateRequest(
-                "重新启用", null, null, null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
+                "重新启用", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getSqlSet().contains("status"), "显式提交 status 时必须写入该列");
@@ -254,7 +381,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(45L, 1));
 
         service.update(45L, new HotelUpdateRequest(
-                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED", 0), 7L);
+                "停用酒店", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", "DISABLED", 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getSqlSet().contains("status"));
@@ -275,7 +403,8 @@ class HotelServiceTest {
         when(hotels.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(44L,
-                new HotelUpdateRequest("酒店", null, null, null, null, null, "团队测试数据", null, 0), 7L));
+                new HotelUpdateRequest("酒店", "大理", null, null, null, null, null, null, null, null,
+                        null, null, null, "团队测试数据", null, 0), 7L));
 
         assertEquals(404, error.getStatus());
         assertEquals("RESOURCE_NOT_FOUND", error.getCode());
@@ -288,11 +417,43 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(43L, 1));
 
         service.update(43L, new HotelUpdateRequest(
-                "酒店", null, null, null, null, null, "团队测试数据", null, 0), 7L);
+                "酒店", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", null, 0), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getParamNameValuePairs().containsValue(null),
-                "契约允许 address/contactPhone/longitude/latitude/intro 为 null，PUT 必须能清空它们");
+                "契约允许 address/contactPhone/coverUrl/starRating/checkInTime/checkOutTime/经纬度/简介为 null，"
+                        + "PUT 必须能清空它们，否则「删掉一段旧资料」没有明确写法");
+    }
+
+    /**
+     * 契约把 {@code images} 定义为整份资料的一部分：{@code PUT} 是整体替换，
+     * 省略或传空集合都表示"这家酒店不再有图片"。只替换增量会让"删掉最后一张图"无法表达。
+     */
+    @Test
+    @DisplayName("修改：图片整体替换（先删后插），提交空集合即清空")
+    void updateReplacesImagesEntirely() {
+        when(hotels.selectOne(any())).thenReturn(hotel(48L, 1));
+
+        service.update(48L, new HotelUpdateRequest(
+                "有图酒店", "杭州", null, null, null,
+                List.of(new HotelImageRequest("https://example.com/only.jpg", null, 1)),
+                null, null, null, null, null, null, null, "团队测试数据", null, 0), 7L);
+
+        ArgumentCaptor<QueryWrapper<HotelImage>> deleted = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(hotelImages).delete(deleted.capture());
+        assertTrue(deleted.getValue().getSqlSegment().contains("hotel_id"),
+                "必须先删除该酒店的全部图片记录：" + deleted.getValue().getSqlSegment());
+        ArgumentCaptor<HotelImage> inserted = ArgumentCaptor.forClass(HotelImage.class);
+        verify(hotelImages, times(1)).insert(inserted.capture());
+        assertEquals("https://example.com/only.jpg", inserted.getValue().url);
+
+        // 再提交一次空图片集合（模拟"清空"）：只删不插
+        service.update(48L, new HotelUpdateRequest(
+                "有图酒店", "杭州", null, null, null, List.of(), null, null, null, null,
+                null, null, null, "团队测试数据", null, 0), 7L);
+        verify(hotelImages, times(2)).delete(any());
+        verify(hotelImages, times(1)).insert(any(HotelImage.class));
     }
 
     /**
@@ -306,7 +467,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(46L, 1));
 
         service.update(46L, new HotelUpdateRequest(
-                "停用酒店", null, null, null, null, null, "团队测试数据", "DISABLED", 0), 7L);
+                "停用酒店", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", "DISABLED", 0), 7L);
 
         verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 46L, "修改酒店资料：停用酒店");
         verify(operationLog).record(7L, "酒店", "STATUS", "HOTEL", 46L,
@@ -320,7 +482,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(hotel(47L, 1));
 
         service.update(47L, new HotelUpdateRequest(
-                "状态未变酒店", null, null, null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
+                "状态未变酒店", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", "ACTIVE", 0), 7L);
 
         // 日志里的名称是本次提交的名称（applyEditableFields 先写入实体再记录）
         verify(operationLog).record(7L, "酒店", "UPDATE", "HOTEL", 47L, "修改酒店资料：状态未变酒店");
@@ -335,11 +498,14 @@ class HotelServiceTest {
      * （含最新 {@code version}，坐标是 number、状态是枚举），不存在时 404。
      */
     @Test
-    @DisplayName("详情：按主键返回契约形状（含最新版本号），不存在返回 404")
+    @DisplayName("详情：按主键返回契约形状（含最新版本号与图片），不存在返回 404")
     void getReturnsContractShapeAndRequiresExistence() {
         Hotel stored = hotel(60L, 1);
         stored.version = 5;
         when(hotels.selectById(60L)).thenReturn(stored);
+        when(hotelImages.selectList(any())).thenReturn(List.of(
+                image(60L, "https://example.com/1.jpg", 1),
+                image(60L, "https://example.com/2.jpg", 2)));
 
         HotelView view = service.get(60L);
 
@@ -347,6 +513,7 @@ class HotelServiceTest {
         assertEquals("ACTIVE", view.status());
         assertEquals(5, view.version(), "详情必须给出最新版本号，冲突面板才能用它重新提交");
         assertEquals("酒店 60", view.name());
+        assertEquals(2, view.images().size(), "修改表单要能回填已有图片");
 
         when(hotels.selectById(404L)).thenReturn(null);
         BusinessException error = assertThrows(BusinessException.class, () -> service.get(404L));
@@ -358,23 +525,28 @@ class HotelServiceTest {
      * 两位工作人员各自打开同一条酒店资料、先后保存：后保存的人不该静默覆盖前一位的改动。
      *
      * <p>提交的版本比库内旧（对方已经改过一次，版本前进了）时必须 409，且不产生任何写入 ——
-     * 与团期 {@code DepartureService#update} 同一口径。</p>
+     * 与团期 {@code DepartureService#update} 同一口径。图片同样不能被替换：
+     * 否则"资料没保存成功、图片却被换掉了"。</p>
      */
     @Test
-    @DisplayName("修改：提交过期版本返回 409 HOTEL_VERSION_CONFLICT，且不写库、不记日志")
+    @DisplayName("修改：提交过期版本返回 409 HOTEL_VERSION_CONFLICT，且不写库、不换图、不记日志")
     void updateRejectsStaleVersion() {
         Hotel stored = hotel(48L, 1);
         stored.version = 2;
         when(hotels.selectOne(any())).thenReturn(stored);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(48L,
-                new HotelUpdateRequest("改名", null, null, null, null, null, "团队测试数据", null, 1), 7L));
+                new HotelUpdateRequest("改名", "大理", null, null, null,
+                        List.of(new HotelImageRequest("https://example.com/x.jpg", null, 1)),
+                        null, null, null, null, null, null, null, "团队测试数据", null, 1), 7L));
 
         assertEquals(409, error.getStatus());
         assertEquals("HOTEL_VERSION_CONFLICT", error.getCode());
         assertTrue(error.getMessage().contains("当前版本 2") && error.getMessage().contains("你提交的是 1"),
                 "冲突提示要给出双方版本号，运营才知道应当重新载入：" + error.getMessage());
         verify(hotels, never()).update(any(), any());
+        verify(hotelImages, never()).delete(any());
+        verify(hotelImages, never()).insert(any(HotelImage.class));
         verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
@@ -387,7 +559,8 @@ class HotelServiceTest {
         when(hotels.selectOne(any())).thenReturn(stored);
 
         service.update(49L, new HotelUpdateRequest(
-                "改名", null, null, null, null, null, "团队测试数据", null, 4), 7L);
+                "改名", "大理", null, null, null, null, null, null, null, null,
+                null, null, null, "团队测试数据", null, 4), 7L);
 
         UpdateWrapper<Hotel> wrapper = capturedUpdate();
         assertTrue(wrapper.getSqlSet().contains("version"), "SET 必须推进版本号：" + wrapper.getSqlSet());
@@ -412,7 +585,8 @@ class HotelServiceTest {
         when(hotels.update(ArgumentMatchers.isNull(), any())).thenReturn(0);
 
         BusinessException error = assertThrows(BusinessException.class, () -> service.update(50L,
-                new HotelUpdateRequest("改名", null, null, null, null, null, "团队测试数据", null, 0), 7L));
+                new HotelUpdateRequest("改名", "大理", null, null, null, null, null, null, null, null,
+                        null, null, null, "团队测试数据", null, 0), 7L));
 
         assertEquals(409, error.getStatus());
         assertEquals("HOTEL_VERSION_CONFLICT", error.getCode());
@@ -443,6 +617,7 @@ class HotelServiceTest {
         assertEquals("HOTEL_STATE_CONFLICT", error.getCode());
         assertTrue(error.getMessage().contains("线路行程"), "409 提示要说明被什么引用：" + error.getMessage());
         verify(hotels, never()).deleteById(any(Long.class));
+        verify(hotelImages, never()).delete(any());
     }
 
     /**
@@ -465,14 +640,22 @@ class HotelServiceTest {
         verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
+    /**
+     * 图片是酒店的从属数据，且 {@code fk_hotel_image_hotel} 没有级联：
+     * 不先删图片记录，酒店的删除会被外键拒绝并变成 500。
+     */
     @Test
-    @DisplayName("删除：未被引用时真正删除并记录操作日志")
-    void deleteRemovesUnreferencedHotel() {
+    @DisplayName("删除：未被引用时先删图片记录再删酒店，并记录操作日志")
+    void deleteRemovesImagesThenTheHotel() {
         when(hotels.selectOne(any())).thenReturn(hotel(54L, 1));
         when(itineraryDays.selectCount(any())).thenReturn(0L);
 
         service.delete(54L, 7L);
 
+        ArgumentCaptor<QueryWrapper<HotelImage>> deleted = ArgumentCaptor.forClass(QueryWrapper.class);
+        verify(hotelImages).delete(deleted.capture());
+        assertTrue(deleted.getValue().getSqlSegment().contains("hotel_id"),
+                "应按 hotel_id 删除图片记录：" + deleted.getValue().getSqlSegment());
         verify(hotels).deleteById(54L);
         verify(operationLog).record(7L, "酒店", "DELETE", "HOTEL", 54L, "删除酒店资料：酒店 54");
     }
@@ -496,17 +679,137 @@ class HotelServiceTest {
         verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
+    // ===================== 线路下的酒店公开详情 =====================
+
+    /**
+     * 正常路径：线路已发布、酒店启用、且确实被这条线路的行程引用。
+     *
+     * <p>返回的必须是<b>公开</b>视图：它不含 {@code version} / {@code status} / 审计时间，
+     * 也不含后台的对接人电话（那属于内部管理信息）。字段缺失是编译期保证，
+     * 这里钉住的是"该给的都给全了"：图片按序、设施数组、入住退房时间、坐标是 number。</p>
+     */
+    @Test
+    @DisplayName("公开详情：已发布线路 + 启用酒店 + 确实被引用时返回公开视图（不含后台字段）")
+    void publicDetailReturnsPublicViewForTheArrangedHotel() {
+        Hotel stored = hotel(70L, 1);
+        stored.version = 9;
+        stored.facilities = "[\"WIFI\",\"SWIMMING_POOL\"]";
+        when(routes.selectById(11L)).thenReturn(publishedRoute(11L));
+        when(hotels.selectById(70L)).thenReturn(stored);
+        when(itineraryDays.selectCount(any())).thenReturn(1L);
+        when(hotelImages.selectList(any())).thenReturn(List.of(
+                image(70L, "https://example.com/1.jpg", 1),
+                image(70L, "https://example.com/2.jpg", 2)));
+
+        PublicHotelDetailView view = service.publicDetail(11L, 70L);
+
+        assertEquals(70L, view.id());
+        assertEquals("酒店 70", view.name());
+        assertEquals("大理", view.city());
+        assertEquals(4, view.starRating());
+        assertEquals(List.of("WIFI", "SWIMMING_POOL"), view.facilities());
+        assertEquals(List.of("https://example.com/1.jpg", "https://example.com/2.jpg"),
+                view.images().stream().map(HotelImageView::url).toList());
+        assertEquals("14:00", view.checkInTime());
+        assertEquals("12:00", view.checkOutTime());
+        assertEquals(new BigDecimal("102.8320000").doubleValue(), view.longitude(), 0.0);
+        assertEquals("团队测试数据", view.dataSource());
+    }
+
+    /** 未发布（草稿 / 已下架 / 已删除）的线路不提供酒店公开资料。 */
+    @Test
+    @DisplayName("公开详情：线路未发布时返回 404，且不查酒店")
+    void publicDetailHidesHotelsOfUnpublishedRoutes() {
+        TravelRoute draft = publishedRoute(12L);
+        draft.status = "DRAFT";
+        when(routes.selectById(12L)).thenReturn(draft);
+
+        assertPublicNotFound(12L, 70L);
+
+        when(routes.selectById(13L)).thenReturn(null);
+        assertPublicNotFound(13L, 70L);
+
+        TravelRoute deleted = publishedRoute(14L);
+        deleted.deleted = 1;
+        when(routes.selectById(14L)).thenReturn(deleted);
+        assertPublicNotFound(14L, 70L);
+        verify(hotels, never()).selectById(any(Long.class));
+    }
+
+    /**
+     * 酒店必须真的被这条线路的行程安排过：酒店资料是后台维护的全量数据，
+     * 只校验"酒店存在"等于把与当前线路无关的酒店一起开放出去。
+     */
+    @Test
+    @DisplayName("公开详情：酒店未被这条线路引用时返回 404")
+    void publicDetailHidesHotelsNotArrangedInThatRoute() {
+        when(routes.selectById(15L)).thenReturn(publishedRoute(15L));
+        when(hotels.selectById(71L)).thenReturn(hotel(71L, 1));
+        when(itineraryDays.selectCount(any())).thenReturn(0L);
+
+        assertPublicNotFound(15L, 71L);
+    }
+
+    /** 停用的酒店不再对外提供资料（后台停用是"这家酒店不再使用"的唯一手段）。 */
+    @Test
+    @DisplayName("公开详情：酒店已停用或不存在时返回 404")
+    void publicDetailHidesDisabledAndMissingHotels() {
+        when(routes.selectById(16L)).thenReturn(publishedRoute(16L));
+        when(hotels.selectById(72L)).thenReturn(hotel(72L, 0));
+        assertPublicNotFound(16L, 72L);
+
+        when(hotels.selectById(73L)).thenReturn(null);
+        assertPublicNotFound(16L, 73L);
+    }
+
+    /**
+     * 三种不满足条件必须给出<b>同一条</b> 404：返回不同的原因（"线路未发布" / "酒店被停用"）
+     * 会让无需登录的调用方用它逐条探测后台酒店的存在性与状态。
+     */
+    @Test
+    @DisplayName("公开详情：不同原因的 404 使用同一文案，不外泄后台状态")
+    void publicDetailUsesOneMessageForEveryNotFoundReason() {
+        TravelRoute draft = publishedRoute(17L);
+        draft.status = "OFFLINE";
+        when(routes.selectById(17L)).thenReturn(draft);
+        BusinessException unpublished = assertThrows(BusinessException.class,
+                () -> service.publicDetail(17L, 74L));
+
+        when(routes.selectById(18L)).thenReturn(publishedRoute(18L));
+        when(hotels.selectById(74L)).thenReturn(hotel(74L, 0));
+        BusinessException disabled = assertThrows(BusinessException.class,
+                () -> service.publicDetail(18L, 74L));
+
+        assertEquals(unpublished.getMessage(), disabled.getMessage(),
+                "不同失败原因不能给出可区分的提示，否则等于一个公开的后台状态探测器");
+        assertEquals("RESOURCE_NOT_FOUND", disabled.getCode());
+        assertEquals(404, disabled.getStatus());
+    }
+
+    private void assertPublicNotFound(Long routeId, Long hotelId) {
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.publicDetail(routeId, hotelId));
+        assertEquals(404, error.getStatus());
+        assertEquals("RESOURCE_NOT_FOUND", error.getCode());
+    }
+
     // ===================== 夹具 =====================
 
     private static Hotel hotel(Long id, int status) {
         Hotel hotel = new Hotel();
         hotel.id = id;
         hotel.name = "酒店 " + id;
+        hotel.city = "大理";
         hotel.address = "云南省昆明市测试路 1 号";
         hotel.contactPhone = "087112345678";
+        hotel.coverUrl = "https://example.com/cover.jpg";
         hotel.longitude = new BigDecimal("102.8320000");
         hotel.latitude = new BigDecimal("24.8800000");
+        hotel.starRating = 4;
         hotel.intro = "演示简介";
+        hotel.facilities = "[\"WIFI\"]";
+        hotel.checkInTime = "14:00";
+        hotel.checkOutTime = "12:00";
         hotel.dataSource = "团队测试数据";
         hotel.status = status;
         // 乐观锁版本号：修改请求必须回传读取时的版本，夹具与请求都按 0 对齐。
@@ -514,6 +817,24 @@ class HotelServiceTest {
         hotel.createdAt = LocalDateTime.now();
         hotel.updatedAt = hotel.createdAt;
         return hotel;
+    }
+
+    private static HotelImage image(Long hotelId, String url, int sortOrder) {
+        HotelImage image = new HotelImage();
+        image.hotelId = hotelId;
+        image.url = url;
+        image.alt = "演示图片";
+        image.sortOrder = sortOrder;
+        return image;
+    }
+
+    private static TravelRoute publishedRoute(Long id) {
+        TravelRoute route = new TravelRoute();
+        route.id = id;
+        route.name = "线路 " + id;
+        route.status = "PUBLISHED";
+        route.deleted = 0;
+        return route;
     }
 
     @SuppressWarnings("unchecked")

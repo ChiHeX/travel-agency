@@ -172,6 +172,45 @@ describe('RouteItinerary 当晚住宿：其它住宿安排', () => {
     expect(text).toContain('待地接确认后补充')
     expect(wrapper.find('.hotel-link').exists()).toBe(false)
   })
+
+  it('PENDING：已经确定的住宿标准、房型与早餐照常展示', async () => {
+    const wrapper = await mountItinerary([{
+      id: '75',
+      dayNumber: 5,
+      title: '大理',
+      accommodationType: 'PENDING',
+      accommodationStandard: '市区舒适型酒店（具体酒店待定）',
+      roomType: '双床房',
+      breakfastIncluded: true,
+      accommodationNote: '具体酒店以出团通知为准'
+    }])
+
+    const text = wrapper.text()
+    expect(text).toContain('住宿待确认')
+    expect(text).toContain('住宿标准：市区舒适型酒店（具体酒店待定）')
+    expect(text).toContain('房型：双床房')
+    expect(text).toContain('含早餐')
+    expect(text).toContain('具体酒店以出团通知为准')
+    expect(wrapper.find('.hotel-link').exists()).toBe(false)
+  })
+
+  it('NONE：不展示房型与早餐（契约里只有 NONE 会清空它们）', async () => {
+    const wrapper = await mountItinerary([{
+      id: '76',
+      dayNumber: 6,
+      title: '夜车返程',
+      accommodationType: 'NONE',
+      accommodationStandard: '（历史残留）',
+      roomType: '双床房',
+      breakfastIncluded: true
+    }])
+
+    const text = wrapper.text()
+    expect(text).toContain('当天不含住宿')
+    expect(text).not.toContain('住宿标准：')
+    expect(text).not.toContain('房型：')
+    expect(text).not.toContain('含早餐')
+  })
 })
 
 describe('RouteItinerary 折叠标题的住宿摘要', () => {
@@ -272,7 +311,6 @@ describe('RouteItinerary 集中住宿安排', () => {
     expect(wrapper.findAll('.day-heading-copy > span')[2].text()).not.toContain('续住')
   })
 })
-
 
 it('待确认住宿仍展示已确定的房型、住宿标准和早餐', async () => {
   const wrapper = await mountItinerary([{ id: '1', dayNumber: 1, title: '第一天',

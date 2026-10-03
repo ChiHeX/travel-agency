@@ -618,6 +618,9 @@ onMounted(load)
         <div v-if="dayForm.accommodationType !== 'NONE'" class="form-field wide">
           <label>住宿标准<template v-if="dayForm.accommodationType === 'STANDARD'"> <span class="req">*</span></template></label>
           <input v-model="dayForm.accommodationStandard" placeholder="例如：市区舒适型酒店（有可靠依据时才写星级）" />
+          <p class="form-hint">
+            指定酒店与只确定标准时都可以填写；「住宿待确认」下也可以先记录已经谈定的标准。
+          </p>
         </div>
 
         <template v-if="dayForm.accommodationType !== 'NONE'">

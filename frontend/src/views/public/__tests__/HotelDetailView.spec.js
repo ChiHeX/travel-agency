@@ -13,7 +13,7 @@ import HotelDetailView from '../HotelDetailView.vue'
  *   <li>官方星级只在非空时出现；设施里的未知枚举跳过而不是把枚举原文印出来；</li>
  *   <li>坐标只有成对且为数字时才传给主地图（契约明确不许前端自行编造位置）；</li>
  *   <li>接口失败（未发布线路 / 未安排该酒店 / 酒店已停用都返回同一个 404）时给用户可读文案，
- *       而不是把后端错误码抛出来，并且仍然保留「返回线路详情」这个出口。</li>
+ *       而不是把后端错误码抛出来，并且保留顶部返回入口。</li>
  * </ul>
  *
  * <p>地图组件（leaflet）与粘性标题栏在测试里替换成轻量替身，只断言"要不要渲染它们"。</p>
@@ -58,20 +58,12 @@ function mountView() {
         StickyDetailBar: {
           props: ['title', 'fallbackTo'],
           emits: ['share'],
-          template: '<div class="bar"><span class="bar-title">{{ title }}</span><button class="bar-share" @click="$emit(\'share\')">分享</button></div>'
-        },
-        RouterLink: {
-          props: ['to'],
-          template: '<a class="link" :data-name="to && to.name" :data-id="to && to.params && to.params.id"><slot /></a>'
+          template: '<div class="bar" :data-name="fallbackTo.name" :data-id="fallbackTo.params.id"><span class="bar-title">{{ title }}</span><button class="bar-share" @click="$emit(\'share\')">分享</button></div>'
         },
         'el-skeleton': true
       }
     }
   })
-}
-
-function backLink(wrapper) {
-  return wrapper.findAll('a.link').find((link) => link.text().includes('返回线路详情'))
 }
 
 beforeEach(() => {
@@ -208,14 +200,13 @@ describe('HotelDetailView 地图与返回入口', () => {
     expect(wrapper.find('.hotel-map').exists()).toBe(false)
   })
 
-  it('成功拿到资料时也保留「返回线路详情」，指向当前线路', async () => {
+  it('顶部返回入口指向当前线路，正文不再展示重复返回按钮', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const link = backLink(wrapper)
-    expect(link.exists()).toBe(true)
-    expect(link.attributes('data-name')).toBe('route-detail')
-    expect(link.attributes('data-id')).toBe('7')
+    expect(wrapper.find('.bar').attributes('data-name')).toBe('route-detail')
+    expect(wrapper.find('.bar').attributes('data-id')).toBe('7')
+    expect(wrapper.find('.hotel-back').exists()).toBe(false)
   })
 })
 
@@ -235,7 +226,9 @@ describe('HotelDetailView 请求失败', () => {
     expect(text).not.toContain('RESOURCE_NOT_FOUND')
     expect(wrapper.find('.bar-title').text()).toBe('酒店详情')
     expect(api.hotel).toHaveBeenCalledTimes(1)
-    expect(backLink(wrapper).exists()).toBe(true)
+    expect(wrapper.find('.bar').attributes('data-name')).toBe('route-detail')
+    expect(wrapper.find('.bar').attributes('data-id')).toBe('7')
+    expect(wrapper.find('.hotel-back').exists()).toBe(false)
     expect(wrapper.find('.map-stub').exists()).toBe(false)
   })
 

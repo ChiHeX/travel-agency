@@ -128,14 +128,12 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <RouterLink :to="backTo" class="secondary-button hotel-back">返回线路详情</RouterLink>
         </template>
       </RequestState>
 
       <p v-if="!loading && error" class="hotel-error-hint">
         这条线路的行程里可能没有这家酒店，或该酒店已停止对外展示。你可以返回线路详情查看最新的每日行程安排。
       </p>
-      <RouterLink v-if="!loading && !hotel" :to="backTo" class="secondary-button hotel-back">返回线路详情</RouterLink>
     </main>
   </div>
 </template>
@@ -163,5 +161,4 @@ onBeforeUnmount(() => {
 .hotel-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .hotel-gallery img { width: 100%; height: 110px; border-radius: var(--radius-sm); background: #edf0f5; object-fit: cover; }
 .hotel-error-hint { margin: 12px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
-.hotel-back { display: inline-flex; align-items: center; justify-content: center; margin-top: 28px; text-align: center; }
 </style>

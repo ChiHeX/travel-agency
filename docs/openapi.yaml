@@ -727,6 +727,16 @@ paths:
   /consultations/{consultationId}:
     parameters:
       - { $ref: '#/components/parameters/ConsultationId' }
+    delete:
+      tags: [Consultations]
+      operationId: deleteMyConsultation
+      summary: 删除自己的已关闭咨询
+      description: 仅允许删除本人 CLOSED 状态的咨询，在同一事务内永久删除咨询及全部回复。不存在或不属于本人返回 404，未关闭返回 409 CONSULTATION_STATE_CONFLICT。
+      responses:
+        '204': { description: 咨询及回复已删除，无响应体 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
     get:
       tags: [Consultations]
       operationId: getMyConsultation

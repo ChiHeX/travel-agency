@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
 import { codePointLength } from '@/utils/text'
@@ -13,6 +13,99 @@ const error = ref('')
 const submitError = ref('')
 const page = ref(1)
 const total = ref(0)
+const detailOpen = ref(false)
+const selectedId = ref(null)
+const detail = ref(null)
+const detailLoading = ref(false)
+const detailError = ref('')
+const closing = ref(false)
+const closeError = ref('')
+const deleteError = ref('')
+const deletingId = ref(null)
+let detailRequest = 0
+
+function formatTime(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(date)
+}
+
+async function openDetail(id) {
+  const request = ++detailRequest
+  selectedId.value = id
+  detailOpen.value = true
+  detail.value = null
+  detailLoading.value = true
+  detailError.value = ''
+  closeError.value = ''
+  try {
+    const result = await accountApi.consultation(id)
+    if (request === detailRequest) detail.value = result
+  } catch (cause) {
+    if (request === detailRequest) detailError.value = cause.message || '咨询详情加载失败'
+  } finally {
+    if (request === detailRequest) detailLoading.value = false
+  }
+}
+
+async function closeConsultation() {
+  if (closing.value || !detail.value || detail.value.status === 'CLOSED') return
+  closing.value = true
+  closeError.value = ''
+  try {
+    try {
+      await ElMessageBox.confirm('确认问题已解决并关闭这条咨询吗？', '关闭咨询', {
+        customClass: 'order-cancel-confirm',
+        confirmButtonText: '确认关闭', cancelButtonText: '保留咨询', type: 'warning'
+      })
+    } catch { return }
+    const updated = await accountApi.closeConsultation(detail.value.id)
+    detail.value = updated
+    items.value = items.value.map((item) => item.id === updated.id ? updated : item)
+    ElMessage.success('咨询已关闭')
+  } catch (cause) {
+    closeError.value = cause.message || '关闭失败，请重试'
+  } finally {
+    closing.value = false
+  }
+}
+
+async function deleteConsultation(consultation) {
+  if (closing.value || consultation?.status !== 'CLOSED') return
+  closing.value = true
+  deletingId.value = consultation.id
+  closeError.value = ''
+  deleteError.value = ''
+  try {
+    try {
+      await ElMessageBox.confirm('删除后，这条咨询及全部客服回复将无法恢复，是否继续？', '删除咨询', {
+        customClass: 'order-cancel-confirm', type: 'warning',
+        confirmButtonText: '确认删除', cancelButtonText: '保留咨询'
+      })
+    } catch { return }
+    await accountApi.deleteConsultation(consultation.id)
+    if (detail.value?.id === consultation.id) {
+      detailOpen.value = false
+      detail.value = null
+    }
+    total.value = Math.max(0, total.value - 1)
+    page.value = Math.min(page.value, Math.max(1, Math.ceil(total.value / 10)))
+    ElMessage.success('咨询已删除')
+    await load()
+  } catch (cause) {
+    if (detailOpen.value && detail.value?.id === consultation.id) {
+      closeError.value = cause.message || '删除失败，请重试'
+    } else {
+      deleteError.value = cause.message || '删除失败，请重试'
+    }
+  } finally {
+    closing.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -100,6 +193,7 @@ onMounted(load)
 
         <div class="consultation-history-col">
           <div class="settings-heading"><h2>历史记录</h2></div>
+          <p v-if="deleteError" class="form-error" role="alert">{{ deleteError }}</p>
 
         <RequestState v-if="error" :error="error" @retry="load" />
         <div v-else-if="loading">
@@ -121,6 +215,10 @@ onMounted(load)
 
             <h3 class="consult-title">{{ item.title }}</h3>
             <p class="consult-content">{{ item.content }}</p>
+            <div class="consult-card-actions">
+              <button type="button" class="secondary-button consult-detail-button" :disabled="closing" @click="openDetail(item.id)">查看详情</button>
+              <button v-if="item.status === 'CLOSED'" type="button" class="consult-delete-button" :disabled="closing" @click="deleteConsultation(item)">{{ closing && deletingId === item.id ? '删除中...' : '删除' }}</button>
+            </div>
 
             <!-- Staff Replies -->
             <div v-if="item.replies && item.replies.length" class="replies-container">
@@ -139,10 +237,85 @@ onMounted(load)
         </div>
       </div>
     </main>
+    <el-dialog v-model="detailOpen" class="consultation-dialog" title="咨询详情" width="min(600px, calc(100vw - 32px))" align-center :close-on-click-modal="!closing" :close-on-press-escape="!closing" :show-close="!closing">
+      <RequestState :loading="detailLoading" :error="detailError" @retry="openDetail(selectedId)">
+        <article v-if="detail" class="consultation-detail">
+          <header class="detail-heading">
+            <span class="consult-status" :class="detail.status.toLowerCase()">{{ { REPLIED: '已回复', CLOSED: '已关闭', WAIT_REPLY: '等待回复' }[detail.status] || detail.status }}</span>
+            <h3>{{ detail.title }}</h3>
+            <p class="consult-time">提交于 {{ formatTime(detail.createdAt) }}</p>
+          </header>
+          <section class="detail-question" aria-label="问题描述">
+            <h4>问题描述</h4>
+            <p>{{ detail.content }}</p>
+          </section>
+          <section class="detail-responses" aria-label="客服回复">
+            <div class="detail-section-heading"><h4>客服回复</h4><span>{{ detail.replies.length }} 条回复</span></div>
+            <div v-if="detail.replies.length" class="detail-replies">
+              <article v-for="reply in detail.replies" :key="reply.id" class="detail-reply">
+                <div class="reply-avatar" aria-hidden="true">{{ reply.staffName?.slice(0, 1) || '客' }}</div>
+                <div class="reply-body">
+                  <div class="reply-meta"><strong>{{ reply.staffName }}</strong><time>{{ formatTime(reply.createdAt) }}</time></div>
+                  <p>{{ reply.content }}</p>
+                </div>
+              </article>
+            </div>
+            <p v-else class="detail-empty">{{ detail.status === 'CLOSED' ? '这条咨询暂无客服回复。' : '咨询已收到，请耐心等待客服回复。' }}</p>
+          </section>
+        </article>
+      </RequestState>
+      <template #footer>
+        <div class="detail-footer">
+          <p v-if="closeError" class="form-error" role="alert">{{ closeError }}</p>
+          <div class="detail-actions">
+            <button v-if="detail && !detailLoading && !detailError && detail.status !== 'CLOSED'" type="button" class="close-consultation-button" :disabled="closing" @click="closeConsultation">{{ closing ? '正在关闭...' : '关闭咨询' }}</button>
+            <button v-else-if="detail?.status === 'CLOSED' && !detailLoading && !detailError" type="button" class="close-consultation-button" :disabled="closing" @click="deleteConsultation(detail)">{{ closing ? '正在删除...' : '删除咨询' }}</button>
+            <button type="button" class="secondary-button" :disabled="closing" @click="detailOpen = false">返回列表</button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.consult-detail-button { min-height: 32px; padding: 0 14px; font-size: 12px; border-radius: var(--account-radius-action); }
+.consult-card-actions { display: flex; align-items: center; gap: 8px; }
+.consult-delete-button { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 14px; border: 1px solid var(--status-red); border-radius: var(--account-radius-action); background: #fff; color: var(--status-red); font-size: 12px; font-weight: 500; cursor: pointer; }
+.consult-delete-button:hover:not(:disabled) { background: var(--status-red-bg); }
+.consult-delete-button:disabled { opacity: .5; cursor: not-allowed; }
+.consult-delete-button:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 3px; }
+.consultation-detail { color: var(--text-primary); overflow-wrap: anywhere; }
+.detail-heading { padding-bottom: 24px; }
+.detail-heading h3 { margin: 14px 0 8px; font-size: 22px; font-weight: 600; line-height: 1.4; letter-spacing: -.4px; }
+.detail-heading .consult-time { margin: 0; font-size: 12px; }
+.consult-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: var(--radius-full); background: #f5f5f7; color: var(--text-secondary); font-size: 11px; font-weight: 500; }
+.consult-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.consult-status.wait_reply { color: var(--text-link); background: #edf5ff; }
+.consult-status.replied { color: #24834b; background: #edf8f0; }
+.detail-question { padding: 20px; border: 1px solid var(--border-divider); border-radius: var(--radius-md); background: #f9f9fb; }
+.detail-question h4, .detail-section-heading h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.detail-question p, .reply-body p { margin: 10px 0 0; font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+.detail-responses { padding-top: 28px; }
+.detail-section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.detail-section-heading span, .reply-meta time { color: var(--text-tertiary); font-size: 11px; }
+.detail-replies { display: grid; gap: 24px; }
+.detail-reply { display: flex; gap: 12px; }
+.reply-avatar { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #edf5ff; color: var(--text-link); font-size: 12px; font-weight: 600; }
+.reply-body { min-width: 0; flex: 1; }
+.reply-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; min-height: 32px; }
+.reply-meta strong { font-size: 13px; font-weight: 500; }
+.reply-body p { margin-top: 4px; color: var(--text-secondary); }
+.detail-empty { padding: 24px 16px; margin: 0; border-radius: var(--radius-md); background: #f5f5f7; text-align: center; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.detail-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.detail-actions > button { box-sizing: border-box; width: 112px; height: 40px; min-height: 40px; padding: 0 16px; border: 1px solid transparent; border-radius: var(--radius-full); font-size: 13px; font-weight: 500; line-height: 1; }
+.detail-actions .secondary-button { margin-left: auto; }
+.detail-footer .form-error { text-align: left; margin: 0 0 12px; }
+.detail-closed-note { color: var(--text-tertiary); font-size: 12px; }
+.detail-actions .close-consultation-button { display: inline-flex; align-items: center; justify-content: center; border-color: var(--status-red); background: #fff; color: var(--status-red); cursor: pointer; transition: background-color .15s ease; }
+.close-consultation-button:hover:not(:disabled) { background: var(--status-red-bg); }
+.close-consultation-button:disabled { opacity: .5; cursor: not-allowed; }
+.close-consultation-button:focus-visible, .consult-detail-button:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: 3px; }
 .consultation-layout {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
@@ -232,5 +405,19 @@ onMounted(load)
   .consultation-layout {
     grid-template-columns: 1fr;
   }
+}
+</style>
+
+<style>
+.el-dialog.consultation-dialog { padding: 0; border: 1px solid var(--border-divider); border-radius: 20px; box-shadow: var(--shadow-popover); overflow: hidden; }
+.consultation-dialog .el-dialog__header { margin: 0; padding: 24px 56px 20px 28px; border-bottom: 1px solid var(--border-divider); }
+.consultation-dialog .el-dialog__title { color: var(--text-primary); font-size: 16px; font-weight: 600; }
+.consultation-dialog .el-dialog__headerbtn { top: 14px; right: 14px; }
+.consultation-dialog .el-dialog__body { padding: 24px 28px 28px; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
+.consultation-dialog .el-dialog__footer { padding: 18px 28px; border-top: 1px solid var(--border-divider); }
+@media (max-width: 600px) {
+  .consultation-dialog .el-dialog__header { padding-left: 20px; }
+  .consultation-dialog .el-dialog__body { padding: 20px; }
+  .consultation-dialog .el-dialog__footer { padding: 16px 20px; }
 }
 </style>

@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
 import DepartureCard from '@/components/DepartureCard.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
+import RequestState from '@/components/RequestState.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,13 +25,37 @@ const departures = computed(() => data.value?.departures || [])
 const selectedDeparture = computed(
   () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
 )
-const reviews = computed(() => data.value?.reviews || [])
+const reviews = ref([])
+const reviewPage = ref(1)
+const reviewTotal = ref(0)
+const reviewsLoading = ref(false)
+const reviewsError = ref('')
+const reviewPageSize = 10
+let reviewRequest = 0
+
+async function loadReviews(page = reviewPage.value) {
+  const request = ++reviewRequest
+  reviewPage.value = page
+  reviewsLoading.value = true
+  reviewsError.value = ''
+  try {
+    const result = await routeApi.reviews(route.params.id, { page, size: reviewPageSize })
+    if (request !== reviewRequest) return
+    reviews.value = result.items
+    reviewTotal.value = result.total
+  } catch (cause) {
+    if (request === reviewRequest) reviewsError.value = cause.message || '评价加载失败'
+  } finally {
+    if (request === reviewRequest) reviewsLoading.value = false
+  }
+}
 
 async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
     data.value = await routeApi.detail(route.params.id)
+    loadReviews(1)
     setMapItinerary(data.value?.itinerary || [])
     favorite.value = Boolean(data.value?.favorite)
     if (departures.value.length > 0) {
@@ -284,9 +309,10 @@ onBeforeUnmount(() => setMapItinerary([]))
         <div class="sheet-section reviews-section">
           <div class="section-title-row">
             <h4>用户评价</h4>
-            <span class="sub-hint">{{ data.route.ratingCount || 0 }} 条</span>
+            <span v-if="!reviewsLoading && !reviewsError" class="sub-hint">{{ reviewTotal }} 条</span>
           </div>
-          <div v-if="reviews.length" class="reviews-list">
+          <RequestState :loading="reviewsLoading" :error="reviewsError" :empty="!reviews.length" empty-text="暂无用户评价。" @retry="loadReviews()">
+          <div class="reviews-list">
             <article v-for="review in reviews" :key="review.id" class="review-row">
               <div class="review-row-head">
                 <div class="review-author-rating">
@@ -298,7 +324,8 @@ onBeforeUnmount(() => setMapItinerary([]))
               <p>{{ review.content || '用户未填写文字评价。' }}</p>
             </article>
           </div>
-          <div v-else class="empty-box">暂无用户评价。</div>
+          </RequestState>
+          <el-pagination v-if="reviewTotal > reviewPageSize" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="reviewPage" :page-size="reviewPageSize" :total="reviewTotal" :disabled="reviewsLoading" @current-change="loadReviews" />
         </div>
       </div>
 

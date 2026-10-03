@@ -58,7 +58,8 @@ export const accountApi = {
   consultations: (params) => request.get('/consultations', { params }),
   consultation: (consultationId) => request.get(`/consultations/${consultationId}`),
   createConsultation: (payload) => request.post('/consultations', payload),
-  closeConsultation: (consultationId) => request.post(`/consultations/${consultationId}/close`)
+  closeConsultation: (consultationId) => request.post(`/consultations/${consultationId}/close`),
+  deleteConsultation: (consultationId) => request.delete(`/consultations/${consultationId}`)
 }
 
 export const contentApi = {

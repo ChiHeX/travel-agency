@@ -367,6 +367,62 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
   - `POST /payments/alipay/notify`：实现按**表单参数**接收支付宝回调并以 `text/plain` 应答，
     契约描述的是 JSON 请求体（第三方回调，属接收格式不一致）。
 
+### 12.2 酒店展示与住宿安排（本次变更）
+
+- **背景**：用户端线路详情的每日行程此前只能显示一句"住宿：酒店名称"，酒店地址、封面、
+  图片、简介、设施、入住退房时间都没有出口；而且"当天到底怎么安排住宿"完全由
+  `hotelId` 是否为空来表达，无法区分"只定了住宿标准""还没确认""当天不含住宿"。
+  本次为「用户端住宿展示 + 线路下的酒店公开详情」补齐契约（PR #51）。
+- **新增**：
+  - 路径 `GET /routes/{routeId}/hotels/{hotelId}`（`PublicHotelDetailEnvelope`，`security: []`）；
+  - 模型 `HotelSummary`、`PublicHotelDetail`、`HotelImage`、`HotelImageUpsert`、
+    `ClockTime`、`ImageUrl`，以及枚举 `AccommodationType`、`HotelFacility`。
+- **扩展**：
+  - `Hotel` / `HotelCreateRequest` / `HotelUpdateRequest` 增加 `city`、`coverUrl`、`images`、
+    `starRating`、`facilities`、`checkInTime`、`checkOutTime`；
+  - `ItineraryDay` / `ItineraryDayRequest` 增加 `accommodationType`、`accommodationStandard`、
+    `roomType`、`breakfastIncluded`、`accommodationNote`；`ItineraryDay` 另增可空摘要 `hotel`；
+  - `GET /admin/hotels` 增加 `city` 查询参数（精确匹配）。
+- **为什么酒店详情挂在 `/routes/{routeId}/hotels/{hotelId}` 下面**：酒店在本项目里只是线路行程资源
+  （PRD §10），做成公开的 `/hotels/{hotelId}` 等于把后台维护的、可能与任何线路都无关的酒店资料
+  整表对外开放。以"这条已发布线路的行程确实安排了它"为门槛，才能既支撑详情页，又不扩大公开面。
+- **不新增的内容（明确不做）**：酒店评分、评价数量、销量、房型价格、酒店库存与酒店下单。
+  本项目没有酒店评价体系，因此 `starRating` 只表示**官方星级**，与网站评分、"几钻"无关；
+  没有可靠依据时必须为 `null`，不得用其它评分凑数。酒店与用户端都不提供"酒店有早餐服务"
+  与"本线路含早餐"之间的互相推断：前者是 `Hotel.facilities` 的 `BREAKFAST_SERVICE`，
+  后者是当天的 `breakfastIncluded`。
+- **错误码与权限**：新端点无需登录；不满足"线路已发布 + 酒店启用 + 确实被该线路行程引用"时
+  **统一返回 404 `RESOURCE_NOT_FOUND`**（不区分具体原因，避免把后台酒店的停用状态与存在性探测出来）。
+  后台酒店与每日行程端点的权限不变，仍为 `STAFF` / `ADMIN`。
+- **兼容影响（逐项）**：
+  - **破坏性**：`HotelCreateRequest` / `HotelUpdateRequest` 新增**必填** `city`
+    （`minLength: 1`，`maxLength: 64`）。这是本次唯一需要调用方改代码的地方：
+    变更前不传 `city` 的建档/修改请求会得到 422 `VALIDATION_ERROR`。
+    这样做是为了让"展示城市 + 后台按城市筛选"有可靠数据；存量数据由迁移脚本补成**空串**
+    （表示尚未录入城市），**不编造城市名**。因此后台打开一条存量酒店资料并保存时，
+    需要先把城市补录进去（这是有意为之的一次性补录，而不是把空值当成一个合法城市）。
+    受影响调用方只有本项目后台酒店管理页，已在本 PR 同步修改（表单增加"城市"字段并提交）。
+  - **兼容**：`ItineraryDayRequest.accommodationType` 为**可选**：未提交时按 `hotelId` 推断
+    （非空 → `HOTEL`，为空 → `PENDING`），与存量数据迁移规则一致，**不会推断成 `NONE`**；
+    不使用新字段的既有调用方行为不变。新增的 422 只出现在显式提交了互相矛盾的住宿安排时
+    （`HOTEL` 却没有酒店、`STANDARD` 没写住宿标准、`NONE` / `PENDING` 却带了酒店）。
+  - **兼容**：`ItineraryDay` 只新增字段（含新增的**必填** `accommodationType`），
+    `hotelId` / `hotelName` 原样保留，旧调用方无需修改；新字段由迁移脚本回填后才对外提供
+    （见下一条）。
+  - **需要先跑迁移**：`route_itinerary_day` 新增 `accommodation_type` 等列，
+    `ItineraryDay.accommodationType` 因此成为必填响应字段。`sql/migrations/010-add-hotel-accommodation.sql`
+    会按"有酒店 → `HOTEL`、无酒店 → `PENDING`"回填存量行，并在回填之后补上约束
+    `ck_day_accommodation`（住宿类型必须与酒店关联、住宿标准自洽）；**未执行迁移就升级应用**会因
+    缺列直接报 `Unknown column`，而不是静默给出错误类型。约束挡的是绕过服务层的写入：
+    `accommodation_type` 有默认值，只写 `hotel_id` 而不写类型会静默产出一行
+    "关联了酒店、类型却是待确认"的自相矛盾数据（MySQL 8.0.16 之前只解析 CHECK 而不执行，
+    此时退化为服务层保证）。
+  - **兼容**：`Hotel` 只新增字段；`Hotel.version` 乐观锁语义未变（修改仍需回传版本，冲突仍为
+    409 `HOTEL_VERSION_CONFLICT`），历史订单的价格与出行人快照不受酒店资料修改影响。
+- **确认状态**：契约已随本 PR 更新，并已按 §13 的工作流完成"先生成契约、再实现"的顺序；
+  **未记录前端、后端、测试成员的分别确认**，不得据此声称三方已分别确认。如需成员级确认，
+  请在合并前补记。
+
 ## 13. 模块契约工作流
 
 每个模块都按以下顺序推进，不能等后端写完后再反推接口：

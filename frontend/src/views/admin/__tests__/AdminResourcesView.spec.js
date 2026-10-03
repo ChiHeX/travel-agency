@@ -66,12 +66,19 @@ const activeAttraction = {
   updatedAt: '2026-09-01T10:00:00+08:00'
 }
 
-/** 契约 Hotel 的字段形状：没有 city，状态是 AccountStatus，坐标是 JSON number。 */
+/** 契约 Hotel 的字段形状：city 由本次契约新增（必填，存量数据由迁移脚本补空串），状态是 AccountStatus。 */
 const activeHotel = {
   id: '31',
   name: '杭州湖畔演示酒店',
+  city: '杭州',
   address: '浙江省杭州市西湖区',
   contactPhone: '000-00000001',
+  coverUrl: null,
+  starRating: 4,
+  facilities: ['WIFI'],
+  checkInTime: '14:00',
+  checkOutTime: '12:00',
+  images: [],
   longitude: 120.139,
   latitude: 30.229,
   intro: '课程演示用酒店资料',
@@ -294,7 +301,7 @@ describe('AdminResourcesView（景点资料库）', () => {
  * POST/PUT/DELETE /admin/hotels 在前端没有任何调用方。这里钉住接入后的行为。</p>
  */
 describe('AdminResourcesView（酒店资料库）', () => {
-  it('按契约分页参数拉取酒店列表，并显示联系方式、坐标与枚举状态', async () => {
+  it('按契约分页参数拉取酒店列表，并显示城市、联系方式、坐标与枚举状态', async () => {
     const wrapper = mountHotelView()
     await flushPromises()
 
@@ -305,8 +312,83 @@ describe('AdminResourcesView（酒店资料库）', () => {
     expect(wrapper.text()).toContain('团队原创测试资料')
     // 枚举状态要显示成中文，而不是把库内的 1/ACTIVE 直接抛给运营
     expect(wrapper.text()).toContain('启用')
-    // 酒店资料没有 city 字段，不能渲染成"所属城市"列
+    // city 是本次契约新增字段：列表要有独立的「城市」列（景点那套"所属城市"文案不适用于酒店）
+    expect(wrapper.text()).toContain('杭州')
     expect(wrapper.text()).not.toContain('所属城市')
+  })
+
+  it('城市为空串（迁移脚本补的存量数据）时显示占位符，而不是空白单元格或编造的城市', async () => {
+    fetchHotels.mockResolvedValue({
+      items: [{ ...activeHotel, city: '' }],
+      total: 1,
+      totalPages: 1
+    })
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    const cells = wrapper.findAll('tbody tr td')
+    expect(cells[1].text()).toBe('—')
+  })
+
+  /**
+   * 契约 `GET /admin/hotels` 声明了 `city` 查询参数（精确匹配），
+   * 而 `GET /admin/attractions` 没有这个参数：酒店列表要能按城市精确筛选，
+   * 景点列表不能把契约外的查询参数发给后端。
+   */
+  it('城市筛选按精确匹配提交契约参数，并回到第 1 页', async () => {
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    expect(wrapper.find('.city-filter').exists()).toBe(true)
+    await wrapper.find('.resource-search input').setValue('湖畔')
+    await wrapper.find('.city-filter').setValue('杭州')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+
+    expect(fetchHotels).toHaveBeenLastCalledWith({ page: 1, size: 20, keyword: '湖畔', city: '杭州' })
+  })
+
+  it('城市筛选可与翻页同时使用，清空按钮同时清掉关键字与城市', async () => {
+    fetchHotels.mockResolvedValue({ items: [activeHotel], total: 45, totalPages: 3 })
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    await wrapper.find('.city-filter').setValue('杭州')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+    await buttonByText(wrapper, '下一页').trigger('click')
+    await flushPromises()
+    expect(fetchHotels).toHaveBeenLastCalledWith({ page: 2, size: 20, city: '杭州' })
+
+    await buttonByText(wrapper, '清空').trigger('click')
+    await flushPromises()
+    expect(fetchHotels).toHaveBeenLastCalledWith({ page: 1, size: 20 })
+    expect(wrapper.find('.city-filter').element.value).toBe('')
+  })
+
+  it('城市筛选无命中时给出针对"城市"的提示', async () => {
+    fetchHotels.mockResolvedValue({ items: [], total: 0, totalPages: 0 })
+    const wrapper = mountHotelView()
+    await flushPromises()
+
+    await wrapper.find('.city-filter').setValue('不存在的城市')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('没有位于「不存在的城市」的酒店资料')
+  })
+
+  it('景点列表不渲染城市筛选，也从不发送契约没有的 city 参数', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.city-filter').exists()).toBe(false)
+    await wrapper.find('.resource-search input').setValue('西湖')
+    await wrapper.find('.resource-search').trigger('submit')
+    await flushPromises()
+
+    expect(fetchAttractions).toHaveBeenLastCalledWith({ page: 1, size: 20, keyword: '西湖' })
+    expect(fetchAttractions.mock.calls.every((call) => !call[0].city)).toBe(true)
   })
 
   it('提交搜索时把 keyword 交给契约参数并回到第 1 页，而不是前端自行过滤', async () => {

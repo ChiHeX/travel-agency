@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import { FACILITY_VALUES, facilityLabel } from '@/utils/hotel'
 import { codePointLength, overCodePoints } from '@/utils/text'
 
 /**
@@ -13,6 +14,21 @@ import { codePointLength, overCodePoints } from '@/utils/text'
  * 提交这些字段会被后端严格模式直接拒绝（400）。
  *
  * 字段口径与后端一致：
+ * - `city` 是**必填**（`minLength: 1` / `maxLength: 64`）。存量资料由迁移脚本补成**空串**
+ *   （表示尚未录入城市，不编造城市名），所以这里**不**做"为空就拦下"的本地硬校验：
+ *   留空照常提交，由后端 422 的 message 就地提示 —— 否则编辑一条老资料时，用户会卡在一个
+ *   自己看不出原因的表单里，而"随便填一个城市"是更坏的结果；
+ * - `starRating` 是**官方星级**（1～5 的整数或 `null`）。本项目没有酒店评价体系，
+ *   没有可靠依据时必须留空（提交 `null`），不得用网站评分或"几钻"顶替；
+ * - `facilities` 限定在契约 `HotelFacility` 枚举内，用复选框而不是自由文本：
+ *   契约按枚举校验，自由文本会被 422 拒收；复选框天然不会产生重复取值
+ *   （契约 `uniqueItems: true`）；
+ * - `checkInTime` / `checkOutTime` 是 `HH:mm` 的 `ClockTime`，只作为"通常几点入住 / 几点前退房"
+ *   的说明，不做时区换算；留空提交 `null`；
+ * - `images` 是资料的一部分并按**整体替换**处理（最多 10 张）：提交 `[]` 就会清空该酒店已有的
+ *   全部图片记录。每张的 `url` 必须是 http/https 绝对地址（第一版由后台填写外部图片地址，
+ *   项目不提供图片上传服务）；
+ * - `coverUrl` 是列表/行程卡片封面；为空提交 `null`，用户端显示占位图；
  * - `status` 是契约 AccountStatus 枚举 `ACTIVE` / `DISABLED`（后端映射成库内 1/0），
  *   新建默认 ACTIVE；DISABLED 表示停用该资料，但不影响已经被线路行程引用的行程内容，
  *   只是不能再被安排进新的每日行程（后端会拒绝，行程编辑的下拉里也标注为「已停用」）；
@@ -75,8 +91,15 @@ const EDITABLE_FIELD_LABELS = {
 
 const form = reactive({
   name: '',
+  city: '',
   address: '',
   contactPhone: '',
+  coverUrl: '',
+  starRating: '',
+  facilities: [],
+  checkInTime: '',
+  checkOutTime: '',
+  images: [],
   longitude: '',
   latitude: '',
   intro: '',
@@ -115,10 +138,21 @@ function optional(value) {
 
 /** 各字段的码点上限，与契约 HotelCreateRequest / HotelUpdateRequest 和后端 @CodePointLength 一致。 */
 const NAME_MAX = 128
+const CITY_MAX = 64
 const ADDRESS_MAX = 255
 const CONTACT_PHONE_MAX = 20
 const INTRO_MAX = 10000
 const DATA_SOURCE_MAX = 500
+const IMAGE_URL_MAX = 500
+const IMAGE_ALT_MAX = 200
+/** 契约 images 的 maxItems。 */
+const IMAGES_MAX = 10
+/** 契约 ClockTime：24 小时制 `HH:mm`，不接受 `24:00`、`9:00` 或带秒与时区的写法。 */
+const CLOCK_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+/** 契约 ImageUrl：http / https 开头的绝对地址。 */
+const IMAGE_URL_RE = /^https?:\/\/\S+$/
+/** 官方星级只允许契约声明的 1～5，没有可靠依据时留空（提交 null）。 */
+const STAR_RATINGS = ['1', '2', '3', '4', '5']
 
 /** 坐标必须是契约允许范围内的数字；未填写返回 null。 */
 function coordinate(value, min, max, label) {
@@ -130,20 +164,80 @@ function coordinate(value, min, max, label) {
   return { value: number }
 }
 
+/** 图片地址：未填写返回 null（清空）；填写了就必须是 http/https 绝对地址。 */
+function imageUrl(value, label) {
+  const text = String(value ?? '').trim()
+  if (text === '') return { value: null }
+  if (overCodePoints(text, IMAGE_URL_MAX)) return { error: `${label}最多 ${IMAGE_URL_MAX} 个字符` }
+  if (!IMAGE_URL_RE.test(text)) return { error: `${label}必须是 http:// 或 https:// 开头的完整地址` }
+  return { value: text }
+}
+
+/** 官方星级：未选择返回 null；契约只接受 1～5 的整数。 */
+function starRatingValue() {
+  const text = String(form.starRating ?? '').trim()
+  if (text === '') return null
+  const number = Number(text)
+  return Number.isInteger(number) && number >= 1 && number <= 5 ? number : null
+}
+
+/** `ClockTime`（HH:mm）：留空提交 null，填写了就必须是契约的格式。 */
+function clockTime(value, label) {
+  const text = String(value ?? '').trim()
+  if (text === '') return { value: null }
+  if (!CLOCK_TIME_RE.test(text)) return { error: `${label}请按 24 小时制 HH:mm 填写，例如 14:00` }
+  return { value: text }
+}
+
+/**
+ * 本次要提交的图片列表（契约 HotelImageUpsert：url / alt / sortOrder，整体替换）。
+ *
+ * `sortOrder` 决定用户端展示顺序（升序，最小 1），同一酒店内允许重复；新增行时按行号预填，
+ * 运营可以改。
+ */
+function imagePayload() {
+  return form.images.map((image, index) => ({
+    url: String(image.url ?? '').trim(),
+    alt: optional(image.alt),
+    sortOrder: Number(image.sortOrder)
+  }))
+}
+
 /**
  * 页面侧校验：与后端 HotelCreateRequest / HotelUpdateRequest 的约束保持一致
  * （必填、长度上限、坐标范围），让运营在提交前就看到问题，而不是等接口回一个 422。
+ *
+ * 唯一的例外是 `city`：契约确实必填，但存量资料可能是空串，这里放行让后端的 422 说话
+ * （见文件顶部说明），只校验长度上限。
  */
 function validate() {
   const name = form.name.trim()
   const dataSource = form.dataSource.trim()
   if (!name) return '请填写酒店名称'
   if (overCodePoints(name, NAME_MAX)) return `酒店名称最多 ${NAME_MAX} 个字符`
+  if (overCodePoints(form.city.trim(), CITY_MAX)) return `城市最多 ${CITY_MAX} 个字符`
   if (overCodePoints(form.address.trim(), ADDRESS_MAX)) return `酒店地址最多 ${ADDRESS_MAX} 个字符`
   if (overCodePoints(form.contactPhone.trim(), CONTACT_PHONE_MAX)) return `联系电话最多 ${CONTACT_PHONE_MAX} 个字符`
   if (overCodePoints(form.intro, INTRO_MAX)) return `酒店简介最多 ${INTRO_MAX} 个字符`
   if (!dataSource) return '请填写数据来源说明'
   if (overCodePoints(dataSource, DATA_SOURCE_MAX)) return `数据来源说明最多 ${DATA_SOURCE_MAX} 个字符`
+  const cover = imageUrl(form.coverUrl, '封面图地址')
+  if (cover.error) return cover.error
+  const checkIn = clockTime(form.checkInTime, '入住时间')
+  if (checkIn.error) return checkIn.error
+  const checkOut = clockTime(form.checkOutTime, '退房时间')
+  if (checkOut.error) return checkOut.error
+  if (form.images.length > IMAGES_MAX) return `酒店图片最多 ${IMAGES_MAX} 张`
+  for (const [index, image] of form.images.entries()) {
+    const position = `第 ${index + 1} 张图片`
+    const url = imageUrl(image.url, `${position}的地址`)
+    if (url.error) return url.error
+    if (url.value === null) return `${position}还没有填写地址`
+    if (overCodePoints(image.alt, IMAGE_ALT_MAX)) return `${position}的说明最多 ${IMAGE_ALT_MAX} 个字符`
+    if (!Number.isInteger(Number(image.sortOrder)) || Number(image.sortOrder) < 1) {
+      return `${position}的展示顺序应为大于 0 的整数`
+    }
+  }
   const longitude = coordinate(form.longitude, -180, 180, '经度')
   if (longitude.error) return longitude.error
   const latitude = coordinate(form.latitude, -90, 90, '纬度')
@@ -154,6 +248,29 @@ function validate() {
     return '经度和纬度需要同时填写，或同时留空'
   }
   return ''
+}
+
+/** 新增一张空白图片行；已达契约上限时不加。 */
+function addImage() {
+  if (form.images.length >= IMAGES_MAX) return
+  form.images.push({ url: '', alt: '', sortOrder: form.images.length + 1 })
+}
+
+/** 删除一张图片行；提交时该行不再出现在 payload 里，整体替换就等于删掉它。 */
+function removeImage(index) {
+  form.images.splice(index, 1)
+}
+
+/**
+ * 设施多选：复选框绑定 `:checked` 并在这里维护数组，契约要求 `uniqueItems: true`。
+ *
+ * 用复选框而不是自由文本输入：契约按 `HotelFacility` 枚举校验，自由文本会被 422 拒收；
+ * 数组的增删互斥也天然不会产生重复取值。
+ */
+function toggleFacility(value) {
+  const index = form.facilities.indexOf(value)
+  if (index === -1) form.facilities.push(value)
+  else form.facilities.splice(index, 1)
 }
 
 /**
@@ -253,10 +370,25 @@ async function overwriteLatest() {
 /** 用一份酒店数据回填表单（打开弹窗与"载入服务器最新数据"共用）。 */
 function applyHotel(source) {
   const status = source?.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
+  // 城市可能是迁移脚本补的**空串**（表示尚未录入），照原样回填，不替运营猜一个城市名。
   Object.assign(form, {
     name: source?.name || '',
+    city: source?.city || '',
     address: source?.address || '',
     contactPhone: source?.contactPhone || '',
+    coverUrl: source?.coverUrl || '',
+    // 星级是数字或 null；用空串表示"未提供"，select 的取值因此统一是字符串。
+    starRating: source?.starRating == null ? '' : String(source.starRating),
+    // 只保留契约枚举内的取值：列表里混进未知枚举时，提交会被后端 422 拒收。
+    facilities: (Array.isArray(source?.facilities) ? source.facilities : [])
+      .filter((value) => FACILITY_VALUES.includes(value)),
+    checkInTime: source?.checkInTime || '',
+    checkOutTime: source?.checkOutTime || '',
+    images: (Array.isArray(source?.images) ? source.images : []).map((image, index) => ({
+      url: image?.url || '',
+      alt: image?.alt || '',
+      sortOrder: image?.sortOrder ?? index + 1
+    })),
     longitude: source?.longitude === null || source?.longitude === undefined ? '' : String(source.longitude),
     latitude: source?.latitude === null || source?.latitude === undefined ? '' : String(source.latitude),
     intro: source?.intro || '',
@@ -276,8 +408,19 @@ async function save() {
   const editing = Boolean(props.hotel?.id)
   const payload = {
     name: form.name.trim(),
+    // 契约 HotelCreateRequest / HotelUpdateRequest 都把 city 列为必填（minLength: 1）：
+    // 留空时照常提交空串，由后端的 422 message 提示补录，见文件顶部说明。
+    city: form.city.trim(),
     address: optional(form.address),
     contactPhone: optional(form.contactPhone),
+    coverUrl: imageUrl(form.coverUrl, '封面图地址').value,
+    // images / facilities 都是**整体替换**：提交 [] 等于清空，因此永远整份上送，
+    // 而不是"没改就不发"——不发也同样是清空，反而更难解释。
+    images: imagePayload(),
+    starRating: starRatingValue(),
+    facilities: [...form.facilities],
+    checkInTime: clockTime(form.checkInTime, '入住时间').value,
+    checkOutTime: clockTime(form.checkOutTime, '退房时间').value,
     longitude: coordinate(form.longitude, -180, 180, '经度').value,
     latitude: coordinate(form.latitude, -90, 90, '纬度').value,
     intro: optional(form.intro),
@@ -409,6 +552,23 @@ async function save() {
         </p>
       </div>
 
+      <!--
+        city 是契约必填（minLength: 1），但存量资料由迁移脚本补成空串（表示尚未录入城市）。
+        这里不做"为空就拦下"的本地硬校验：留空照常提交，让后端 422 的 message 就地提示补录，
+        而不是逼运营随手编一个城市名。
+      -->
+      <div class="form-field">
+        <label>城市 <span class="req">*</span></label>
+        <input v-model="form.city" placeholder="例如：杭州" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.city, CITY_MAX) }">
+          {{ codePointLength(form.city) }} / {{ CITY_MAX }}
+        </p>
+        <p class="form-hint">
+          街道门牌写在「详细地址」里。契约要求新建与修改都必须带城市，留空提交会由后端返回错误提示；
+          旧资料若还没有城市，请在这里补录。
+        </p>
+      </div>
+
       <div class="form-field">
         <label>联系电话</label>
         <input v-model="form.contactPhone" placeholder="例如：0872-1234567" />
@@ -425,11 +585,33 @@ async function save() {
         </select>
       </div>
 
+      <!-- 官方星级：本项目没有酒店评价体系，没有可靠依据时必须留空，不得用网站评分或"几钻"顶替 -->
+      <div class="form-field">
+        <label>官方星级</label>
+        <select v-model="form.starRating">
+          <option value="">未提供（没有可靠依据）</option>
+          <option v-for="star in STAR_RATINGS" :key="star" :value="star">{{ star }} 星</option>
+        </select>
+        <p class="form-hint">官方星级与网站评分、"几钻"不是一回事，只填写有可靠依据的星级。</p>
+      </div>
+
       <div class="form-field wide">
         <label>详细地址</label>
         <input v-model="form.address" placeholder="例如：云南省大理白族自治州大理市" />
         <p class="form-counter" :class="{ over: overCodePoints(form.address, ADDRESS_MAX) }">
           {{ codePointLength(form.address) }} / {{ ADDRESS_MAX }}
+        </p>
+      </div>
+
+      <div class="form-field wide">
+        <label>封面图地址</label>
+        <input v-model="form.coverUrl" placeholder="例如：https://example.com/hotel-cover.jpg" />
+        <p class="form-counter" :class="{ over: overCodePoints(form.coverUrl, IMAGE_URL_MAX) }">
+          {{ codePointLength(form.coverUrl) }} / {{ IMAGE_URL_MAX }}
+        </p>
+        <p class="form-hint">
+          用于线路每日行程的酒店卡片与酒店详情页；留空时用户端显示占位图，不会自动改用详情图片。
+          必须是 http:// 或 https:// 开头的完整地址（项目不提供图片上传服务）。
         </p>
       </div>
 
@@ -443,11 +625,70 @@ async function save() {
         <input v-model="form.latitude" inputmode="decimal" placeholder="例如：25.6940000" />
       </div>
 
+      <!-- ClockTime 是 HH:mm 的说明性时刻，不做时区换算；留空提交 null -->
+      <div class="form-field">
+        <label>入住时间</label>
+        <input v-model="form.checkInTime" inputmode="numeric" placeholder="例如：14:00" />
+        <p class="form-hint">24 小时制 HH:mm，例如 14:00；不清楚时留空。</p>
+      </div>
+
+      <div class="form-field">
+        <label>退房时间</label>
+        <input v-model="form.checkOutTime" inputmode="numeric" placeholder="例如：12:00" />
+        <p class="form-hint">24 小时制 HH:mm，例如 12:00；不清楚时留空。</p>
+      </div>
+
+      <!--
+        设施限定在契约 HotelFacility 枚举内：契约按枚举校验，自由文本会被 422 拒收。
+        复选框天然不会重复（契约 uniqueItems: true）。
+      -->
+      <div class="form-field wide">
+        <label>酒店设施</label>
+        <div class="facility-grid">
+          <label v-for="value in FACILITY_VALUES" :key="value" class="facility-option">
+            <input
+              type="checkbox"
+              :value="value"
+              :checked="form.facilities.includes(value)"
+              @change="toggleFacility(value)"
+            />
+            <span>{{ facilityLabel(value) }}</span>
+          </label>
+        </div>
+        <p class="form-hint">
+          已选 {{ form.facilities.length }} 项。这里的「早餐服务」只表示酒店自身提供早餐服务，
+          与某条线路当天是否含早餐是两回事，互不推断。
+        </p>
+      </div>
+
       <div class="form-field wide">
         <label>酒店简介</label>
         <textarea v-model="form.intro" rows="3" placeholder="用于线路行程展示的酒店介绍文字"></textarea>
         <p class="form-counter" :class="{ over: overCodePoints(form.intro, INTRO_MAX) }">
           {{ codePointLength(form.intro) }} / {{ INTRO_MAX }}
+        </p>
+      </div>
+
+      <!--
+        图片按**整体替换**提交：删掉一行就等于删掉那条图片记录（不会删除外部图片文件），
+        全部删空后提交的是 []，会清空该酒店已有的全部图片记录。
+      -->
+      <div class="form-field wide">
+        <label>酒店图片（最多 {{ IMAGES_MAX }} 张）</label>
+        <div v-if="form.images.length" class="image-rows">
+          <div v-for="(image, index) in form.images" :key="index" class="image-row">
+            <input v-model="image.url" class="image-url" :placeholder="`第 ${index + 1} 张：https://example.com/hotel-${index + 1}.jpg`" aria-label="图片地址" />
+            <input v-model="image.alt" class="image-alt" placeholder="图片说明（可选，供读屏与加载失败时展示）" aria-label="图片说明" />
+            <input v-model.number="image.sortOrder" class="image-sort" type="number" min="1" aria-label="展示顺序" />
+            <button type="button" class="text-button text-danger" @click="removeImage(index)">删除</button>
+          </div>
+        </div>
+        <p v-else class="form-hint">还没有图片。用户端详情页按展示顺序（升序）排列这些图片。</p>
+        <button type="button" class="secondary-button" :disabled="form.images.length >= IMAGES_MAX" @click="addImage">
+          + 添加图片
+        </button>
+        <p class="form-counter" :class="{ over: form.images.length > IMAGES_MAX }">
+          {{ form.images.length }} / {{ IMAGES_MAX }}
         </p>
       </div>
 
@@ -458,7 +699,7 @@ async function save() {
           {{ codePointLength(form.dataSource) }} / {{ DATA_SOURCE_MAX }}
         </p>
         <p class="form-hint">
-          资料必须可追溯：来源说明会随酒店一起保存，供后台核对与展示，不得留空。
+          资料必须可追溯：来源说明会随酒店一起保存，供后台核对，并作为用户端的「资料来源」展示，不得留空。
         </p>
       </div>
 
@@ -493,6 +734,45 @@ async function save() {
 
 .req {
   color: var(--danger-red);
+}
+
+/* 设施多选：限定在契约 HotelFacility 枚举内，复选框不会产生重复取值 */
+.facility-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 12px;
+}
+
+.facility-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+/* 图片行：地址 / 说明 / 展示顺序 / 删除 */
+.image-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.image-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 160px) 72px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.image-sort {
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .image-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .form-hint {

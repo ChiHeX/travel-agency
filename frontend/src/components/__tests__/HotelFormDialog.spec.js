@@ -14,7 +14,12 @@ import HotelFormDialog from '../HotelFormDialog.vue'
  *   <li><b>编辑时只有用户真的改过状态才提交 {@code status}</b>：后端的口径是"未提交即保持库内现值"，
  *       每次编辑都带上旧状态会让并发停用被静默覆盖（只改地址的保存把刚停用的酒店重新启用）；</li>
  *   <li>{@code longitude} / {@code latitude} 必须是 JSON number（或 null），不能是字符串；</li>
- *   <li>契约里酒店<b>没有 city</b>，表单不得凭空提交后端不认识的字段（严格模式下就是 400）；</li>
+ *   <li>{@code city} 是本次契约新增的<b>必填</b>字段：必须随请求提交。存量资料可能是迁移脚本补的
+ *       空串，此时照常提交空串、由后端 422 提示补录，页面不得替运营编一个城市名；</li>
+ *   <li>{@code starRating} 只接受 1～5 的整数或 null（官方星级，没有依据时必须 null）；
+ *       {@code facilities} 限定在 {@code HotelFacility} 枚举内且不能重复（契约 uniqueItems）；
+ *       {@code checkInTime} / {@code checkOutTime} 是 {@code HH:mm} 的 {@code ClockTime}；
+ *       {@code images} 最多 10 张、url 必须是 http/https 绝对地址，且按整体替换提交（{@code []} 即清空）；</li>
  *   <li>可空字段清空时要提交 {@code null}，PUT 才能真正把库内字段清掉。</li>
  * </ul>
  */
@@ -42,8 +47,18 @@ vi.mock('element-plus', () => ({
 const disabledHotel = {
   id: '31',
   name: '苍山脚下的演示酒店',
+  city: '大理',
   address: '云南省大理市',
   contactPhone: '0872-1234567',
+  coverUrl: 'https://example.com/hotel-31-cover.jpg',
+  starRating: 3,
+  facilities: ['WIFI', 'PARKING'],
+  checkInTime: '14:00',
+  checkOutTime: '12:00',
+  images: [
+    { url: 'https://example.com/hotel-31-1.jpg', alt: '大堂', sortOrder: 1 },
+    { url: 'https://example.com/hotel-31-2.jpg', alt: null, sortOrder: 2 }
+  ],
   longitude: 100.1005,
   latitude: 25.6896,
   intro: '演示简介',
@@ -88,6 +103,13 @@ function buttonByText(wrapper, text) {
   return button
 }
 
+/** 设施复选框：按契约枚举取值定位。 */
+function facilityCheckbox(wrapper, value) {
+  const input = wrapper.findAll('.facility-option input').find((item) => item.element.value === value)
+  if (!input) throw new Error(`找不到设施复选框「${value}」`)
+  return input
+}
+
 beforeEach(() => {
   createHotel.mockReset()
   updateHotel.mockReset()
@@ -105,6 +127,7 @@ describe('HotelFormDialog', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue(' 大理演示酒店 ')
+    await field(wrapper, '城市').setValue(' 大理 ')
     await field(wrapper, '联系电话').setValue('0872-1234567')
     await field(wrapper, '经度').setValue('100.165')
     await field(wrapper, '纬度').setValue('25.694')
@@ -116,25 +139,34 @@ describe('HotelFormDialog', () => {
     const payload = createHotel.mock.calls[0][0]
     expect(payload).toEqual({
       name: '大理演示酒店',
+      // city 是本次契约新增的必填字段：必须随请求提交（这里是去空格后的值）
+      city: '大理',
       address: null,
       contactPhone: '0872-1234567',
+      coverUrl: null,
+      // images / facilities 按整体替换提交：没有内容时就是 []，写进库内即清空
+      images: [],
+      starRating: null,
+      facilities: [],
+      checkInTime: null,
+      checkOutTime: null,
       longitude: 100.165,
       latitude: 25.694,
       intro: null,
       dataSource: '团队测试数据',
       status: 'ACTIVE'
     })
-    // 契约外字段一律不上送：契约 Hotel 没有 city，id / createdAt / updatedAt 由后端与数据库决定。
-    expect(payload).not.toHaveProperty('city')
+    // 契约外字段一律不上送：id / createdAt / updatedAt 由后端与数据库决定。
     expect(payload).not.toHaveProperty('id')
     expect(payload).not.toHaveProperty('createdAt')
+    expect(payload).not.toHaveProperty('updatedAt')
     expect(wrapper.emitted('saved')).toHaveLength(1)
     // 载荷要说明这次走的是 POST：调用方据此把列表刷到第 1 页（新建记录排在第一页）。
     expect(wrapper.emitted('saved')[0][0]).toEqual({ hotel: { id: '1', status: 'ACTIVE' }, created: true })
     expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([false])
   })
 
-  it('编辑已停用的酒店：回填 DISABLED，未改动状态时不提交 status，不会静默改成启用', async () => {
+  it('编辑已停用的酒店：回填 DISABLED 与新增字段，未改动状态时不提交 status，不会静默改成启用', async () => {
     updateHotel.mockResolvedValue({ ...disabledHotel, name: '苍山脚下的演示酒店（改名）' })
     const wrapper = mountDialog(disabledHotel)
     await flushPromises()
@@ -142,6 +174,15 @@ describe('HotelFormDialog', () => {
     expect(wrapper.find('select').element.value).toBe('DISABLED')
     expect(field(wrapper, '经度').element.value).toBe('100.1005')
     expect(field(wrapper, '联系电话').element.value).toBe('0872-1234567')
+    // 本次契约新增的字段同样要回填，否则"载入服务器数据"或一次普通保存会把它们清掉
+    expect(field(wrapper, '城市').element.value).toBe('大理')
+    expect(field(wrapper, '封面图地址').element.value).toBe('https://example.com/hotel-31-cover.jpg')
+    expect(field(wrapper, '入住时间').element.value).toBe('14:00')
+    expect(field(wrapper, '退房时间').element.value).toBe('12:00')
+    expect(field(wrapper, '官方星级').element.value).toBe('3')
+    expect(facilityCheckbox(wrapper, 'WIFI').element.checked).toBe(true)
+    expect(facilityCheckbox(wrapper, 'GYM').element.checked).toBe(false)
+    expect(wrapper.findAll('.image-row')).toHaveLength(2)
 
     await field(wrapper, '酒店名称').setValue('苍山脚下的演示酒店（改名）')
     await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -151,7 +192,16 @@ describe('HotelFormDialog', () => {
     expect(updateHotel.mock.calls[0][0]).toBe('31')
     expect(updateHotel.mock.calls[0][1]).toMatchObject({
       name: '苍山脚下的演示酒店（改名）',
+      city: '大理',
       contactPhone: '0872-1234567',
+      starRating: 3,
+      facilities: ['WIFI', 'PARKING'],
+      checkInTime: '14:00',
+      checkOutTime: '12:00',
+      images: [
+        { url: 'https://example.com/hotel-31-1.jpg', alt: '大堂', sortOrder: 1 },
+        { url: 'https://example.com/hotel-31-2.jpg', alt: null, sortOrder: 2 }
+      ],
       longitude: 100.1005,
       latitude: 25.6896
     })
@@ -547,5 +597,187 @@ describe('HotelFormDialog', () => {
     expect(wrapper.text()).toContain('数据来源说明不能为空')
     expect(wrapper.emitted('saved')).toBeUndefined()
     expect(field(wrapper, '酒店名称').element.value).toBe('大理演示酒店')
+  })
+})
+
+/**
+ * 本次契约新增的酒店字段（`city`、`coverUrl`、`starRating`、`facilities`、`checkInTime`、
+ * `checkOutTime`、`images`）在表单里的提交口径。
+ *
+ * <p>这些字段有一个共同的坑：契约把 `city` 设为必填、把 `images` / `facilities` 定为
+ * **整体替换**。因此"没改就不发"在这里不是省事，而是把库内的图片和设施清空 ——
+ * 表单必须始终把完整状态发出去（空值也发）。</p>
+ */
+describe('HotelFormDialog（契约新增字段）', () => {
+  it('编辑存量资料：city 是迁移脚本补的空串时照常提交空串，由后端 422 提示补录', async () => {
+    updateHotel.mockResolvedValue({ ...disabledHotel, city: '' })
+    const wrapper = mountDialog({ ...disabledHotel, city: '' })
+    await flushPromises()
+
+    expect(field(wrapper, '城市').element.value).toBe('')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    // 页面不编造城市，也不因为空城市就卡住用户：请求照发，city 是空串
+    expect(updateHotel).toHaveBeenCalledTimes(1)
+    expect(updateHotel.mock.calls[0][1].city).toBe('')
+  })
+
+  it('后端对空城市的 422 message 就地展示，用户输入不丢', async () => {
+    createHotel.mockRejectedValue(
+      Object.assign(new Error('城市不能为空'), { status: 422, code: 'VALIDATION_ERROR' })
+    )
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('城市不能为空')
+    expect(field(wrapper, '酒店名称').element.value).toBe('大理演示酒店')
+  })
+
+  it('官方星级：未选择提交 null，选择后提交数字（不是字符串）', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    expect(field(wrapper, '官方星级').element.value).toBe('')
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await field(wrapper, '官方星级').setValue('4')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(createHotel).toHaveBeenCalledTimes(1)
+    expect(createHotel.mock.calls[0][0].starRating).toBe(4)
+  })
+
+  it('设施限定在契约枚举内且不重复：勾选提交枚举数组，再点一次即取消', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    // 下拉里只可能出现契约 HotelFacility 的取值，没有自由文本入口
+    const values = wrapper.findAll('.facility-option input').map((input) => input.element.value)
+    expect(values).toContain('WIFI')
+    expect(values).toContain('ACCESSIBLE_FACILITIES')
+    expect(values).toHaveLength(14)
+
+    await facilityCheckbox(wrapper, 'GYM').setValue(true)
+    await facilityCheckbox(wrapper, 'SWIMMING_POOL').setValue(true)
+    // 同一项点两次不会产生重复取值（契约 uniqueItems: true）
+    await facilityCheckbox(wrapper, 'GYM').setValue(false)
+    await facilityCheckbox(wrapper, 'GYM').setValue(true)
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    const payload = createHotel.mock.calls[0][0]
+    expect(payload.facilities).toEqual(['SWIMMING_POOL', 'GYM'])
+    expect(new Set(payload.facilities).size).toBe(payload.facilities.length)
+  })
+
+  it('入住 / 退房时间：留空提交 null，格式非法时本地拦下，合法 HH:mm 原样提交', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+
+    // 契约 ClockTime 不接受 9:00 / 24:00 / 带秒或时区的写法
+    for (const invalid of ['9:00', '24:00', '14:60', '14:00:00', '14时00分']) {
+      await field(wrapper, '入住时间').setValue(invalid)
+      await buttonByText(wrapper, '保存酒店').trigger('click')
+      await flushPromises()
+      expect(createHotel).not.toHaveBeenCalled()
+    }
+
+    await field(wrapper, '入住时间').setValue('14:00')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).toHaveBeenCalledTimes(1)
+    expect(createHotel.mock.calls[0][0].checkInTime).toBe('14:00')
+    // 另一项留空时提交 null（清空），不是空字符串
+    expect(createHotel.mock.calls[0][0].checkOutTime).toBeNull()
+  })
+
+  it('图片：url 必须是 http/https 绝对地址，提交时映射成 { url, alt, sortOrder }', async () => {
+    createHotel.mockResolvedValue({ id: '1', status: 'ACTIVE' })
+    const wrapper = mountDialog()
+    await flushPromises()
+
+    await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '数据来源说明').setValue('团队测试数据')
+
+    await buttonByText(wrapper, '+ 添加图片').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.image-row')).toHaveLength(1)
+
+    // 非法地址（相对路径 / 其它协议）本地拦下，不发给后端
+    await wrapper.find('.image-url').setValue('example.com/hotel-1.jpg')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).not.toHaveBeenCalled()
+
+    await wrapper.find('.image-url').setValue('ftp://example.com/hotel-1.jpg')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    expect(createHotel).not.toHaveBeenCalled()
+
+    await wrapper.find('.image-url').setValue(' https://example.com/hotel-1.jpg ')
+    await wrapper.find('.image-alt').setValue('大堂')
+    await wrapper.find('.image-sort').setValue('2')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    expect(createHotel).toHaveBeenCalledTimes(1)
+    expect(createHotel.mock.calls[0][0].images).toEqual([
+      { url: 'https://example.com/hotel-1.jpg', alt: '大堂', sortOrder: 2 }
+    ])
+  })
+
+  it('清空全部图片时提交 []（整体替换即清空库内图片记录），并提交 null 封面', async () => {
+    updateHotel.mockResolvedValue({ ...disabledHotel, images: [], coverUrl: null })
+    const wrapper = mountDialog(disabledHotel)
+    await flushPromises()
+
+    expect(wrapper.findAll('.image-row')).toHaveLength(2)
+    await buttonByText(wrapper, '删除').trigger('click')
+    await buttonByText(wrapper, '删除').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.image-row')).toHaveLength(0)
+
+    await field(wrapper, '封面图地址').setValue('')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+
+    const payload = updateHotel.mock.calls[0][1]
+    expect(payload.images).toEqual([])
+    expect(payload.coverUrl).toBeNull()
+  })
+
+  it('图片最多 10 张：到达上限后「添加图片」不再增加行', async () => {
+    const wrapper = mountDialog({
+      ...disabledHotel,
+      images: Array.from({ length: 10 }, (_unused, index) => ({
+        url: `https://example.com/hotel-31-${index + 1}.jpg`,
+        alt: null,
+        sortOrder: index + 1
+      }))
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.image-row')).toHaveLength(10)
+    expect(buttonByText(wrapper, '+ 添加图片').attributes('disabled')).toBeDefined()
+    await buttonByText(wrapper, '+ 添加图片').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.image-row')).toHaveLength(10)
   })
 })

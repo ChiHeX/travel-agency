@@ -8,6 +8,7 @@ import AppIcon from '@/components/AppIcon.vue'
 import DepartureCard from '@/components/DepartureCard.vue'
 import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
+import RouteItinerary from '@/components/RouteItinerary.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -111,17 +112,6 @@ function isDepartureBookable(item) {
 
 function selectDeparture(item) {
   if (isDepartureBookable(item)) selectedDepartureId.value = item.id
-}
-
-function itineraryType(type) {
-  const labels = {
-    ATTRACTION: '景点',
-    MEAL: '餐食',
-    TRANSPORT: '交通',
-    ACTIVITY: '活动',
-    OTHER: '其他'
-  }
-  return labels[type] || type || '行程'
 }
 
 async function shareRoute() {
@@ -250,43 +240,7 @@ onBeforeUnmount(() => setMapItinerary([]))
             <span class="sub-hint">{{ data.route.durationDays }} 天全程</span>
           </div>
 
-          <div v-if="data.itinerary && data.itinerary.length" class="day-itinerary-list">
-            <div v-for="item in data.itinerary" :key="item.id" class="day-row-card">
-              <div class="day-badge">D{{ item.dayNumber }}</div>
-              <div class="day-content">
-                <h5>{{ item.title }}</h5>
-                <p>{{ item.description || '暂无当日行程说明。' }}</p>
-                <div v-if="item.items && item.items.length" class="itinerary-items-list">
-                  <div v-for="entry in item.items" :key="entry.id" class="itinerary-item-row">
-                    <span class="itinerary-item-type">{{ itineraryType(entry.itemType) }}</span>
-                    <div class="itinerary-item-copy">
-                      <strong>{{ entry.name }}</strong>
-                      <span v-if="entry.description">{{ entry.description }}</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="day-meta-tags">
-                  <span class="meta-tag-item">
-                    <AppIcon name="bus" size="12" color="#0071e3" />
-                    <span>交通：{{ item.transportation || '暂无安排' }}</span>
-                  </span>
-                  <span>·</span>
-                  <span class="meta-tag-item">
-                    <AppIcon name="food" size="12" color="#ff9500" />
-                    <span>餐食：{{ item.meals || '暂无安排' }}</span>
-                  </span>
-                  <template v-if="item.hotelName">
-                    <span>·</span>
-                    <span class="meta-tag-item">
-                      <AppIcon name="hotel" size="12" color="#5856d6" />
-                      <span>住宿：{{ item.hotelName }}</span>
-                    </span>
-                  </template>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div v-else class="empty-box">暂无已发布的每日行程。</div>
+          <RouteItinerary :days="data.itinerary || []" :route-id="String(data.route.id)" />
         </div>
 
         <div class="sheet-section route-notes-section">
@@ -633,108 +587,6 @@ onBeforeUnmount(() => setMapItinerary([]))
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-/* Day Itinerary */
-.day-itinerary-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.day-row-card {
-  display: grid;
-  grid-template-columns: 32px 1fr;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-.day-badge {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: var(--theme-blue-tint);
-  color: var(--theme-blue);
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.day-content h5 {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 4px;
-}
-
-.day-content p {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  margin: 0 0 6px;
-}
-
-.itinerary-items-list {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0;
-  padding: 8px 0 2px 10px;
-  border-left: 2px solid rgba(0, 113, 227, 0.14);
-}
-
-.itinerary-item-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-}
-
-.itinerary-item-type {
-  flex: 0 0 auto;
-  padding: 2px 5px;
-  border-radius: 4px;
-  color: var(--theme-blue);
-  background: var(--theme-blue-tint);
-  font-size: 9px;
-  line-height: 1.2;
-}
-
-.itinerary-item-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.itinerary-item-copy strong {
-  color: var(--text-primary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.itinerary-item-copy span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.day-meta-tags {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.meta-tag-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
 }
 
 .detail-notes-grid {

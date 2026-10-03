@@ -20,7 +20,7 @@ import MapPreview from '../MapPreview.vue'
  */
 
 const leaflet = vi.hoisted(() => {
-  const calls = { markers: [], polylines: [], circles: [], fitBounds: [], clearLayers: 0 }
+  const calls = { markers: [], polylines: [], circles: [], fitBounds: [], tiles: [], clearLayers: 0 }
   const overlays = { addTo: () => overlays, clearLayers: () => { calls.clearLayers += 1 } }
   const map = {
     setView: () => {},
@@ -37,7 +37,13 @@ const leaflet = vi.hoisted(() => {
   }
   const L = {
     map: () => map,
-    tileLayer: () => ({ addTo: () => {} }),
+    tileLayer: (url, options) => {
+      const layer = { url, options, events: {}, off: vi.fn(), remove: vi.fn() }
+      layer.on = (event, handler) => { layer.events[event] = handler; return layer }
+      layer.addTo = () => layer
+      calls.tiles.push(layer)
+      return layer
+    },
     control: { zoom: () => ({ addTo: () => {} }) },
     layerGroup: () => overlays,
     divIcon: (options) => options,
@@ -77,9 +83,14 @@ function mountMap(props = {}) {
 }
 afterEach(() => {
   mountedMaps.splice(0).forEach((wrapper) => wrapper.unmount())
+  vi.unstubAllEnvs()
 })
 
 beforeEach(() => {
+  window.localStorage.clear()
+  vi.stubEnv('VITE_MAP_PROVIDER', 'tianditu')
+  vi.stubEnv('VITE_TIANDITU_KEY', '')
+  calls.tiles.length = 0
   calls.markers.length = 0
   calls.polylines.length = 0
   calls.circles.length = 0
@@ -88,6 +99,70 @@ beforeEach(() => {
 })
 
 describe('MapPreview 地图坐标消费规则', () => {
+  it('未配置 Key 时提示，不发送无授权的天地图请求；仍可切换 OSM', async () => {
+    const wrapper = mountMap()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('天地图尚未配置')
+    expect(calls.tiles).toHaveLength(0)
+    await wrapper.get('[data-provider=osm]').trigger('click')
+    expect(calls.tiles[0].url).toBe('https://tile.openstreetmap.org/{z}/{x}/{y}.png')
+    expect(calls.tiles[0].options.attribution).toContain('openstreetmap.org/copyright')
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+  })
+
+  it('天地图加载底图与中文注记；切换仅移除底图，保留业务覆盖物和视角', async () => {
+    vi.stubEnv('VITE_TIANDITU_KEY', ' test-key ')
+    const wrapper = mountMap({ itinerary: [{ items: [
+      { name: '西湖', longitude: 120.13, latitude: 30.24 }
+    ] }] })
+    expect(calls.tiles).toHaveLength(2)
+    expect(calls.tiles[0].url).toContain('/vec_w/wmts?')
+    expect(calls.tiles[1].url).toContain('/cva_w/wmts?')
+    for (const layer of calls.tiles) {
+      expect(layer.url).toContain('TILEMATRIXSET=w')
+      expect(layer.url).toContain('TILEROW={y}&TILECOL={x}&tk=test-key')
+      expect(layer.options.maxNativeZoom).toBe(18)
+    }
+    const originalLayers = [...calls.tiles]
+    const clearCount = calls.clearLayers
+    const fitCount = calls.fitBounds.length
+    await wrapper.get('[data-provider=osm]').trigger('click')
+    originalLayers.forEach((layer) => expect(layer.remove).toHaveBeenCalledOnce())
+    expect(calls.clearLayers).toBe(clearCount)
+    expect(calls.fitBounds).toHaveLength(fitCount)
+    expect(window.localStorage.getItem('travel-agency-map-provider')).toBe('osm')
+    await wrapper.get('[data-provider=tianditu]').trigger('click')
+    expect(calls.tiles[2].remove).toHaveBeenCalledOnce()
+    expect(calls.tiles).toHaveLength(5)
+  })
+
+  it('恢复地图源偏好；加载失败可提示并在切换后清除', async () => {
+    window.localStorage.setItem('travel-agency-map-provider', 'osm')
+    const wrapper = mountMap()
+    expect(wrapper.get('[data-provider=osm]').attributes('aria-pressed')).toBe('true')
+    calls.tiles[0].events.tileerror()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('OpenStreetMap 加载失败')
+    await wrapper.get('[data-provider=tianditu]').trigger('click')
+    expect(wrapper.text()).toContain('天地图尚未配置')
+    expect(wrapper.text()).not.toContain('OpenStreetMap 加载失败')
+  })
+
+  it('配置 OSM 为默认源；存储不可用时仍能切换', async () => {
+    vi.stubEnv('VITE_MAP_PROVIDER', 'osm')
+    const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    try {
+      const wrapper = mountMap()
+      expect(wrapper.get('[data-provider=osm]').attributes('aria-pressed')).toBe('true')
+      await wrapper.get('[data-provider=tianditu]').trigger('click')
+      expect(wrapper.text()).toContain('天地图尚未配置')
+    } finally {
+      read.mockRestore()
+      write.mockRestore()
+    }
+  })
+
   it('行程模式：按行程顺序标注并连线，半截坐标与越界坐标一律丢弃', () => {
     mountMap({
       itinerary: [

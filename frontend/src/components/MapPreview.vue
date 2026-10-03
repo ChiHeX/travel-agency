@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { mapTileSources } from '@/api/mapTiles'
 
 const props = defineProps({
   itinerary: { type: Array, default: () => [] },
@@ -12,8 +13,41 @@ const props = defineProps({
   sheetSize: { type: String, default: 'half' }
 })
 const mapElement = ref(null)
+const mapProvider = ref(import.meta.env.VITE_MAP_PROVIDER === 'osm' ? 'osm' : 'tianditu')
+const mapMessage = ref('')
+const tiandituKey = (import.meta.env.VITE_TIANDITU_KEY || '').trim()
+try {
+  const saved = window.localStorage.getItem('travel-agency-map-provider')
+  if (saved === 'osm' || saved === 'tianditu') mapProvider.value = saved
+} catch { /* 浏览器禁用存储时仍允许切换地图。 */ }
 let mapInstance
 let overlays
+let baseLayers = []
+
+function updateMapProvider() {
+  if (!mapInstance) return
+  // remove 事件负责解绑 Leaflet 的地图监听与署名，必须先移除再清理事件。
+  baseLayers.forEach((layer) => { layer.remove(); layer.off() })
+  baseLayers = []
+  mapMessage.value = mapProvider.value === 'tianditu' && !tiandituKey
+    ? '天地图尚未配置，暂时无法显示底图，可切换 OpenStreetMap。' : ''
+  baseLayers = mapTileSources(mapProvider.value, tiandituKey).map(({ url, options }) => {
+    const layer = L.tileLayer(url, options)
+    layer.on('tileerror', () => {
+      mapMessage.value = mapProvider.value === 'tianditu'
+        ? '天地图加载失败，请检查网络或地图服务授权，也可切换地图源。'
+        : 'OpenStreetMap 加载失败，请检查网络或切换天地图。'
+    })
+    return layer.addTo(mapInstance)
+  })
+}
+
+watch(mapProvider, () => {
+  updateMapProvider()
+  try {
+    window.localStorage.setItem('travel-agency-map-provider', mapProvider.value)
+  } catch { /* 存储不可用不影响地图。 */ }
+})
 
 function updateMinZoom() {
   if (!mapInstance) return
@@ -66,16 +100,14 @@ function renderMap() {
   if (!mapInstance) {
     mapInstance = L.map(mapElement.value, {
       zoomControl: false,
+      maxZoom: 19,
       zoomSnap: 0.25,
       worldCopyJump: true,
       // Keep the poles inside the viewport while allowing wrapped longitude.
       maxBounds: L.latLngBounds([-85.05112878, -900], [85.05112878, 900]),
       maxBoundsViscosity: 1
     })
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(mapInstance)
+    updateMapProvider()
     L.control.zoom({ position: 'topright' }).addTo(mapInstance)
     overlays = L.layerGroup().addTo(mapInstance)
     updateMinZoom()
@@ -166,6 +198,8 @@ watch(() => props.focusedPlace, focusPlace)
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onMapResize)
   mapInstance?.remove()
+  baseLayers.forEach((layer) => layer.off())
+  baseLayers = []
   mapInstance = undefined
   overlays = undefined
 })
@@ -179,11 +213,19 @@ onBeforeUnmount(() => {
         <path d="M4 14 21 4l-5 17-3.5-7.5L4 14Z" />
       </svg>
     </button>
+    <div class="map-source-control" role="group" aria-label="地图源">
+      <button type="button" data-provider="tianditu" aria-label="切换天地图" title="天地图"
+              :aria-pressed="mapProvider === 'tianditu'" @click="mapProvider = 'tianditu'">天地图</button>
+      <button type="button" data-provider="osm" aria-label="切换 OpenStreetMap" title="OpenStreetMap"
+              :aria-pressed="mapProvider === 'osm'" @click="mapProvider = 'osm'">OSM</button>
+      <p v-if="mapMessage" role="status">{{ mapMessage }}</p>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .map-preview-card {
+  --map-bottom-offset: 0px;
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -195,6 +237,55 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
 }
+
+.map-source-control {
+  position: absolute;
+  z-index: 500;
+  bottom: calc(var(--map-bottom-offset) + 30px);
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+}
+.map-source-control button {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.map-source-control button:first-child { border-radius: 4px 4px 0 0; border-bottom: 1px solid #ccc; }
+.map-source-control button:nth-child(2) { border-radius: 0 0 4px 4px; }
+.map-source-control button:hover,
+.map-source-control button:focus-visible { background: #f4f4f4; }
+.map-source-control button[aria-pressed="true"] { background: #e8f2ff; color: #0071e3; }
+.map-source-control p {
+  position: absolute;
+  right: calc(100% + 8px);
+  bottom: 0;
+  width: min(220px, calc(100vw - 70px));
+  margin: 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.25);
+  line-height: 1.5;
+  color: #92400e;
+}
+.map-canvas.leaflet-touch ~ .map-source-control {
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  box-shadow: none;
+}
+.map-canvas.leaflet-touch ~ .map-source-control button { height: 30px; }
 
 .map-canvas :deep(.route-marker) {
   display: grid;
@@ -241,7 +332,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .map-preview-card { top: 52px; }
-  .map-preview-card.drawer-open.sheet-half :deep(.leaflet-bottom) { bottom: calc(55vh + 14px); }
-  .map-preview-card.drawer-open.sheet-collapsed :deep(.leaflet-bottom) { bottom: 110px; }
+  .map-preview-card.drawer-open.sheet-half { --map-bottom-offset: calc(55vh + 14px); }
+  .map-preview-card.drawer-open.sheet-collapsed { --map-bottom-offset: 110px; }
+  .map-preview-card :deep(.leaflet-bottom) { bottom: var(--map-bottom-offset); }
 }
 </style>

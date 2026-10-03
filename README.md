@@ -6,7 +6,7 @@
 
 - 后端：Java 21、Spring Boot 4.0.8、Maven、MyBatis-Plus 3.5.17、MySQL 9.7
 - 前端：Vue 3、JavaScript、Vite、Vue Router、Pinia、Element Plus、npm、Leaflet
-- 第三方适配：OpenStreetMap 底图、支付宝沙箱回调适配点
+- 第三方适配：天地图 / OpenStreetMap 可切换底图、支付宝沙箱回调适配点
 
 ## 目录
 
@@ -80,7 +80,17 @@ npm run dev
 
 访问：`http://localhost:5173`。Vite 会将 `/api` 代理到 `http://localhost:8080`。
 
-主地图无需 API Key。地图使用 Leaflet 加载 OpenStreetMap 公共瓦片；线路详情加载后，在主地图上显示行程数据中的景点坐标和顺序连线。没有坐标时仅显示底图，详情面板提示录入坐标。请为新录入的坐标使用 WGS-84，并核对已有坐标的来源；若已有数据是高德 GCJ-02 坐标，直接显示在 OpenStreetMap 底图上可能产生偏移。公共瓦片仅供符合 [OpenStreetMap 使用政策](https://operations.osmfoundation.org/policies/tiles/) 的交互浏览使用，地图中必须保留 OpenStreetMap 贡献者署名。
+主地图使用 Leaflet，默认加载天地图矢量底图与中文地名注记，保留 OpenStreetMap（OSM）。地图右侧「地图源」可以随时切换，浏览器记住选择；切换保留当前视角、景点标记与行程连线。未配置天地图 Key 时显示提示，不请求无授权瓦片，可手动切换 OSM。
+
+在 [天地图开放平台](https://lbs.tianditu.gov.cn/) 创建浏览器端应用、取得可调用地图瓦片服务的 Key，并按平台要求设置实际访问域名（本地联调包含 localhost）。在 `frontend/.env.local` 中填写：
+
+```dotenv
+VITE_TIANDITU_KEY=你的天地图Key
+```
+
+可选 `VITE_MAP_PROVIDER=osm` 将初始源设为 OSM（浏览器已保存的选择优先）。`.env.local` 已被 Git 忽略，真实 Key 不得提交。浏览器端 Key 会进入前端构建并随瓦片请求可见，应使用平台提供的域名限制，不能填服务端私密凭据。底图或注记加载失败会提示检查网络或地图服务授权，不自动跳转到可能同样无法访问的 OSM。
+
+线路详情加载后，在主地图上显示行程数据中的景点坐标和顺序连线。没有坐标时仅显示底图，详情面板提示录入坐标。坐标继续使用 WGS-84；天地图使用与 Leaflet 默认投影一致的 Web Mercator（`vec_w` / `cva_w`）WMTS。已有高德 GCJ-02 坐标需核对来源，切换底图不会自动转换历史坐标。地图保留当前平台署名与来源链接；OSM 公共瓦片仅供符合 [OpenStreetMap 使用政策](https://operations.osmfoundation.org/policies/tiles/) 的交互浏览使用，不批量下载或预取。
 
 演示管理员账号（执行 `test-data.sql` 后）：`admin / password`。该账号和所有 SQL 测试数据仅用于软件测试、课程演示，不代表真实旅行社经营数据。
 

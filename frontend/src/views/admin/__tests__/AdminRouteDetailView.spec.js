@@ -68,7 +68,6 @@ const dayOnDisabledHotel = {
   items: []
 }
 
-/** 只确定住宿标准的一天：住宿标准必填、不能带酒店，早餐用的是 false（不是"未说明"）。 */
 const standardDay = {
   id: '72',
   dayNumber: 2,
@@ -123,12 +122,6 @@ function editDayButton(wrapper, index = 0) {
   return card.findAll('button').find((item) => item.text().trim() === '编辑')
 }
 
-/**
- * 酒店下拉里的候选项（不含"不指定"）。
- *
- * <p>不能再用"选项文案里含有「酒店」"来筛：住宿安排下拉的第一项就是「指定酒店」，
- * 那样会把住宿安排类型误当成酒店候选项。这里按"含有『不指定』占位项"定位那个 select。</p>
- */
 function hotelSelect(wrapper) {
   const select = wrapper.findAll('select')
     .find((item) => item.findAll('option').some((option) => option.text() === '不指定'))
@@ -140,7 +133,6 @@ function hotelOptions(wrapper) {
   return hotelSelect(wrapper).findAll('option').filter((option) => option.text() !== '不指定')
 }
 
-/** 住宿安排类型下拉（契约 AccommodationType 的四种取值之一）。 */
 function accommodationSelect(wrapper) {
   const select = wrapper.findAll('select')
     .find((item) => item.findAll('option').some((option) => option.text() === '当天不含住宿'))
@@ -148,7 +140,6 @@ function accommodationSelect(wrapper) {
   return select
 }
 
-/** 早餐三态下拉（未说明 / 含 / 不含），只在住宿安排明确时出现。 */
 function breakfastSelect(wrapper) {
   const select = wrapper.findAll('select')
     .find((item) => item.findAll('option').some((option) => option.text() === '未说明'))
@@ -276,20 +267,6 @@ describe('AdminRouteDetailView（行程文本按码点校验）', () => {
   })
 })
 
-/**
- * 每日行程的住宿安排字段（契约 {@code ItineraryDayRequest} 新增的
- * {@code accommodationType} / {@code accommodationStandard} / {@code roomType} /
- * {@code breakfastIncluded} / {@code accommodationNote}）。
- *
- * <p>契约把这三件事写死了，页面必须在提交前就调成自洽：</p>
- * <ol>
- *   <li>{@code HOTEL} 必须有酒店；{@code STANDARD} 必须有住宿标准；{@code STANDARD} /
- *       {@code NONE} / {@code PENDING} 都不能带酒店；</li>
- *   <li>{@code breakfastIncluded} 是三态，{@code false}（不含早餐）必须能与"未说明"分别提交；</li>
- *   <li>请求体是**整体替换**：未提交的可空字段会被服务端清成 {@code null}，
- *       所以表单永远上送完整状态，不靠"省略字段"表达语义。</li>
- * </ol>
- */
 describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
   async function openNewDayDialog() {
     const wrapper = mountView()
@@ -302,7 +279,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
   it('新增行程默认「住宿待确认」：不会推断成"不含住宿"，全部住宿字段都显式提交', async () => {
     const wrapper = await openNewDayDialog()
 
-    // 契约：未提交 accommodationType 时按 hotelId 推断，且永远不会推断成 NONE
     expect(accommodationSelect(wrapper).element.value).toBe('PENDING')
     expect(hotelSelect(wrapper).element.value).toBe('')
 
@@ -342,7 +318,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
       hotelId: '31',
       accommodationType: 'HOTEL',
       roomType: '双床房',
-      // false 必须原样提交：省略它会被服务端当成"未提交"而清成 null
       breakfastIncluded: false,
       accommodationNote: '如遇满房将安排同级别酒店'
     })
@@ -381,7 +356,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
   it('「只确定住宿标准」必须填住宿标准，且提交时清空酒店', async () => {
     const wrapper = await openNewDayDialog()
 
-    // 先选了酒店，再改成"只确定住宿标准"：酒店必须被清掉（契约不允许 STANDARD 带酒店）
     await hotelSelect(wrapper).setValue('31')
     await flushPromises()
     await accommodationSelect(wrapper).setValue('STANDARD')
@@ -419,7 +393,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
     await flushPromises()
 
     expect(hotelSelect(wrapper).element.value).toBe('')
-    // 不含住宿时房型 / 早餐没有意义，界面也不再给入口
     expect(roomTypeInput(wrapper).exists()).toBe(false)
     expect(wrapper.findAll('select').some((select) => select.findAll('option').some((option) => option.text() === '未说明'))).toBe(false)
 
@@ -434,7 +407,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
       accommodationStandard: null,
       roomType: null,
       breakfastIncluded: null,
-      // 住宿说明在不含住宿时仍然有意义（例如"当晚夜车返程"）
       accommodationNote: '当晚夜车返程，不含住宿'
     })
   })
@@ -477,7 +449,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
     expect(accommodationSelect(wrapper).element.value).toBe('STANDARD')
     expect(standardInput(wrapper).element.value).toBe('市区舒适型酒店')
     expect(roomTypeInput(wrapper).element.value).toBe('大床房')
-    // false 与"未说明"必须能区分：下拉回填的是"不含早餐"，不是空串
     expect(breakfastSelect(wrapper).element.value).toBe('false')
     expect(noteInput(wrapper).element.value).toBe('以出团通知为准')
 

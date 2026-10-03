@@ -235,14 +235,6 @@ class HotelAssignmentConcurrencyIntegrationTest {
     // 辅助
     // ------------------------------------------------------------------
 
-    /**
-     * 第 {@code dayNumber} 天安排 {@code hotelId} 的行程请求。
-     *
-     * <p>{@code accommodationType} 显式写成 {@link AccommodationType#HOTEL}：本类实测的是
-     * "停用酒店不能再被安排进新行程"这条规则，它只在 {@code HOTEL} 分支上成立。
-     * 不写类型时服务端会按 {@code hotelId} 推断出同一个结果，但显式写出来才能让
-     * "这条用例在测哪种住宿安排"一目了然 —— 若哪天推断口径变了，隐式写法会让用例悄悄测不到东西。</p>
-     */
     private ItineraryDayRequest dayRequest(int dayNumber, Long hotelId) {
         return new ItineraryDayRequest(dayNumber, "第 " + dayNumber + " 天", "抵达并入住", null, null,
                 AccommodationType.HOTEL, null, null, null, null, hotelId);
@@ -252,8 +244,6 @@ class HotelAssignmentConcurrencyIntegrationTest {
     private Long activeHotel(String name) {
         Hotel hotel = new Hotel();
         hotel.name = name;
-        // city 是契约 HotelCreateRequest 的必填项（库内为 NOT NULL DEFAULT ''）：
-        // 夹具也按"真实建档"的口径填写，避免造出一批不存在于真实数据里的无城市酒店。
         hotel.city = "大理";
         hotel.address = "云南省昆明市并发回归路 1 号";
         hotel.dataSource = "团队测试数据";
@@ -270,8 +260,6 @@ class HotelAssignmentConcurrencyIntegrationTest {
         day.dayNumber = dayNumber;
         day.title = "第 " + dayNumber + " 天";
         day.hotelId = hotelId;
-        // 列有默认值，但数据库不允许"关联了酒店、类型却是待确认"这种自相矛盾的行
-        // （约束 ck_day_accommodation），所以直接落库的夹具必须显式写明类型。
         day.accommodationType = hotelId == null ? AccommodationType.PENDING : AccommodationType.HOTEL;
         days.insert(day);
         return day.id;

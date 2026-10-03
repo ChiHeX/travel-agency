@@ -144,22 +144,13 @@ class RouteRequestContractTest {
                 1, "ATTRACTION", "大理古城", null, null, null, null)).isEmpty());
     }
 
-    /**
-     * 住宿安排的自洽规则（契约 {@code ItineraryDayRequest} 的住宿规则）：
-     * HOTEL 必须带酒店；STANDARD 必须写住宿标准且不带酒店；NONE / PENDING 不得带酒店。
-     * 未提交类型时按 hotelId 推断，且绝不推断成 NONE（"没填酒店"不等于"不含住宿"）。
-     */
     @Test
     void itineraryDayRequestKeepsAccommodationConsistentWithTheHotel() {
-        // HOTEL + 酒店：合法
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "HOTEL", null, 12L)).isEmpty());
-        // 未提交类型 + 酒店：按 HOTEL 推断，合法
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", null, null, 12L)).isEmpty());
-        // 未提交类型 + 无酒店：按 PENDING 推断，合法（不会被当成"不含住宿"）
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", null, null, null)).isEmpty());
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "PENDING", null, null)).isEmpty());
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "NONE", null, null)).isEmpty());
-        // STANDARD 必须写住宿标准
         assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "STANDARD", "市区舒适型酒店", null)).isEmpty());
 
         assertTrue(hasViolation(itineraryDay(1, "第一天", "HOTEL", null, null), "hotelId"),
@@ -172,11 +163,9 @@ class RouteRequestContractTest {
                 "PENDING 不该关联酒店");
         assertTrue(hasViolation(itineraryDay(1, "第一天", "STANDARD", "标准", 12L), "hotelId"),
                 "STANDARD 不该关联酒店");
-        // 枚举外的取值由 @Pattern 拒绝
         assertTrue(hasViolation(itineraryDay(1, "第一天", "CAMPING", null, null), "accommodationType"));
     }
 
-    /** 住宿字段的长度上限与时间格式按契约校验（超长与非法格式都应是 422，不落库）。 */
     @Test
     void itineraryDayRequestEnforcesAccommodationTextRules() {
         assertTrue(hasViolation(new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD",
@@ -186,7 +175,6 @@ class RouteRequestContractTest {
         assertTrue(hasViolation(new ItineraryDayRequest(1, "第一天", null, null, null, null,
                 null, null, null, "注".repeat(1001), null), "accommodationNote"));
 
-        // 三态布尔：false 与未提交是两种不同结果，都必须能通过校验
         assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "第一天", null, null, null, null,
                 null, null, Boolean.FALSE, null, null)).isEmpty());
         assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "第一天", null, null, null, null,
@@ -195,7 +183,6 @@ class RouteRequestContractTest {
                 null, null, null, null, null)).isEmpty());
     }
 
-    /** 每日行程的构造夹具：只关心住宿相关的几个字段时，其余字段保持为空。 */
     private static ItineraryDayRequest itineraryDay(Integer dayNumber, String title) {
         return itineraryDay(dayNumber, title, null, null, null);
     }

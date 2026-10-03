@@ -257,15 +257,6 @@ public class AdminRouteService {
                 .toList();
     }
 
-    /**
-     * 新增每日行程，对齐契约 POST /admin/routes/{routeId}/itinerary-days（201 + Location）。
-     *
-     * <p>住宿安排按 {@link AccommodationType} 处理：只有 {@code HOTEL} 才会去校验酒店，
-     * {@code STANDARD} / {@code NONE} / {@code PENDING} 必须不带酒店（这一点已在请求 DTO 上
-     * 由 {@code @AccommodationConsistent} 保证，走到这里时类型与 hotelId 已经自洽）。
-     * 不在服务层重复推断类型：请求 DTO 的 {@code effectiveAccommodationType()} 是
-     * 校验与落库共用的唯一入口，两处各推一套就会出现"校验通过但存下来的类型与酒店不一致"。</p>
-     */
     @Transactional
     public ItineraryDayView createDay(Long routeId, ItineraryDayRequest request, Long operatorId) {
         requireConsistentAccommodation(request);
@@ -289,13 +280,7 @@ public class AdminRouteService {
         return toDayView(dayMapper.selectById(day.id), List.of(), hotel);
     }
 
-    /**
-     * 修改每日行程，对齐契约 PUT /admin/itinerary-days/{dayId}。
-     *
-     * <p>酒店判定走 {@link #requireAssignableHotel}：把该天<b>当前已有的</b>酒店原样提交回来
-     * 不算重新安排，即使它后来被停用也允许 —— 否则某天的酒店一停用，这一天就再也保存不了；
-     * 只有"新指向一家停用酒店"（含从不指定改成停用酒店）才按 422 拒绝。</p>
-     */
+    /** 保留原酒店关联时允许已停用酒店；新关联必须启用。 */
     @Transactional
     public ItineraryDayView updateDay(Long dayId, ItineraryDayRequest request, Long operatorId) {
         requireConsistentAccommodation(request);
@@ -428,23 +413,14 @@ public class AdminRouteService {
     private ItineraryDayView toDayView(RouteItineraryDay day, List<RouteItineraryItem> items, Hotel hotel) {
         return new ItineraryDayView(day.id, day.routeId, day.dayNumber, day.title, day.description,
                 day.transportation, day.meals,
-                // 库内是 NOT NULL DEFAULT 'PENDING'，手工改库塞进白名单外的值也按待确认处理
                 AccommodationType.of(day.accommodationType),
                 day.accommodationStandard, day.roomType, booleanValue(day.breakfastIncluded),
                 day.accommodationNote,
                 day.hotelId, hotel == null ? null : hotel.name,
-                // 停用酒店仍保留 hotelName（历史事实不改写），但不再给出公开摘要：
-                // 详情端点对停用酒店返回 404，给出摘要就会出现一个点了必然报错的入口。
                 HotelSummaryView.forItinerary(hotel),
                 items.stream().map(ItineraryItemView::from).toList());
     }
 
-    /**
-     * 把每日行程的可编辑字段写进实体（当前只有新增路径使用；修改走显式列名 UPDATE）。
-     *
-     * <p>{@code accommodationType} 取请求的 {@code effectiveAccommodationType()}：
-     * 校验器与落库共用同一个推断入口，避免"校验时按一套口径推断、落库时按另一套"。</p>
-     */
     private static void applyDayFields(RouteItineraryDay day, ItineraryDayRequest request) {
         day.description = trimToNull(request.description());
         day.transportation = trimToNull(request.transportation());
@@ -457,16 +433,6 @@ public class AdminRouteService {
         day.accommodationNote = trimToNull(request.accommodationNote());
     }
 
-    /**
-     * 写库前兜底复核住宿安排的自洽性（类型 / 酒店关联 / 住宿标准），规则与请求层的
-     * {@code @AccommodationConsistent} 是同一份（{@link AccommodationType#violation}）。
-     *
-     * <p>请求在校验通过后才可能走到这里，因此这一道对 HTTP 调用方是冗余的；
-     * 它挡的是<b>绕过请求校验、直接构造请求对象调用本服务的代码</b>（数据导入、修复脚本、
-     * 后续的内部接口）。数据库层面拦不住 {@code accommodation_type='HOTEL'} 配
-     * {@code hotel_id=NULL}：外键只保证 {@code hotel_id} 指向的行存在，不保证两者语义一致。
-     * 这种行一旦落库，用户端的这一天会同时显示"指定酒店"和没有酒店。</p>
-     */
     private static void requireConsistentAccommodation(ItineraryDayRequest request) {
         AccommodationType.Violation violation = AccommodationType.violation(
                 request.accommodationType(), request.hotelId(), request.accommodationStandard());
@@ -475,12 +441,10 @@ public class AdminRouteService {
         }
     }
 
-    /** 契约的三态布尔（true / false / null）→ 库内 TINYINT 1/0/NULL。 */
     private static Integer booleanValue(Boolean value) {
         return value == null ? null : (value ? 1 : 0);
     }
 
-    /** 库内 TINYINT 1/0/NULL → 契约的三态布尔；只有 1 视为 true。 */
     private static Boolean booleanValue(Integer value) {
         return value == null ? null : value == 1;
     }
@@ -532,12 +496,6 @@ public class AdminRouteService {
                 .eq("day_id", dayId).orderByAsc("sort_no"));
     }
 
-    /**
-     * 行程引用的酒店，一次查询按主键取回（避免每一天各查一次）。
-     *
-     * <p>返回实体而不是名称：每天的视图既要 {@code hotelName}，也要根据酒店状态决定是否给出
-     * 公开摘要（{@link HotelSummaryView#forItinerary}），只取名称就得多查一次状态。</p>
-     */
     private Map<Long, Hotel> hotelMap(Collection<Long> hotelIds) {
         List<Long> ids = distinctIds(hotelIds);
         if (ids.isEmpty()) {
@@ -560,14 +518,6 @@ public class AdminRouteService {
         return departure == null ? null : departure.startDate;
     }
 
-    /**
-     * 联查结果的安全取值（导游名称、酒店实体等）。
-     *
-     * <p>不能用 {@code map.get(null)} 直接取：本类在"没有任何关联数据"时返回
-     * {@link Map#of()}，而不可变集合的 {@code get(null)} 会抛 {@link NullPointerException}
-     * （{@code HashMap.get(null)} 才返回 null）。行程未安排酒店、团期未分配导游都会走到这里，
-     * 一旦漏判就会让线路详情/行程接口 500。</p>
-     */
     private static <T> T lookup(Map<Long, T> values, Long key) {
         return key == null ? null : values.get(key);
     }

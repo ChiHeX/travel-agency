@@ -20,11 +20,11 @@ function toggleAll() { expanded.value = allExpanded.value ? [] : props.days.map(
 function itemType(type) {
   return { ATTRACTION: '景点', MEAL: '餐食', TRANSPORT: '交通', ACTIVITY: '活动', OTHER: '其他' }[type] || '行程'
 }
-/** 当天安排的酒店名称：`hotelName` 是行程自身的事实，酒店摘要缺失时仍要显示出来。 */
+
 function hotelNameOf(day) {
   return day.hotelName || day.hotel?.name || ''
 }
-/** 酒店卡片副标题：只用摘要里真的有的字段，城市与地址缺一个就只显示另一个。 */
+
 function hotelLocationOf(hotel) {
   return [hotel?.city, hotel?.address].filter((value) => typeof value === 'string' && value.trim() !== '').join(' · ')
 }
@@ -130,7 +130,7 @@ const hotelStays = computed(() => {
               官方星级 {{ starRatingLabel(stay.day.hotel.starRating) }}
             </span>
           </div>
-          <!-- 只有拿到酒店摘要时才给详情入口：摘要为 null 时详情接口一律 404 -->
+
           <RouterLink
             v-if="routeId && stay.day.hotel"
             :to="{ name: 'hotel-detail', params: { routeId, hotelId: stay.day.hotel.id } }"

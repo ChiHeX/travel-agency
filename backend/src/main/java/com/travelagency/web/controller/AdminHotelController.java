@@ -61,15 +61,6 @@ public class AdminHotelController {
         this.hotelService = hotelService;
     }
 
-    /**
-     * 分页查询酒店资料，对齐契约 {@code GET /admin/hotels}
-     * （分页信封 + {@code keyword} / {@code city} 筛选，两者按契约分别限制为 100 / 64 个码点）。
-     *
-     * <p>后台列表不过滤状态：停用的酒店也要能被看到并改回来。</p>
-     *
-     * <p>{@code city} 是精确筛选（与公开景点列表同口径）：城市是酒店最主要的分组维度，
-     * 用 {@code keyword} 模糊匹配会把"杭州"和"杭州路"混在一起。</p>
-     */
     @GetMapping("/hotels")
     public ApiResponse<PageResponse<HotelView>> hotels(
             @RequestParam(defaultValue = "1") long page,

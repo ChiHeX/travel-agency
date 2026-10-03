@@ -66,7 +66,6 @@ const activeAttraction = {
   updatedAt: '2026-09-01T10:00:00+08:00'
 }
 
-/** 契约 Hotel 的字段形状：city 由本次契约新增（必填，存量数据由迁移脚本补空串），状态是 AccountStatus。 */
 const activeHotel = {
   id: '31',
   name: '杭州湖畔演示酒店',
@@ -312,7 +311,6 @@ describe('AdminResourcesView（酒店资料库）', () => {
     expect(wrapper.text()).toContain('团队原创测试资料')
     // 枚举状态要显示成中文，而不是把库内的 1/ACTIVE 直接抛给运营
     expect(wrapper.text()).toContain('启用')
-    // city 是本次契约新增字段：列表要有独立的「城市」列（景点那套"所属城市"文案不适用于酒店）
     expect(wrapper.text()).toContain('杭州')
     expect(wrapper.text()).not.toContain('所属城市')
   })
@@ -330,11 +328,6 @@ describe('AdminResourcesView（酒店资料库）', () => {
     expect(cells[1].text()).toBe('—')
   })
 
-  /**
-   * 契约 `GET /admin/hotels` 声明了 `city` 查询参数（精确匹配），
-   * 而 `GET /admin/attractions` 没有这个参数：酒店列表要能按城市精确筛选，
-   * 景点列表不能把契约外的查询参数发给后端。
-   */
   it('城市筛选按精确匹配提交契约参数，并回到第 1 页', async () => {
     const wrapper = mountHotelView()
     await flushPromises()

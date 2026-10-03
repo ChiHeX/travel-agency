@@ -25,7 +25,6 @@ vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() }
 }))
 
-/** 契约 PublicHotelDetail 的字段形状。 */
 function publicHotel(overrides = {}) {
   return {
     id: '31',
@@ -61,7 +60,6 @@ function mountView() {
           emits: ['share'],
           template: '<div class="bar"><span class="bar-title">{{ title }}</span><button class="bar-share" @click="$emit(\'share\')">分享</button></div>'
         },
-        // RouterLink 替身：把目标路由名与参数放进 data 属性，便于断言"链接指向哪里"
         RouterLink: {
           props: ['to'],
           template: '<a class="link" :data-name="to && to.name" :data-id="to && to.params && to.params.id"><slot /></a>'
@@ -94,7 +92,6 @@ describe('HotelDetailView 数据映射', () => {
     expect(text).toContain('杭州湖畔演示酒店')
     expect(text).toContain('杭州')
     expect(text).toContain('浙江省杭州市西湖区湖畔路 1 号')
-    // 星级只作为官方星级展示，不带任何"评分 / 评价"的含义
     expect(text).toContain('星级')
     expect(text).toContain('4 星')
     expect(text).toContain('14:00 起')
@@ -120,7 +117,6 @@ describe('HotelDetailView 数据映射', () => {
       'https://example.com/hotel-31-2.jpg'
     ])
     expect(images[0].attributes('alt')).toBe('酒店外观')
-    // alt 为 null 时回退成酒店名，不能渲染成 "null"
     expect(images[1].attributes('alt')).toBe('杭州湖畔演示酒店')
   })
 
@@ -224,10 +220,7 @@ describe('HotelDetailView 地图与返回入口', () => {
 })
 
 describe('HotelDetailView 请求失败', () => {
-  /**
-   * 该端点在"线路未发布 / 酒店未安排在这条线路 / 酒店已停用"三种情况下都返回 404，
-   * 且刻意不区分原因。用户不需要看到后端错误码，只需要知道现在看不到这份资料、下一步做什么。
-   */
+
   it('404 时给出可读文案而不是原始错误，并保留返回线路详情的出口', async () => {
     api.hotel.mockRejectedValue(Object.assign(new Error('资源不存在'), {
       status: 404,
@@ -240,10 +233,8 @@ describe('HotelDetailView 请求失败', () => {
     expect(text).toContain('该酒店资料暂不可查看')
     expect(text).not.toContain('资源不存在')
     expect(text).not.toContain('RESOURCE_NOT_FOUND')
-    // 名称取不到时用中性标题，不去多打一次线路详情接口
     expect(wrapper.find('.bar-title').text()).toBe('酒店详情')
     expect(api.hotel).toHaveBeenCalledTimes(1)
-    // 出口仍在
     expect(backLink(wrapper).exists()).toBe(true)
     expect(wrapper.find('.map-stub').exists()).toBe(false)
   })

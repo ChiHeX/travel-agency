@@ -13,14 +13,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * 住宿类型与酒店设施枚举的契约一致性。
- *
- * <p>{@code @Pattern} 的取值白名单必须是编译期常量，因此 {@link HotelFacility#PATTERN} 与
- * {@link AccommodationType#PATTERN} 是手写的字面量，和 {@code docs/openapi.yaml} 里的
- * {@code enum} 各存一份。这个测试把它们钉在一起：漏写一个取值不会有任何编译或运行错误，
- * 只会让"契约允许、实现却回 422"（或反过来）悄悄发生。</p>
- */
 class HotelEnumsTest {
 
     @Test
@@ -41,10 +33,6 @@ class HotelEnumsTest {
         }
     }
 
-    /**
-     * 设施标签按提交顺序保留、不允许重复（契约 {@code uniqueItems: true}）。
-     * 静默去重会让调用方误以为提交成功，而重复项通常意味着前端拼错了数据。
-     */
     @Test
     @DisplayName("设施标签：按提交顺序保留，重复或枚举外的取值直接报错")
     void normalizeKeepsOrderAndRejectsDuplicates() {
@@ -83,10 +71,6 @@ class HotelEnumsTest {
         }
     }
 
-    /**
-     * 住宿自洽规则的唯一定义（请求层 {@code @AccommodationConsistent} 与服务层写库前的兜底
-     * 检查共用 {@link AccommodationType#violation}）：两处不可能给出不同结论。
-     */
     @Test
     @DisplayName("住宿自洽规则：类型与酒店关联/住宿标准的四种组合都在这一处判定")
     void accommodationViolationIsTheSingleSourceOfTruth() {

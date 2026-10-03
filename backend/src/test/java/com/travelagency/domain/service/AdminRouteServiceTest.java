@@ -64,25 +64,6 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/**
- * 成员 C 线路管理模块：{@link AdminRouteService} 业务规则单元测试。
- *
- * <p>不启动 Spring、不连接数据库，全部依赖用 Mockito 替身，因此随普通 {@code mvn test} 执行。
- * 覆盖 docs/openapi.yaml 中 Admin Routes 的契约语义（状态码、字段、视图结构）与
- * 服务端必须保证的业务规则：</p>
- * <ul>
- *   <li>新建线路一律 DRAFT，客户端字段不参与状态决定；</li>
- *   <li>没有每日行程不允许上架（409）；已上架线路的行程结构冻结（409），文案仍可修改；</li>
- *   <li>同一线路 dayNumber 唯一、同一日 sortNo 唯一，非法值返回 422 而不是数据库报错 500；</li>
- *   <li>行程引用的酒店必须真实存在且未被停用（422），景点必须真实存在（422）；项目未填坐标时继承景点坐标；</li>
- *   <li>住宿安排（{@code accommodationType} / {@code accommodationStandard} / {@code roomType} /
- *       {@code breakfastIncluded} / {@code accommodationNote}）按契约落库，并与酒店关联保持自洽：
- *       {@code HOTEL} 才带酒店，{@code STANDARD} 只带住宿标准，{@code NONE} 是"当天不含住宿"这一
- *       明确事实（不是错误）；</li>
- *   <li>删除每日行程必须先删行程项目（外键与级联语义）；</li>
- *   <li>视图映射与契约一致（实体字段不外泄、可空联查键不触发 NPE）。</li>
- * </ul>
- */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class AdminRouteServiceTest {
@@ -399,17 +380,6 @@ class AdminRouteServiceTest {
         assertEquals("大理古城", view.items().get(0).name());
     }
 
-    /**
-     * 停用酒店在行程里必须<b>两种信息同时正确</b>：{@code hotelName} 仍要返回，摘要要为空。
-     *
-     * <p>停用不改写历史事实：这一天确实安排过这家酒店，后台也不会因为停用就去改动已上架线路的行程，
-     * 因此 {@code hotelId} / {@code hotelName} 照旧。但公开详情只对启用中的酒店开放
-     * （{@code GET /routes/{routeId}/hotels/{hotelId}} 对停用酒店返回 404），若这里照旧给出摘要，
-     * 用户端就会出现一个"点了必然报错"的酒店详情入口 —— 页面上的错误只好由用户来承担。</p>
-     *
-     * <p>住宿安排字段（类型 / 房型 / 早餐 / 说明）是本视图新增的对外字段，
-     * 它们与酒店摘要走的是不同的判定：前者只是把当天的事实读出来，后者才取决于酒店是否停用。</p>
-     */
     @Test
     @DisplayName("行程查询：住宿安排字段照旧透出，停用酒店只回 hotelName 不给摘要")
     void itineraryDaysCarriesAccommodationFieldsAndHidesSummaryForDisabledHotel() {
@@ -573,17 +543,8 @@ class AdminRouteServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // 住宿安排（accommodationType 与酒店关联、住宿标准、早餐三态）
     // ------------------------------------------------------------------
 
-    /**
-     * {@code HOTEL} 是唯一允许携带 {@code hotelId} 的类型，落地时必须把类型与酒店关联
-     * <b>一起</b>写下去：只写 {@code hotel_id} 而不写 {@code accommodation_type}，用户端就会把
-     * "已指定酒店"读成"待确认"，工作人员在后台明明选好了酒店，前台却显示"住宿安排暂未提供"。
-     *
-     * <p>同时把房型、早餐、补充说明一次落库：契约把 {@code ItineraryDayRequest} 定义为整体替换，
-     * 漏写其中任何一列都会让它们永远停在旧值。</p>
-     */
     @Test
     @DisplayName("新增行程：HOTEL 落库类型/房型/早餐/说明，并回填酒店名与非空摘要")
     void createDayPersistsHotelAccommodationFields() {
@@ -599,7 +560,6 @@ class AdminRouteServiceTest {
             persisted[0] = inserted;
             return 1;
         });
-        // 回查返回刚写入的那一行：断言的是"写进去的内容能被视图如实还原"，而不是另打一份桩。
         when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
 
         ItineraryDayView view = service.createDay(21L, accommodationRequest(1, "第 1 天", "HOTEL",
@@ -625,15 +585,6 @@ class AdminRouteServiceTest {
         assertEquals(Boolean.TRUE, view.breakfastIncluded());
     }
 
-    /**
-     * {@code STANDARD} 表达"只确定了住宿标准，还没定具体哪家酒店"。
-     *
-     * <p>这正是新增 {@code accommodationType} 的原因：过去 {@code hotelId} 为空只有一种含义，
-     * 用户端只能把"当地四星标准"和"还没确认"显示成同一句"住宿安排暂未提供"。
-     * 因此 {@code STANDARD} 必须落成类型 + 住宿标准，并且 <b>{@code hotel_id} 为 NULL</b>：
-     * 一旦挂上酒店，类型与关联就自相矛盾（用户端要么显示一家其实没安排的酒店，
-     * 要么把已定标准的那天显示成待确认）。</p>
-     */
     @Test
     @DisplayName("新增行程：STANDARD 落库住宿标准且不查、不写酒店")
     void createDayPersistsStandardAccommodationWithoutHotel() {
@@ -665,7 +616,6 @@ class AdminRouteServiceTest {
         assertNull(view.hotel(), "没有酒店就没有摘要");
     }
 
-    /** 修改路径同样要写 {@code accommodation_type}，并把原来的 {@code hotel_id} 清空。 */
     @Test
     @DisplayName("修改行程：STANDARD 写入类型与住宿标准，并把原酒店清空")
     void updateDayPersistsStandardAccommodationWithoutHotel() {
@@ -692,13 +642,6 @@ class AdminRouteServiceTest {
         assertNull(view.hotel());
     }
 
-    /**
-     * {@code NONE} 是"当天确实不含住宿"这一<b>明确事实</b>（例如当晚夜车返程），不是错误、
-     * 也不能被当成"没填酒店"。
-     *
-     * <p>正因为它是主动声明，{@code AccommodationType.infer} 永远不会推断出 {@code NONE}：
-     * 推断一旦能得出"不含住宿"，一个漏填酒店的正常行程就会被系统对外宣布成不含住宿。</p>
-     */
     @Test
     @DisplayName("新增行程：NONE 是合法安排（当天不含住宿），不查酒店也不被当成错误")
     void createDayAcceptsNoneWithoutHotel() {
@@ -729,13 +672,6 @@ class AdminRouteServiceTest {
         assertNull(view.hotel());
     }
 
-    /**
-     * 原样保留已停用酒店时，写入的依然是 {@code HOTEL} 与同一个 {@code hotel_id}。
-     *
-     * <p>与 {@link #updateDayOnlyRejectsNewlyAssigningDisabledHotel} 互补：那条用例只看"有没有被拦下"，
-     * 这条盯住"放行之后落库的内容对不对" —— 放行却把 {@code accommodation_type} 写成别的值，
-     * 或者把 {@code hotel_id} 清掉，等于用另一种方式弄丢了当天的住宿安排。</p>
-     */
     @Test
     @DisplayName("修改行程：原样保留已停用酒店时仍写入 HOTEL 与同一个 hotel_id")
     void updateDayKeepsDisabledHotelAndPersistsHotelType() {
@@ -762,14 +698,6 @@ class AdminRouteServiceTest {
         assertNull(view.hotel(), "停用酒店不给摘要");
     }
 
-    /**
-     * {@code breakfastIncluded} 是<b>三态</b>：{@code true} / {@code false} / 未提交（{@code null}）。
-     *
-     * <p>契约的请求体是整体替换，因此 {@code false} 与"未提交"必须落成不同的库内值
-     * （{@code 0} 与 {@code NULL}）：把 {@code false} 写成 {@code NULL}，后台明明把"含早"取消了，
-     * 用户端却退回"早餐情况未说明"；反过来把未提交当成 {@code false}，就会替运营宣布"不含早"。
-     * 库内列 {@code TINYINT} 正好能表达这三态，映射见 {@code AdminRouteService#booleanValue}。</p>
-     */
     @Test
     @DisplayName("新增行程：breakfastIncluded=false 落库为 0（与未提交的 NULL 可区分），视图回 false")
     void createDayDistinguishesFalseBreakfastFromUnsubmitted() {
@@ -1193,24 +1121,11 @@ class AdminRouteServiceTest {
         return day;
     }
 
-    /**
-     * 只关心"第几天 + 关联哪家酒店"的行程请求：住宿安排类型留空，交给服务端按 {@code hotelId} 推断
-     * （非空 → {@code HOTEL}，为空 → {@code PENDING}）。
-     *
-     * <p>本文件多数用例测的是天数唯一性、线路状态与酒店可用性，与当天具体怎么安排住宿无关；
-     * 显式写类型反而会把"断言点"从被测规则挪开。需要断言住宿安排本身时用
-     * {@link #accommodationRequest}。</p>
-     */
     private static ItineraryDayRequest dayRequest(int dayNumber, String title, Long hotelId) {
         return new ItineraryDayRequest(dayNumber, title, null, null, null,
                 null, null, null, null, null, hotelId);
     }
 
-    /**
-     * 显式提交住宿安排的行程请求（住宿规则的用例使用）。
-     *
-     * <p>参数顺序与 {@link ItineraryDayRequest} 一致：住宿类型 → 住宿标准 → 房型 → 是否含早 → 补充说明。</p>
-     */
     private static ItineraryDayRequest accommodationRequest(int dayNumber, String title, String accommodationType,
                                                             String accommodationStandard, String roomType,
                                                             Boolean breakfastIncluded, String accommodationNote,
@@ -1219,7 +1134,6 @@ class AdminRouteServiceTest {
                 accommodationStandard, roomType, breakfastIncluded, accommodationNote, hotelId);
     }
 
-    /** 只定了住宿标准、没有关联酒店的那一天（模拟库里 {@code accommodation_type = 'STANDARD'} 的行）。 */
     private static RouteItineraryDay standardDay(Long id, Long routeId, int dayNumber, String title,
                                                  String standard) {
         RouteItineraryDay day = day(id, routeId, dayNumber, title, null);
@@ -1228,13 +1142,6 @@ class AdminRouteServiceTest {
         return day;
     }
 
-    /**
-     * 酒店替身。{@code status} 必须显式给出：库内列是 {@code TINYINT NOT NULL DEFAULT 1}，
-     * 而行程写入口把"非 ACTIVE"一律当成停用（null 也会被判成停用），不设置会误拦用例。
-     *
-     * <p>{@code city} 一并给出：契约 {@code HotelCreateRequest} 已把城市列为必填，
-     * 酒店摘要 {@code HotelSummaryView} 也带着它，替身缺了城市会让"摘要有哪些字段"的断言失去意义。</p>
-     */
     private static Hotel hotel(Long id, String name, int status) {
         Hotel hotel = new Hotel();
         hotel.id = id;
@@ -1296,20 +1203,11 @@ class AdminRouteServiceTest {
         return Math.max(max - reserved - confirmed, 0);
     }
 
-    /**
-     * 住宿自洽规则必须在服务层也复核一次：请求层的 {@code @AccommodationConsistent} 只保护 HTTP
-     * 入口，直接构造请求对象调用 Service 的代码（数据导入、修复脚本、后续的内部接口）绕不过这一道。
-     *
-     * <p>数据库层面同样拦不住：外键只保证 {@code hotel_id} 指向的行存在，不保证它和
-     * {@code accommodation_type} 语义一致 —— "指定了酒店却没有酒店"的行落库后，
-     * 用户端这一天会同时显示"行程安排酒店"和"住宿待确认"，且没有任何地方能看出它是错的。</p>
-     */
     @Test
     @DisplayName("新增行程：绕过请求校验的调用方也写不进自相矛盾的住宿安排（422，不落库）")
     void createDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿", "DRAFT"));
 
-        // HOTEL 却没有酒店；STANDARD 却没有住宿标准；NONE 却带了酒店
         for (ItineraryDayRequest inconsistent : List.of(
                 new ItineraryDayRequest(1, "第一天", null, null, null, "HOTEL", null, null, null, null, null),
                 new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD", "  ", null, null, null, null),
@@ -1323,7 +1221,6 @@ class AdminRouteServiceTest {
         verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
     }
 
-    /** 修改路径同样要有这一道兜底，否则"先合规建档、再绕过校验改歪"可以绕过上面的检查。 */
     @Test
     @DisplayName("修改行程：绕过请求校验的调用方同样改不出自相矛盾的住宿安排（422，不写库）")
     void updateDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {

@@ -118,8 +118,6 @@ class HotelAdminContractIntegrationTest {
         assertTrue(body.get("longitude").isNumber(), "坐标必须是 JSON number，不能是 BigDecimal 字符串");
         assertEquals(102.832, body.get("longitude").asDouble(), 0.0000001);
         assertEquals(24.88, body.get("latitude").asDouble(), 0.0000001);
-        // city 是本次契约新增的**必填**字段（docs/API.md §12.2 的破坏性变更）：
-        // 提交什么就必须回显什么，它既是用户端卡片的展示字段，也是后台列表的筛选依据。
         assertEquals("昆明", body.path("city").asString(), "city 必须原样回显提交的城市");
 
         // 列表：keyword 命中，且形状与创建响应同口径
@@ -345,7 +343,6 @@ class HotelAdminContractIntegrationTest {
         assertEquals(200, stored.address.codePointCount(0, stored.address.length()));
     }
 
-    /** 契约里除 {@code name}/{@code city}/{@code dataSource} 外都是可选字段：只提交必填项必须能建档。 */
     @Test
     @DisplayName("创建：只提交契约必填字段时建档成功，可选列为 NULL")
     void createWithOnlyRequiredFieldsLeavesOptionalColumnsNull() throws Exception {
@@ -461,26 +458,11 @@ class HotelAdminContractIntegrationTest {
         assertEquals(1, negative.path("size").asInt(), "size 小于 1 时按 1 处理，不能回全量");
     }
 
-    /**
-     * 本次契约新增的酒店资料字段在真实落库后的读回结果：图片按 {@code sortOrder} 升序、
-     * 设施按提交顺序读回、星级"未提交就是 null、提交了就落库"、城市原样回显，
-     * 以及 {@code PUT} 省略 {@code images} / {@code facilities} 时的清空语义。
-     *
-     * <p>这些字段都不是"存下去就算对"：{@code hotel_image} 是独立行，顺序由 {@code sort_order}
-     * 决定（若按写入顺序返回，运营把封面图排到第 1 位就不生效）；{@code facilities} 在库内是 JSON
-     * 列，由服务层序列化与解析；{@code star_rating} 必须可空 —— 契约明确要求没有可靠依据时给
-     * {@code null}，不得用网站评分或 0 凑数。任何一处映射写反，用户端看到的顺序、标签或星级就都是错的，
-     * 而接口本身仍然回 200。</p>
-     *
-     * <p>{@code PUT} 的"整体替换"同样是契约的一部分：省略或提交空集合表示"这家酒店不再有这些内容"。
-     * 如果省略时保留旧值，"删掉几张旧图"就没有任何写法 —— 调用方只能靠猜。</p>
-     */
     @Test
     @DisplayName("酒店资料字段的落库读回：图片按 sortOrder 排序、设施保序、星级可空、PUT 可清空")
     void profileFieldsRoundTripThroughTheDatabase() throws Exception {
         String token = adminToken();
         String name = "资料字段回归酒店-" + shortId();
-        // 故意乱序提交（3、1、2）：读回必须按 sort_order 升序，而不是按写入顺序。
         String submittedImages = "[{\"url\":\"https://cdn.example.com/hotels/c.jpg\",\"alt\":\"第三张\",\"sortOrder\":3},"
                 + "{\"url\":\"https://cdn.example.com/hotels/a.jpg\",\"alt\":\"第一张\",\"sortOrder\":1},"
                 + "{\"url\":\"https://cdn.example.com/hotels/b.jpg\",\"alt\":\"第二张\",\"sortOrder\":2}]";
@@ -518,7 +500,6 @@ class HotelAdminContractIntegrationTest {
                         created.path("facilities").get(1).asString()),
                 "设施标签必须按提交顺序读回（库内是 JSON 数组，顺序即契约顺序）");
 
-        // 未提交的可选字段：星级是 null（不得编造），图片与设施按契约回 []。
         JsonNode minimal = data(mvc().perform(post("/api/admin/hotels").header("Authorization", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"星级未填-" + shortId() + "\",\"city\":\"大理\","
@@ -530,7 +511,6 @@ class HotelAdminContractIntegrationTest {
         assertEquals(0, minimal.path("images").size(), "没有图片时按契约回 []");
         assertEquals(0, minimal.path("facilities").size(), "没有设施时按契约回 []");
 
-        // PUT 整体替换：省略 images / facilities / starRating 表示这些内容被清空。
         JsonNode cleared = okData(put("/api/admin/hotels/" + id).header("Authorization", token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"" + name + "\",\"city\":\"大理\","
@@ -569,7 +549,6 @@ class HotelAdminContractIntegrationTest {
     private Hotel hotel(String name) {
         Hotel hotel = new Hotel();
         hotel.name = name;
-        // city 是契约新增的必填项（库内 NOT NULL DEFAULT ''）：夹具按真实建档口径填写。
         hotel.city = "大理";
         hotel.address = "云南省昆明市测试路 1 号";
         hotel.contactPhone = "087112345678";
@@ -600,8 +579,6 @@ class HotelAdminContractIntegrationTest {
         day.dayNumber = 1;
         day.title = "抵达并入住";
         day.hotelId = hotel.id;
-        // 数据库约束 ck_day_accommodation 要求"关联了酒店"就必须是 HOTEL，
-        // 直接落库的夹具因此必须显式写明类型（列默认值是 PENDING）。
         day.accommodationType = "HOTEL";
         days.insert(day);
         return day;

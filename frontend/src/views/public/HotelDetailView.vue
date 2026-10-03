@@ -8,32 +8,19 @@ import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 import { checkInLabel, checkOutLabel, facilityLabel, starRatingLabel } from '@/utils/hotel'
 
-/**
- * 用户端酒店详情（契约 `GET /routes/{routeId}/hotels/{hotelId}` → `PublicHotelDetail`）。
- *
- * <p>只渲染契约真实返回的字段：名称、城市、地址、官方星级、简介、设施、入住/退房时间、
- * 图片、坐标与资料来源。<b>没有</b>评分、评价数量、销量、房价与库存这类字段，
- * 页面因此一概不显示 —— `docs/DEVELOPMENT_GUIDE.md` §4 禁止为了页面"看起来完整"
- * 生成虚假的评分或统计数据。</p>
- *
- * <p>该端点对「线路未发布 / 酒店未安排在这条线路的行程里 / 酒店已停用」统一返回 404，
- * 且刻意不区分原因。因此这里把失败处理成一个明确的用户文案而不是原始错误：
- * 用户不需要看到一个后端错误码，也不需要知道后台酒店的启用状态。</p>
- */
 const route = useRoute()
 const setMapFocus = inject('setMapFocus', () => {})
 const loading = ref(false)
 const error = ref('')
 const hotel = ref(null)
 
-/** 失败时拿不到名称（请求本身没有返回任何字段），此时用中性标题，不编造也不去多打一次线路详情接口。 */
 const hotelName = computed(() => hotel.value?.name || '酒店详情')
 const backTo = computed(() => ({ name: 'route-detail', params: { id: route.params.routeId } }))
-/** 图片列表（服务端已按 sortOrder 升序返回）；没有图片时是空数组，不是错误。 */
+
 const gallery = computed(() => (hotel.value?.images || []).filter((image) => image?.url))
-/** 封面：`coverUrl` 为空时回退到 `images[0]`（服务端已按 sortOrder 排序），仍为空则显示占位块。 */
+
 const coverUrl = computed(() => hotel.value?.coverUrl || gallery.value[0]?.url || '')
-/** 只保留契约枚举认识的设施：未知取值返回 null，跳过而不是把枚举原文印在页面上。 */
+
 const facilities = computed(() => (hotel.value?.facilities || [])
   .map((value) => ({ value, label: facilityLabel(value) }))
   .filter((item) => item.label !== null))
@@ -60,8 +47,6 @@ async function load() {
       setMapFocus({ name, longitude, latitude })
     }
   } catch {
-    // 404（线路未发布 / 酒店未安排在这条线路 / 酒店已停用）与网络失败对用户是同一件事：
-    // 现在看不到这份资料。不回显后端 message，也不区分原因。
     if (current === requestId) error.value = '该酒店资料暂不可查看'
   } finally {
     if (current === requestId) loading.value = false
@@ -104,7 +89,7 @@ onBeforeUnmount(() => {
             <div class="hotel-info-card">
               <div class="hotel-info-row"><span>城市</span><strong>{{ hotel.city }}</strong></div>
               <div v-if="hotel.address" class="hotel-info-row"><span>地址</span><strong>{{ hotel.address }}</strong></div>
-              <!-- 官方星级：没有可靠依据时契约返回 null，此时整行不显示（不做任何推测） -->
+
               <div v-if="starLabel" class="hotel-info-row"><span>星级</span><strong>{{ starLabel }}</strong></div>
               <div v-if="checkIn" class="hotel-info-row"><span>入住</span><strong>{{ checkIn }}</strong></div>
               <div v-if="checkOut" class="hotel-info-row"><span>退房</span><strong>{{ checkOut }}</strong></div>
@@ -147,10 +132,6 @@ onBeforeUnmount(() => {
         </template>
       </RequestState>
 
-      <!--
-        失败不等于"出错"：这个端点对未发布线路、未安排该酒店的线路与已停用酒店统一回 404，
-        对用户而言就是"现在看不到这份资料"。这里给出可读的下一步，并保留返回线路详情的入口。
-      -->
       <p v-if="!loading && error" class="hotel-error-hint">
         这条线路的行程里可能没有这家酒店，或该酒店已停止对外展示。你可以返回线路详情查看最新的每日行程安排。
       </p>

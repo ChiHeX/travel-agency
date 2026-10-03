@@ -18,6 +18,7 @@ import PublisherGuidesView from '@/views/public/PublisherGuidesView.vue'
 import PlaceGuideDetailView from '@/views/public/PlaceGuideDetailView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
 import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
+import HotelDetailView from '@/views/public/HotelDetailView.vue'
 import OrderCreateView from '@/views/public/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
@@ -66,6 +67,7 @@ const routes = [
       { path: 'search', name: 'search', component: SearchView },
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
+      { path: 'routes/:routeId/hotels/:hotelId', name: 'hotel-detail', component: HotelDetailView },
       { path: 'guides', name: 'guides', component: GuidesView },
       { path: 'guides/latest', name: 'latest-guides', component: LatestGuidesView },
       { path: 'guides/cities/:city', name: 'city-guides', component: CityGuidesView },

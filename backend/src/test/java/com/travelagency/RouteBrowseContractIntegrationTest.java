@@ -108,12 +108,7 @@ class RouteBrowseContractIntegrationTest {
     private static final Set<String> DEPARTURE_REQUIRED = Set.of(
             "id", "routeId", "startDate", "endDate", "adultPrice", "childPrice", "maxPeople",
             "reservedPeople", "confirmedPeople", "availableSeats", "status", "createdAt", "updatedAt");
-    /**
-     * 每日行程的字段全集（契约 {@code ItineraryDay}，{@code additionalProperties: false}）。
-     *
-     * <p>住宿相关的五个字段与可空摘要 {@code hotel} 是本次新增（见 {@code docs/API.md} §12.2）：
-     * {@code accommodationType} 起声明"当天到底怎么安排住宿"，{@code hotelId} 为空不再等于"不含住宿"。</p>
-     */
+
     private static final Set<String> ITINERARY_DAY_FIELDS = Set.of(
             "id", "routeId", "dayNumber", "title", "description", "transportation", "meals",
             "accommodationType", "accommodationStandard", "roomType", "breakfastIncluded",
@@ -333,7 +328,6 @@ class RouteBrowseContractIntegrationTest {
         assertEquals("上海 · 昆明", first.get("title").asString());
         assertEquals(hotel.id.toString(), first.get("hotelId").asString());
         assertEquals(hotel.name, first.get("hotelName").asString(), "契约要求带回酒店名");
-        // 酒店的公开摘要：用户端卡片直接用这几项，图片与完整简介按需调用酒店详情接口。
         JsonNode summary = first.get("hotel");
         assertTrue(summary != null && summary.isObject(), "安排了启用酒店时 hotel 摘要必须非空：" + summary);
         assertEquals(hotel.id.toString(), summary.path("id").asString());
@@ -604,8 +598,6 @@ class RouteBrowseContractIntegrationTest {
         day.transportation = "飞机、旅游巴士";
         day.meals = "晚餐";
         day.hotelId = hotelId;
-        // 数据库约束 ck_day_accommodation 要求"关联了酒店"就必须是 HOTEL：
-        // accommodation_type 的列默认值是 PENDING，只写 hotel_id 会落出一行自相矛盾的数据。
         day.accommodationType = hotelId == null ? "PENDING" : "HOTEL";
         days.insert(day);
         return day;

@@ -82,8 +82,6 @@ class HotelStatusLogConcurrencyIntegrationTest {
 
         Hotel hotel = new Hotel();
         hotel.name = "状态日志回归酒店-" + shortId();
-        // city 是契约必填项（库内 NOT NULL DEFAULT ''）：夹具按真实建档口径填写，
-        // 与 upsert() 提交的同一个城市保持一致，避免"改资料"顺带改了城市这种额外变化。
         hotel.city = "大理";
         hotel.dataSource = "团队测试数据";
         hotel.status = 1;
@@ -169,20 +167,6 @@ class HotelStatusLogConcurrencyIntegrationTest {
     // 辅助
     // ------------------------------------------------------------------
 
-    /**
-     * 只提交状态、其余字段保持不变的修改请求（name / city / dataSource 是契约必填）。
-     *
-     * <p>夹具酒店新建后版本号就是 0，两个用例里都没有其它请求改过它（并发方只写 {@code status}，
-     * 不碰版本号），因此这里固定回传 {@code version = 0}；版本不一致会先被乐观锁拦成 409，
-     * 那样测的就不是状态审计日志了。</p>
-     *
-     * <p>构造参数与 {@link HotelUpdateRequest} 的顺序一致：name、city、address、contactPhone、
-     * coverUrl、images、starRating、facilities、checkInTime、checkOutTime、longitude、latitude、
-     * intro、dataSource、status、version。本类只关心 {@code status}，
-     * 因此除了 name / city / dataSource 这三个必填项，其余一律留空
-     * —— 契约对可空字段是"整体替换"，但这里提交的值与库内夹具本来就一致（都是未录入），
-     * 不会让"状态变化"以外的任何字段参与断言。</p>
-     */
     private HotelUpdateRequest upsert(String status) {
         return new HotelUpdateRequest("状态日志回归酒店", "大理", null, null, null,
                 null, null, null, null, null, null, null, null,

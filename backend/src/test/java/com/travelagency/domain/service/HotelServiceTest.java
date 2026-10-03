@@ -42,19 +42,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * 酒店模块 Service 单测：后台管理（契约 {@code Admin Resources} 的 {@code /admin/hotels}）、
- * 酒店详情图片与线路下的公开详情（契约 {@code GET /routes/{routeId}/hotels/{hotelId}}）
- * 的业务规则与映射。
- *
- * <p>不需要数据库：DB 级往返（201/204/409 的真实落库行为、图片排序的真实读取顺序）由
- * {@code HotelAdminContractIntegrationTest} 在 {@code TRAVEL_MYSQL_TEST=true} 时覆盖，
- * 字段校验与权限由 {@code HotelAdminWebContractTest} 覆盖。</p>
- *
- * <p>酒店读取统一走加锁当前读（{@code selectOne(... FOR UPDATE)}，见 {@code HotelService#lockHotel}），
- * 因此打桩针对 {@code selectOne}；行锁本身与并发交错由
- * {@code HotelStatusLogConcurrencyIntegrationTest} 在真实 MySQL 上验证。</p>
- */
 class HotelServiceTest {
 
     private final HotelMapper hotels = mock(HotelMapper.class);
@@ -62,7 +49,7 @@ class HotelServiceTest {
     private final RouteItineraryDayMapper itineraryDays = mock(RouteItineraryDayMapper.class);
     private final TravelRouteMapper routes = mock(TravelRouteMapper.class);
     private final OperationLogRecorder operationLog = mock(OperationLogRecorder.class);
-    /** 设施标签在库内是 JSON 数组文本，用真实的 JsonMapper 验证编解码，而不是打桩掉。 */
+
     private final JsonMapper json = JsonMapper.builder().build();
     private final HotelService service =
             new HotelService(hotels, hotelImages, itineraryDays, routes, operationLog, json);
@@ -78,7 +65,6 @@ class HotelServiceTest {
         // 必须写 any(Long.class)：BaseMapper 上 deleteById 有 (Serializable) 与 (T) 两个重载，
         // 无类型的 any() 会让编译器无法在两者之间选择。
         when(hotels.deleteById(any(Long.class))).thenReturn(1);
-        // 图片查询默认返回空列表：不打桩时 Mockito 返回 null，会让列表/详情装配 NPE。
         when(hotelImages.selectList(any())).thenReturn(List.of());
     }
 
@@ -109,10 +95,6 @@ class HotelServiceTest {
         assertEquals("ACTIVE", page.items().get(0).status());
     }
 
-    /**
-     * 契约 {@code GET /admin/hotels} 的 {@code city} 是**精确**筛选（与公开景点列表同口径）：
-     * 用模糊匹配会把"杭州"和"杭州路"混在一起，工作人员按城市盘点时页面会多出无关酒店。
-     */
     @Test
     @DisplayName("后台列表：city 按精确值筛选，未提交时不加该条件")
     void pageFiltersByCityExactly() {
@@ -174,10 +156,6 @@ class HotelServiceTest {
         assertEquals("https://example.com/a.jpg", item.images().get(0).url());
     }
 
-    /**
-     * 一页酒店的图片只查一次：{@code HotelPage} 每页最多 100 家酒店，
-     * 逐家查询就是 100 次往返（列表页会明显变慢）。
-     */
     @Test
     @DisplayName("后台列表：图片按本页酒店批量查询一次，不做 N+1")
     void pageLoadsImagesForTheWholePageAtOnce() {
@@ -229,7 +207,6 @@ class HotelServiceTest {
         assertEquals(4, inserted.getValue().starRating);
         assertEquals("14:00", inserted.getValue().checkInTime);
         assertEquals("12:00", inserted.getValue().checkOutTime);
-        // 设施以 JSON 数组文本落库，顺序按提交顺序保留
         assertEquals("[\"WIFI\",\"PARKING\"]", inserted.getValue().facilities);
         assertEquals("团队测试数据", inserted.getValue().dataSource);
         assertEquals(1, inserted.getValue().status, "契约未提交 status 时按 ACTIVE(1) 建档");
@@ -260,11 +237,6 @@ class HotelServiceTest {
         assertEquals("DISABLED", created.status());
     }
 
-    /**
-     * 图片按提交时的 {@code sortOrder} 落库（这里故意按 3、1、2 提交）。
-     * 排序发生在读取侧（{@code ORDER BY sort_order, id}），因此写入侧必须原样保留顺序信息，
-     * 不能在插入时"顺手排一遍"——那样同序图片之间的相对顺序就丢了。
-     */
     @Test
     @DisplayName("创建：图片按提交顺序逐条写入，保留 sortOrder")
     void createInsertsImagesInSubmittedOrder() {
@@ -292,10 +264,6 @@ class HotelServiceTest {
         assertEquals("外景", inserted.getAllValues().get(0).alt);
     }
 
-    /**
-     * 契约把 {@code facilities} 声明为 {@code uniqueItems: true}，重复标签属于违反契约的输入。
-     * 静默去重会让调用方以为"提交什么都成功了"，而重复项往往意味着前端拼错了数据。
-     */
     @Test
     @DisplayName("创建：设施标签重复时按 422 拒绝，且不写库")
     void createRejectsDuplicateFacilities() {
@@ -426,10 +394,6 @@ class HotelServiceTest {
                         + "PUT 必须能清空它们，否则「删掉一段旧资料」没有明确写法");
     }
 
-    /**
-     * 契约把 {@code images} 定义为整份资料的一部分：{@code PUT} 是整体替换，
-     * 省略或传空集合都表示"这家酒店不再有图片"。只替换增量会让"删掉最后一张图"无法表达。
-     */
     @Test
     @DisplayName("修改：图片整体替换（先删后插），提交空集合即清空")
     void updateReplacesImagesEntirely() {
@@ -448,7 +412,6 @@ class HotelServiceTest {
         verify(hotelImages, times(1)).insert(inserted.capture());
         assertEquals("https://example.com/only.jpg", inserted.getValue().url);
 
-        // 再提交一次空图片集合（模拟"清空"）：只删不插
         service.update(48L, new HotelUpdateRequest(
                 "有图酒店", "杭州", null, null, null, List.of(), null, null, null, null,
                 null, null, null, "团队测试数据", null, 0), 7L);
@@ -521,13 +484,6 @@ class HotelServiceTest {
         assertEquals("RESOURCE_NOT_FOUND", error.getCode());
     }
 
-    /**
-     * 两位工作人员各自打开同一条酒店资料、先后保存：后保存的人不该静默覆盖前一位的改动。
-     *
-     * <p>提交的版本比库内旧（对方已经改过一次，版本前进了）时必须 409，且不产生任何写入 ——
-     * 与团期 {@code DepartureService#update} 同一口径。图片同样不能被替换：
-     * 否则"资料没保存成功、图片却被换掉了"。</p>
-     */
     @Test
     @DisplayName("修改：提交过期版本返回 409 HOTEL_VERSION_CONFLICT，且不写库、不换图、不记日志")
     void updateRejectsStaleVersion() {
@@ -640,10 +596,6 @@ class HotelServiceTest {
         verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
-    /**
-     * 图片是酒店的从属数据，且 {@code fk_hotel_image_hotel} 没有级联：
-     * 不先删图片记录，酒店的删除会被外键拒绝并变成 500。
-     */
     @Test
     @DisplayName("删除：未被引用时先删图片记录再删酒店，并记录操作日志")
     void deleteRemovesImagesThenTheHotel() {
@@ -679,15 +631,6 @@ class HotelServiceTest {
         verify(operationLog, never()).record(any(), any(), any(), any(), any(), any());
     }
 
-    // ===================== 线路下的酒店公开详情 =====================
-
-    /**
-     * 正常路径：线路已发布、酒店启用、且确实被这条线路的行程引用。
-     *
-     * <p>返回的必须是<b>公开</b>视图：它不含 {@code version} / {@code status} / 审计时间，
-     * 也不含后台的对接人电话（那属于内部管理信息）。字段缺失是编译期保证，
-     * 这里钉住的是"该给的都给全了"：图片按序、设施数组、入住退房时间、坐标是 number。</p>
-     */
     @Test
     @DisplayName("公开详情：已发布线路 + 启用酒店 + 确实被引用时返回公开视图（不含后台字段）")
     void publicDetailReturnsPublicViewForTheArrangedHotel() {
@@ -716,7 +659,6 @@ class HotelServiceTest {
         assertEquals("团队测试数据", view.dataSource());
     }
 
-    /** 未发布（草稿 / 已下架 / 已删除）的线路不提供酒店公开资料。 */
     @Test
     @DisplayName("公开详情：线路未发布时返回 404，且不查酒店")
     void publicDetailHidesHotelsOfUnpublishedRoutes() {
@@ -736,10 +678,6 @@ class HotelServiceTest {
         verify(hotels, never()).selectById(any(Long.class));
     }
 
-    /**
-     * 酒店必须真的被这条线路的行程安排过：酒店资料是后台维护的全量数据，
-     * 只校验"酒店存在"等于把与当前线路无关的酒店一起开放出去。
-     */
     @Test
     @DisplayName("公开详情：酒店未被这条线路引用时返回 404")
     void publicDetailHidesHotelsNotArrangedInThatRoute() {
@@ -750,7 +688,6 @@ class HotelServiceTest {
         assertPublicNotFound(15L, 71L);
     }
 
-    /** 停用的酒店不再对外提供资料（后台停用是"这家酒店不再使用"的唯一手段）。 */
     @Test
     @DisplayName("公开详情：酒店已停用或不存在时返回 404")
     void publicDetailHidesDisabledAndMissingHotels() {
@@ -762,10 +699,6 @@ class HotelServiceTest {
         assertPublicNotFound(16L, 73L);
     }
 
-    /**
-     * 三种不满足条件必须给出<b>同一条</b> 404：返回不同的原因（"线路未发布" / "酒店被停用"）
-     * 会让无需登录的调用方用它逐条探测后台酒店的存在性与状态。
-     */
     @Test
     @DisplayName("公开详情：不同原因的 404 使用同一文案，不外泄后台状态")
     void publicDetailUsesOneMessageForEveryNotFoundReason() {

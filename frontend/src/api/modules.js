@@ -30,9 +30,6 @@ export const routeApi = {
   list: (params) => request.get('/routes', { params }),
   detail: (routeId) => request.get(`/routes/${routeId}`),
   reviews: (routeId, params) => request.get(`/routes/${routeId}/reviews`, { params }),
-  // 线路行程里安排的酒店**公开**资料（契约 GET /routes/{routeId}/hotels/{hotelId}，security: []）。
-  // 门槛是"这条已发布线路的行程确实安排了它"，因此线路未发布、酒店未启用或未被该线路引用时统一 404；
-  // 调用方据此把不可查看处理成正常状态，而不是把 404 当成错误抛给用户。
   hotel: (routeId, hotelId) => request.get(`/routes/${routeId}/hotels/${hotelId}`)
 }
 

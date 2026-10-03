@@ -40,16 +40,6 @@ const itemError = ref('')
 const itemDayId = ref(null)
 const editingItemId = ref(null)
 
-/**
- * 每日行程表单。
- *
- * `hotelId` 与 `accommodationType` 是同一件事的两种表达（契约 `ItineraryDayRequest`）：
- * `HOTEL` 必须给出酒店，`STANDARD` 必须写住宿标准且不能带酒店，`NONE` / `PENDING` 也不能带酒店。
- * `breakfastIncluded` 是**三态**：`false`（不含早餐）与"未说明"（`null`）必须能分别提交，
- * 所以下拉用空串 / `'true'` / `'false'` 三个字符串哨兵，提交时再翻译成 `null` / `true` / `false`
- * —— HTML 的 option 值本来就只能是字符串，直接用 ``:value="false"`` 会让"未提交"与 `false`
- * 难以区分，而那正是契约特意强调的区别。
- */
 const dayForm = reactive({
   dayNumber: 1,
   title: '',
@@ -165,8 +155,6 @@ function openDayDialog(day) {
     transportation: day?.transportation || '',
     meals: day?.meals || '',
     hotelId: day?.hotelId || '',
-    // 新建时默认"住宿待确认"：契约规定未提交 accommodationType 时按 hotelId 推断，
-    // 且**不会**推断成 NONE（"没填酒店"不等于"不含住宿"），这里用同一口径。
     accommodationType: day ? accommodationTypeOf(day) : 'PENDING',
     accommodationStandard: day?.accommodationStandard || '',
     roomType: day?.roomType || '',
@@ -176,37 +164,23 @@ function openDayDialog(day) {
   dayDialogVisible.value = true
 }
 
-/** 契约三态 → 下拉的字符串哨兵：`true` / `false` / 未说明（空串）。 */
 function breakfastSelectValue(value) {
   if (value === true) return 'true'
   if (value === false) return 'false'
   return ''
 }
 
-/** 下拉的字符串哨兵 → 契约三态：空串是 `null`（未说明），不是 `false`。 */
 function breakfastPayloadValue() {
   if (dayForm.breakfastIncluded === 'true') return true
   if (dayForm.breakfastIncluded === 'false') return false
   return null
 }
 
-/**
- * 选了具体酒店就等于"指定酒店"（契约要求 HOTEL 与 hotelId 一致）。
- *
- * 反向的清空在下面 `accommodationType` 的 watch 里：改成 STANDARD / NONE / PENDING 时把酒店清掉，
- * 那个 watch 只在值真的变了时才把酒店清空，因此不会把刚选中的酒店又抹掉。
- */
 watch(() => dayForm.hotelId, (value) => {
   if (value) dayForm.accommodationType = 'HOTEL'
 })
 
-/**
- * 切换住宿安排类型：非 HOTEL 一律清空酒店（契约：STANDARD / NONE / PENDING 都不能带酒店）。
- *
- * 用 watch 而不是 select 上的 `@change`：`@change` 与 `v-model` 在同一个事件上的执行顺序
- * 取决于编译器生成的合并顺序，读到的可能是**上一个**类型的值；watch 在状态更新之后触发，
- * 顺序与写法无关。
- */
+/** watch 在 v-model 更新后清理酒店关联，避免读取旧类型。 */
 watch(() => dayForm.accommodationType, (value) => {
   if (value !== 'HOTEL') dayForm.hotelId = ''
 })
@@ -239,7 +213,6 @@ async function saveDay() {
   if (codePointLength(transportation) > 255) return ElMessage.warning('交通说明最多 255 个字符')
   if (codePointLength(meals) > 255) return ElMessage.warning('餐食说明最多 255 个字符')
 
-  // ---- 住宿安排：先按契约把"类型 + 关联酒店"调成自洽，再提交 ----
   const accommodationType = dayForm.accommodationType
   if (!ACCOMMODATION_TYPES.includes(accommodationType)) return ElMessage.warning('请选择住宿安排类型')
   let hotelId = optional(dayForm.hotelId)
@@ -250,10 +223,7 @@ async function saveDay() {
   if (accommodationType === 'STANDARD' && !accommodationStandard) {
     return ElMessage.warning('住宿安排为「只确定住宿标准」时，请填写住宿标准')
   }
-  // 契约：STANDARD / NONE / PENDING 都不能带酒店（HOTEL 没有酒店会被 422 拒绝）。
   if (accommodationType !== 'HOTEL') hotelId = null
-  // 住宿标准只在"指定酒店 / 只确定住宿标准"下有意义；房型与早餐属于已知的住宿安排，
-  // NONE（不含住宿）与 PENDING（还没确认）都不该继续带着一份看不到的值。
   const knownArrangement = accommodationType === 'HOTEL' || accommodationType === 'STANDARD'
   const standard = knownArrangement ? accommodationStandard : null
   const roomType = knownArrangement ? optional(dayForm.roomType) : null
@@ -263,9 +233,6 @@ async function saveDay() {
   if (codePointLength(roomType) > 100) return ElMessage.warning('房型最多 100 个字符')
   if (codePointLength(accommodationNote) > 1000) return ElMessage.warning('住宿说明最多 1000 个字符')
 
-  // 请求体是**整体替换**：未提交的可空字段会被服务端清成 null，`breakfastIncluded` 的
-  // `false` 与"未提交"因此是两种结果。这里始终上送完整表单状态（含显式的 null / false），
-  // 不靠"省略字段"表达任何语义。
   const payload = {
     dayNumber,
     title,
@@ -510,8 +477,7 @@ onMounted(load)
                 <div class="day-meta">
                   <span>交通：{{ day.transportation || '未填写' }}</span>
                   <span>餐食：{{ day.meals || '未填写' }}</span>
-                  <!-- 住宿不能只用 hotelName 表达：没关联酒店也可能是"只确定住宿标准"或"待确认"，
-                       只有 accommodationType = NONE 才是当天不含住宿 -->
+
                   <span>住宿：{{ accommodationSummary(day) }}</span>
                 </div>
               </div>
@@ -605,8 +571,7 @@ onMounted(load)
           <label>第几天 <span class="req">*</span></label>
           <input v-model.number="dayForm.dayNumber" type="number" min="1" />
         </div>
-        <!-- 住宿安排类型与关联酒店必须自洽（契约 ItineraryDayRequest）：
-             HOTEL 需要酒店；STANDARD 需要住宿标准且不能带酒店；NONE / PENDING 不能带酒店 -->
+
         <div class="form-field">
           <label>住宿安排 <span class="req">*</span></label>
           <select v-model="dayForm.accommodationType">
@@ -649,12 +614,12 @@ onMounted(load)
           <label>餐食说明</label>
           <input v-model="dayForm.meals" placeholder="例如：早、午餐" />
         </div>
-        <!-- 住宿标准：STANDARD 必填；HOTEL 时可留空 -->
+
         <div v-if="dayForm.accommodationType === 'HOTEL' || dayForm.accommodationType === 'STANDARD'" class="form-field wide">
           <label>住宿标准<template v-if="dayForm.accommodationType === 'STANDARD'"> <span class="req">*</span></template></label>
           <input v-model="dayForm.accommodationStandard" placeholder="例如：市区舒适型酒店（有可靠依据时才写星级）" />
         </div>
-        <!-- 房型 / 早餐 / 住宿说明：只在住宿安排已经明确（指定酒店或住宿标准）时才填写 -->
+
         <template v-if="dayForm.accommodationType === 'HOTEL' || dayForm.accommodationType === 'STANDARD'">
           <div class="form-field">
             <label>房型</label>

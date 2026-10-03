@@ -14,19 +14,6 @@ import {
   starRatingLabel
 } from '../hotel'
 
-/**
- * 住宿 / 酒店展示口径的单元测试。
- *
- * <p>这里钉住的是三个"看起来只是文案、实际会影响用户判断"的规则：</p>
- * <ol>
- *   <li><b>未知枚举不落屏</b>：`HotelFacility` 是封闭枚举，将来新增取值时旧前端不认识的取值
- *       必须整项跳过，而不是把 `SOME_NEW_ENUM` 直接印在用户端；</li>
- *   <li><b>`breakfastIncluded` 是三态</b>：`false` 是"不含早餐"，`null` 是"尚未说明" ——
- *       把未说明渲染成"不含早餐"就是在替酒店改承诺；</li>
- *   <li><b>`hotelId` 为空不等于不含住宿</b>：只有 `accommodationType = NONE` 才是不含住宿，
- *       缺失字段兜底时沿用服务端迁移口径（有酒店 → HOTEL，没有 → PENDING），不推断成 NONE。</li>
- * </ol>
- */
 describe('utils/hotel 设施标签', () => {
   it('覆盖契约 HotelFacility 的全部 14 个取值，且中文文案与契约一致', () => {
     expect(FACILITY_VALUES).toHaveLength(14)
@@ -87,7 +74,6 @@ describe('utils/hotel 住宿安排类型', () => {
     expect(accommodationTypeOf({ hotelName: '演示酒店' })).toBe('HOTEL')
     expect(accommodationTypeOf({})).toBe('PENDING')
     expect(accommodationTypeOf(null)).toBe('PENDING')
-    // 明确的 NONE 才是不含住宿
     expect(accommodationTypeOf({ accommodationType: 'NONE' })).toBe('NONE')
   })
 
@@ -97,7 +83,6 @@ describe('utils/hotel 住宿安排类型', () => {
     expect(accommodationSummary({ accommodationType: 'STANDARD' })).toBe('只确定住宿标准')
     expect(accommodationSummary({ accommodationType: 'PENDING' })).toBe('住宿待确认')
     expect(accommodationSummary({})).toBe('住宿待确认')
-    // 名称是空白串时不算有名称
     expect(accommodationSummary({ hotelName: '   ', accommodationType: 'NONE' })).toBe('当天不含住宿')
   })
 })
@@ -107,7 +92,6 @@ describe('utils/hotel 官方星级与入住退房时间', () => {
     expect(starRatingLabel(4)).toBe('4 星')
     expect(starRatingLabel(1)).toBe('1 星')
     expect(starRatingLabel(5)).toBe('5 星')
-    // 契约里 starRating 是 integer 或 null：字符串 '4'、0、6、小数都不是合法取值
     expect(starRatingLabel('4')).toBeNull()
     expect(starRatingLabel(0)).toBeNull()
     expect(starRatingLabel(6)).toBeNull()

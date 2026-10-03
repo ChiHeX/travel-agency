@@ -4,26 +4,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { ElMessage } from 'element-plus'
 import HotelFormDialog from '../HotelFormDialog.vue'
 
-/**
- * 酒店资料新增/修改表单的契约测试（契约 {@code HotelCreateRequest} / {@code HotelUpdateRequest} / {@code Hotel}）。
- *
- * <p>覆盖的是酒店这一档最容易出现的违约点：</p>
- * <ul>
- *   <li>请求体里的 {@code status} 必须是契约 {@code AccountStatus}（{@code ACTIVE}/{@code DISABLED}），
- *       不能是库内的 1/0；</li>
- *   <li><b>编辑时只有用户真的改过状态才提交 {@code status}</b>：后端的口径是"未提交即保持库内现值"，
- *       每次编辑都带上旧状态会让并发停用被静默覆盖（只改地址的保存把刚停用的酒店重新启用）；</li>
- *   <li>{@code longitude} / {@code latitude} 必须是 JSON number（或 null），不能是字符串；</li>
- *   <li>{@code city} 是本次契约新增的<b>必填</b>字段：必须随请求提交。存量资料可能是迁移脚本补的
- *       空串，此时照常提交空串、由后端 422 提示补录，页面不得替运营编一个城市名；</li>
- *   <li>{@code starRating} 只接受 1～5 的整数或 null（官方星级，没有依据时必须 null）；
- *       {@code facilities} 限定在 {@code HotelFacility} 枚举内且不能重复（契约 uniqueItems）；
- *       {@code checkInTime} / {@code checkOutTime} 是 {@code HH:mm} 的 {@code ClockTime}；
- *       {@code images} 最多 10 张、url 必须是 http/https 绝对地址，且按整体替换提交（{@code []} 即清空）；</li>
- *   <li>可空字段清空时要提交 {@code null}，PUT 才能真正把库内字段清掉。</li>
- * </ul>
- */
-
 const createHotel = vi.fn()
 const updateHotel = vi.fn()
 const fetchHotel = vi.fn()
@@ -103,7 +83,6 @@ function buttonByText(wrapper, text) {
   return button
 }
 
-/** 设施复选框：按契约枚举取值定位。 */
 function facilityCheckbox(wrapper, value) {
   const input = wrapper.findAll('.facility-option input').find((item) => item.element.value === value)
   if (!input) throw new Error(`找不到设施复选框「${value}」`)
@@ -139,12 +118,10 @@ describe('HotelFormDialog', () => {
     const payload = createHotel.mock.calls[0][0]
     expect(payload).toEqual({
       name: '大理演示酒店',
-      // city 是本次契约新增的必填字段：必须随请求提交（这里是去空格后的值）
       city: '大理',
       address: null,
       contactPhone: '0872-1234567',
       coverUrl: null,
-      // images / facilities 按整体替换提交：没有内容时就是 []，写进库内即清空
       images: [],
       starRating: null,
       facilities: [],
@@ -156,7 +133,6 @@ describe('HotelFormDialog', () => {
       dataSource: '团队测试数据',
       status: 'ACTIVE'
     })
-    // 契约外字段一律不上送：id / createdAt / updatedAt 由后端与数据库决定。
     expect(payload).not.toHaveProperty('id')
     expect(payload).not.toHaveProperty('createdAt')
     expect(payload).not.toHaveProperty('updatedAt')
@@ -174,7 +150,6 @@ describe('HotelFormDialog', () => {
     expect(wrapper.find('select').element.value).toBe('DISABLED')
     expect(field(wrapper, '经度').element.value).toBe('100.1005')
     expect(field(wrapper, '联系电话').element.value).toBe('0872-1234567')
-    // 本次契约新增的字段同样要回填，否则"载入服务器数据"或一次普通保存会把它们清掉
     expect(field(wrapper, '城市').element.value).toBe('大理')
     expect(field(wrapper, '封面图地址').element.value).toBe('https://example.com/hotel-31-cover.jpg')
     expect(field(wrapper, '入住时间').element.value).toBe('14:00')
@@ -600,14 +575,6 @@ describe('HotelFormDialog', () => {
   })
 })
 
-/**
- * 本次契约新增的酒店字段（`city`、`coverUrl`、`starRating`、`facilities`、`checkInTime`、
- * `checkOutTime`、`images`）在表单里的提交口径。
- *
- * <p>这些字段有一个共同的坑：契约把 `city` 设为必填、把 `images` / `facilities` 定为
- * **整体替换**。因此"没改就不发"在这里不是省事，而是把库内的图片和设施清空 ——
- * 表单必须始终把完整状态发出去（空值也发）。</p>
- */
 describe('HotelFormDialog（契约新增字段）', () => {
   it('编辑存量资料：city 是迁移脚本补的空串时照常提交空串，由后端 422 提示补录', async () => {
     updateHotel.mockResolvedValue({ ...disabledHotel, city: '' })
@@ -618,7 +585,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
 
-    // 页面不编造城市，也不因为空城市就卡住用户：请求照发，city 是空串
     expect(updateHotel).toHaveBeenCalledTimes(1)
     expect(updateHotel.mock.calls[0][1].city).toBe('')
   })
@@ -661,7 +627,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
     const wrapper = mountDialog()
     await flushPromises()
 
-    // 下拉里只可能出现契约 HotelFacility 的取值，没有自由文本入口
     const values = wrapper.findAll('.facility-option input').map((input) => input.element.value)
     expect(values).toContain('WIFI')
     expect(values).toContain('ACCESSIBLE_FACILITIES')
@@ -669,7 +634,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
 
     await facilityCheckbox(wrapper, 'GYM').setValue(true)
     await facilityCheckbox(wrapper, 'SWIMMING_POOL').setValue(true)
-    // 同一项点两次不会产生重复取值（契约 uniqueItems: true）
     await facilityCheckbox(wrapper, 'GYM').setValue(false)
     await facilityCheckbox(wrapper, 'GYM').setValue(true)
 
@@ -691,7 +655,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
 
-    // 契约 ClockTime 不接受 9:00 / 24:00 / 带秒或时区的写法
     for (const invalid of ['9:00', '24:00', '14:60', '14:00:00', '14时00分']) {
       await field(wrapper, '入住时间').setValue(invalid)
       await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -704,7 +667,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await flushPromises()
     expect(createHotel).toHaveBeenCalledTimes(1)
     expect(createHotel.mock.calls[0][0].checkInTime).toBe('14:00')
-    // 另一项留空时提交 null（清空），不是空字符串
     expect(createHotel.mock.calls[0][0].checkOutTime).toBeNull()
   })
 
@@ -720,7 +682,6 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await flushPromises()
     expect(wrapper.findAll('.image-row')).toHaveLength(1)
 
-    // 非法地址（相对路径 / 其它协议）本地拦下，不发给后端
     await wrapper.find('.image-url').setValue('example.com/hotel-1.jpg')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()

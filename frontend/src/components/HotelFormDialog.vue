@@ -5,50 +5,6 @@ import { adminApi } from '@/api/modules'
 import { FACILITY_VALUES, facilityLabel } from '@/utils/hotel'
 import { codePointLength, overCodePoints } from '@/utils/text'
 
-/**
- * 酒店资料新增 / 修改表单弹窗（对应契约 POST /admin/hotels 与 PUT /admin/hotels/{hotelId}）。
- *
- * 只提交契约字段：新增走 `HotelCreateRequest`（**不含** `version`，版本由服务端从 0 起算），
- * 修改走 `HotelUpdateRequest`（**必填** `version`，回传读取时拿到的版本号）；
- * `id`、`createdAt`、`updatedAt` 都不在前端提交范围内 —— 主键由后端生成，审计时间由数据库维护，
- * 提交这些字段会被后端严格模式直接拒绝（400）。
- *
- * 字段口径与后端一致：
- * - `city` 是**必填**（`minLength: 1` / `maxLength: 64`）。存量资料由迁移脚本补成**空串**
- *   （表示尚未录入城市，不编造城市名），所以这里**不**做"为空就拦下"的本地硬校验：
- *   留空照常提交，由后端 422 的 message 就地提示 —— 否则编辑一条老资料时，用户会卡在一个
- *   自己看不出原因的表单里，而"随便填一个城市"是更坏的结果；
- * - `starRating` 是**官方星级**（1～5 的整数或 `null`）。本项目没有酒店评价体系，
- *   没有可靠依据时必须留空（提交 `null`），不得用网站评分或"几钻"顶替；
- * - `facilities` 限定在契约 `HotelFacility` 枚举内，用复选框而不是自由文本：
- *   契约按枚举校验，自由文本会被 422 拒收；复选框天然不会产生重复取值
- *   （契约 `uniqueItems: true`）；
- * - `checkInTime` / `checkOutTime` 是 `HH:mm` 的 `ClockTime`，只作为"通常几点入住 / 几点前退房"
- *   的说明，不做时区换算；留空提交 `null`；
- * - `images` 是资料的一部分并按**整体替换**处理（最多 10 张）：提交 `[]` 就会清空该酒店已有的
- *   全部图片记录。每张的 `url` 必须是 http/https 绝对地址（第一版由后台填写外部图片地址，
- *   项目不提供图片上传服务）；
- * - `coverUrl` 是列表/行程卡片封面；为空提交 `null`，用户端显示占位图；
- * - `status` 是契约 AccountStatus 枚举 `ACTIVE` / `DISABLED`（后端映射成库内 1/0），
- *   新建默认 ACTIVE；DISABLED 表示停用该资料，但不影响已经被线路行程引用的行程内容，
- *   只是不能再被安排进新的每日行程（后端会拒绝，行程编辑的下拉里也标注为「已停用」）；
- *   **编辑时只有用户真的改过状态才提交该字段**，否则后端会保留库内现值，避免用旧状态
- *   覆盖另一位管理员的并发停用（见 `shouldSubmitStatus`）；
- * - `longitude` / `latitude` 是 JSON number，且必须在经度 ±180、纬度 ±90 之内（后端 422 兜底）；
- * - `address` / `contactPhone` / `intro` / 坐标允许为空，提交 null 表示清空（PUT 会真的写 NULL）。
- *
- * 酒店在 PRD 里只作为线路行程资源存在（PRD §10、§36）：表单不含房型、库存与价格字段，
- * 本项目不提供酒店订单与单独下单。
- *
- * 页面校验只用于改善交互，最终由后端裁定；后端返回的 message 会就地展示。
- *
- * **版本冲突**（409 `HOTEL_VERSION_CONFLICT`）：另一位工作人员在本次编辑期间改过这份资料。
- * 表单不会丢弃用户填写的内容，而是就地展示冲突面板：拉取服务器最新资料、列出有差异的字段，
- * 由用户选择「载入服务器最新数据」或「保留我的修改并覆盖」（用服务器最新版本号重新提交）。
- *
- * 保存成功后 emit `saved`，载荷是 `{ hotel, created }`：`hotel` 是后端返回的酒店（含最新 `version`），
- * `created` 表示这次走的是 POST（新建）还是 PUT（修改），由调用方决定刷新哪一页。
- */
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   hotel: { type: Object, default: null }
@@ -145,13 +101,13 @@ const INTRO_MAX = 10000
 const DATA_SOURCE_MAX = 500
 const IMAGE_URL_MAX = 500
 const IMAGE_ALT_MAX = 200
-/** 契约 images 的 maxItems。 */
+
 const IMAGES_MAX = 10
-/** 契约 ClockTime：24 小时制 `HH:mm`，不接受 `24:00`、`9:00` 或带秒与时区的写法。 */
+
 const CLOCK_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/
-/** 契约 ImageUrl：http / https 开头的绝对地址。 */
+
 const IMAGE_URL_RE = /^https?:\/\/\S+$/
-/** 官方星级只允许契约声明的 1～5，没有可靠依据时留空（提交 null）。 */
+
 const STAR_RATINGS = ['1', '2', '3', '4', '5']
 
 /** 坐标必须是契约允许范围内的数字；未填写返回 null。 */
@@ -164,7 +120,6 @@ function coordinate(value, min, max, label) {
   return { value: number }
 }
 
-/** 图片地址：未填写返回 null（清空）；填写了就必须是 http/https 绝对地址。 */
 function imageUrl(value, label) {
   const text = String(value ?? '').trim()
   if (text === '') return { value: null }
@@ -173,7 +128,6 @@ function imageUrl(value, label) {
   return { value: text }
 }
 
-/** 官方星级：未选择返回 null；契约只接受 1～5 的整数。 */
 function starRatingValue() {
   const text = String(form.starRating ?? '').trim()
   if (text === '') return null
@@ -181,7 +135,6 @@ function starRatingValue() {
   return Number.isInteger(number) && number >= 1 && number <= 5 ? number : null
 }
 
-/** `ClockTime`（HH:mm）：留空提交 null，填写了就必须是契约的格式。 */
 function clockTime(value, label) {
   const text = String(value ?? '').trim()
   if (text === '') return { value: null }
@@ -189,12 +142,6 @@ function clockTime(value, label) {
   return { value: text }
 }
 
-/**
- * 本次要提交的图片列表（契约 HotelImageUpsert：url / alt / sortOrder，整体替换）。
- *
- * `sortOrder` 决定用户端展示顺序（升序，最小 1），同一酒店内允许重复；新增行时按行号预填，
- * 运营可以改。
- */
 function imagePayload() {
   return form.images.map((image, index) => ({
     url: String(image.url ?? '').trim(),
@@ -203,13 +150,6 @@ function imagePayload() {
   }))
 }
 
-/**
- * 页面侧校验：与后端 HotelCreateRequest / HotelUpdateRequest 的约束保持一致
- * （必填、长度上限、坐标范围），让运营在提交前就看到问题，而不是等接口回一个 422。
- *
- * 唯一的例外是 `city`：契约确实必填，但存量资料可能是空串，这里放行让后端的 422 说话
- * （见文件顶部说明），只校验长度上限。
- */
 function validate() {
   const name = form.name.trim()
   const dataSource = form.dataSource.trim()
@@ -250,23 +190,15 @@ function validate() {
   return ''
 }
 
-/** 新增一张空白图片行；已达契约上限时不加。 */
 function addImage() {
   if (form.images.length >= IMAGES_MAX) return
   form.images.push({ url: '', alt: '', sortOrder: form.images.length + 1 })
 }
 
-/** 删除一张图片行；提交时该行不再出现在 payload 里，整体替换就等于删掉它。 */
 function removeImage(index) {
   form.images.splice(index, 1)
 }
 
-/**
- * 设施多选：复选框绑定 `:checked` 并在这里维护数组，契约要求 `uniqueItems: true`。
- *
- * 用复选框而不是自由文本输入：契约按 `HotelFacility` 枚举校验，自由文本会被 422 拒收；
- * 数组的增删互斥也天然不会产生重复取值。
- */
 function toggleFacility(value) {
   const index = form.facilities.indexOf(value)
   if (index === -1) form.facilities.push(value)
@@ -370,16 +302,13 @@ async function overwriteLatest() {
 /** 用一份酒店数据回填表单（打开弹窗与"载入服务器最新数据"共用）。 */
 function applyHotel(source) {
   const status = source?.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE'
-  // 城市可能是迁移脚本补的**空串**（表示尚未录入），照原样回填，不替运营猜一个城市名。
   Object.assign(form, {
     name: source?.name || '',
     city: source?.city || '',
     address: source?.address || '',
     contactPhone: source?.contactPhone || '',
     coverUrl: source?.coverUrl || '',
-    // 星级是数字或 null；用空串表示"未提供"，select 的取值因此统一是字符串。
     starRating: source?.starRating == null ? '' : String(source.starRating),
-    // 只保留契约枚举内的取值：列表里混进未知枚举时，提交会被后端 422 拒收。
     facilities: (Array.isArray(source?.facilities) ? source.facilities : [])
       .filter((value) => FACILITY_VALUES.includes(value)),
     checkInTime: source?.checkInTime || '',
@@ -408,14 +337,10 @@ async function save() {
   const editing = Boolean(props.hotel?.id)
   const payload = {
     name: form.name.trim(),
-    // 契约 HotelCreateRequest / HotelUpdateRequest 都把 city 列为必填（minLength: 1）：
-    // 留空时照常提交空串，由后端的 422 message 提示补录，见文件顶部说明。
     city: form.city.trim(),
     address: optional(form.address),
     contactPhone: optional(form.contactPhone),
     coverUrl: imageUrl(form.coverUrl, '封面图地址').value,
-    // images / facilities 都是**整体替换**：提交 [] 等于清空，因此永远整份上送，
-    // 而不是"没改就不发"——不发也同样是清空，反而更难解释。
     images: imagePayload(),
     starRating: starRatingValue(),
     facilities: [...form.facilities],
@@ -552,11 +477,6 @@ async function save() {
         </p>
       </div>
 
-      <!--
-        city 是契约必填（minLength: 1），但存量资料由迁移脚本补成空串（表示尚未录入城市）。
-        这里不做"为空就拦下"的本地硬校验：留空照常提交，让后端 422 的 message 就地提示补录，
-        而不是逼运营随手编一个城市名。
-      -->
       <div class="form-field">
         <label>城市 <span class="req">*</span></label>
         <input v-model="form.city" placeholder="例如：杭州" />
@@ -585,7 +505,6 @@ async function save() {
         </select>
       </div>
 
-      <!-- 官方星级：本项目没有酒店评价体系，没有可靠依据时必须留空，不得用网站评分或"几钻"顶替 -->
       <div class="form-field">
         <label>官方星级</label>
         <select v-model="form.starRating">
@@ -625,7 +544,6 @@ async function save() {
         <input v-model="form.latitude" inputmode="decimal" placeholder="例如：25.6940000" />
       </div>
 
-      <!-- ClockTime 是 HH:mm 的说明性时刻，不做时区换算；留空提交 null -->
       <div class="form-field">
         <label>入住时间</label>
         <input v-model="form.checkInTime" inputmode="numeric" placeholder="例如：14:00" />
@@ -638,10 +556,6 @@ async function save() {
         <p class="form-hint">24 小时制 HH:mm，例如 12:00；不清楚时留空。</p>
       </div>
 
-      <!--
-        设施限定在契约 HotelFacility 枚举内：契约按枚举校验，自由文本会被 422 拒收。
-        复选框天然不会重复（契约 uniqueItems: true）。
-      -->
       <div class="form-field wide">
         <label>酒店设施</label>
         <div class="facility-grid">
@@ -669,10 +583,6 @@ async function save() {
         </p>
       </div>
 
-      <!--
-        图片按**整体替换**提交：删掉一行就等于删掉那条图片记录（不会删除外部图片文件），
-        全部删空后提交的是 []，会清空该酒店已有的全部图片记录。
-      -->
       <div class="form-field wide">
         <label>酒店图片（最多 {{ IMAGES_MAX }} 张）</label>
         <div v-if="form.images.length" class="image-rows">
@@ -736,7 +646,6 @@ async function save() {
   color: var(--danger-red);
 }
 
-/* 设施多选：限定在契约 HotelFacility 枚举内，复选框不会产生重复取值 */
 .facility-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -752,7 +661,6 @@ async function save() {
   cursor: pointer;
 }
 
-/* 图片行：地址 / 说明 / 展示顺序 / 删除 */
 .image-rows {
   display: grid;
   gap: 8px;

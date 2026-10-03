@@ -92,15 +92,6 @@ public class RouteController {
         return ApiResponse.ok(orderService.listRouteReviews(id, page, size));
     }
 
-    /**
-     * 线路行程中安排的酒店公开资料，对齐契约 {@code GET /routes/{routeId}/hotels/{hotelId}}
-     * （无需登录，{@code PublicHotelDetailEnvelope}）。
-     *
-     * <p>详情挂在<b>线路之下</b>而不是做成公开的 {@code /hotels/{hotelId}}：酒店在本项目里只是
-     * 线路行程资源（PRD §10），整表公开等于把后台维护的、可能与任何线路都无关的酒店资料一起放出去。
-     * "线路已发布 + 酒店启用 + 确实被这条线路的行程引用"三条不满足时统一 404，
-     * 判定与响应组装都在 {@link HotelService#publicDetail}（同一份数据在两个入口上只有一种口径）。</p>
-     */
     @GetMapping("/{id}/hotels/{hotelId}")
     public ApiResponse<PublicHotelDetailView> hotel(
             @PathVariable Long id, @PathVariable Long hotelId) {

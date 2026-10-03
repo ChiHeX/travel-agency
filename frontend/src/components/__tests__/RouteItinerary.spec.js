@@ -4,22 +4,6 @@ import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import RouteItinerary from '../RouteItinerary.vue'
 
-/**
- * 用户端每日行程"当晚住宿"一节的契约测试（契约 {@code ItineraryDay}）。
- *
- * <p>重点不是文案好不好看，而是四条会直接误导用户的规则：</p>
- * <ol>
- *   <li><b>详情入口只在 {@code day.hotel} 非空时给出</b>：酒店被停用 / 已删除时摘要为 {@code null}，
- *       而 {@code GET /routes/{routeId}/hotels/{hotelId}} 对这类酒店一律 404 ——
- *       无条件加链接等于给用户一个必然报错的入口。行程仍安排了这家酒店，名称要照常显示；</li>
- *   <li>{@code accommodationType} 决定文案：{@code NONE} 是"当天不含住宿"，不能被渲染成
- *       "住宿安排暂未提供"，{@code STANDARD} / {@code PENDING} 也各有各的说法；</li>
- *   <li>官方星级只在是数字时显示，且必须标明是官方星级（本项目没有酒店评价体系）；</li>
- *   <li>{@code breakfastIncluded} 的 {@code false} 要显示"不含早餐"，{@code null} 整项不显示。</li>
- * </ol>
- *
- * <p>用真实 router（memory history）而不是 stub：链接的 href 正是这里要断言的东西。</p>
- */
 const ROUTE_ID = '7'
 
 async function mountItinerary(days, routeId = ROUTE_ID) {
@@ -32,7 +16,6 @@ async function mountItinerary(days, routeId = ROUTE_ID) {
   })
   await router.push(`/routes/${routeId}`)
   await router.isReady()
-  // 默认展开第一天，住宿一节就在展开区域里
   const wrapper = mount(RouteItinerary, {
     props: { days: days.map((day) => ({ items: [], ...day })), routeId },
     global: { plugins: [router] }
@@ -41,7 +24,6 @@ async function mountItinerary(days, routeId = ROUTE_ID) {
   return wrapper
 }
 
-/** 契约 HotelSummary（行程内嵌的酒店摘要，不含 images）。 */
 const hotelSummary = {
   id: '31',
   name: '杭州湖畔演示酒店',
@@ -69,7 +51,6 @@ describe('RouteItinerary 当晚住宿：指定酒店（HOTEL）', () => {
     const cover = wrapper.find('.hotel-cover')
     expect(cover.exists()).toBe(true)
     expect(cover.attributes('src')).toBe('https://example.com/hotel-31-cover.jpg')
-    // 封面图必须有 alt：既为读屏，也为图片加载失败时说明这是什么
     expect(cover.attributes('alt')).toBe('杭州湖畔演示酒店')
     expect(wrapper.find('.hotel-placeholder').exists()).toBe(false)
 
@@ -99,7 +80,6 @@ describe('RouteItinerary 当晚住宿：指定酒店（HOTEL）', () => {
 
     expect(wrapper.find('.hotel-placeholder').exists()).toBe(true)
     expect(wrapper.find('.hotel-cover').exists()).toBe(false)
-    // 摘要为 null 的封面不会被编出来
     expect(wrapper.find('.hotel-card img').exists()).toBe(false)
   })
 
@@ -119,10 +99,6 @@ describe('RouteItinerary 当晚住宿：指定酒店（HOTEL）', () => {
     expect(wrapper.text()).not.toContain('undefined')
   })
 
-  /**
-   * 酒店被停用 / 已删除：`hotel` 摘要是 null，详情端点也会 404。
-   * 名称是行程自身的事实，必须照常显示；链接必须消失，并说明没有公开详情页。
-   */
   it('酒店摘要为 null 但行程仍安排了酒店时：显示名称、不给详情链接、给出说明', async () => {
     const wrapper = await mountItinerary([{
       id: '71',
@@ -137,7 +113,6 @@ describe('RouteItinerary 当晚住宿：指定酒店（HOTEL）', () => {
     const text = wrapper.text()
     expect(text).toContain('已停止合作的演示酒店')
     expect(text).toContain('没有可公开的资料页')
-    // 关键断言：没有详情链接（否则用户点进一个必然 404 的页面）
     expect(wrapper.find('.hotel-link').exists()).toBe(false)
     expect(wrapper.find('a').exists()).toBe(false)
     expect(text).not.toContain('null')
@@ -179,7 +154,6 @@ describe('RouteItinerary 当晚住宿：其它住宿安排', () => {
     const text = wrapper.text()
     expect(text).toContain('当天不含住宿')
     expect(text).toContain('当晚夜车返程，不含住宿')
-    // 不含住宿不等于"暂未提供"，不能被渲染成还没安排的口气
     expect(text).not.toContain('住宿安排暂未提供')
     expect(wrapper.find('.hotel-link').exists()).toBe(false)
   })
@@ -261,7 +235,6 @@ describe('RouteItinerary 早餐三态', () => {
     expect(wrapper.text()).toContain('不含早餐')
   })
 })
-
 
 describe('RouteItinerary 集中住宿安排', () => {
   const day = (number, overrides = {}) => ({

@@ -798,3 +798,109 @@ describe('酒店新增字段的冲突比较', () => {
     expect(changed.find('.conflict-grid').text()).toContain('修改后的图片说明')
   })
 })
+
+describe('HotelFormDialog（版本冲突面板的差异比较）', () => {
+  async function conflictWith(latest, editAddress = true) {
+    updateHotel.mockRejectedValueOnce(Object.assign(
+      new Error('酒店资料已被他人修改（当前版本 5，你提交的是 3），请查看最新数据后再决定是否覆盖'),
+      { status: 409, code: 'HOTEL_VERSION_CONFLICT' }
+    ))
+    fetchHotel.mockResolvedValue(latest)
+
+    const wrapper = mountDialog(disabledHotel)
+    await flushPromises()
+    if (editAddress) {
+      await field(wrapper, '详细地址').setValue('云南省大理市（我填的）')
+    }
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  function diffText(wrapper) {
+    const note = wrapper.find('.conflict-diff')
+    return note.exists() ? note.text() : ''
+  }
+
+  const NO_DIFFERENCE = '你填写的各项与服务器当前值一致'
+
+  it('对方改了城市、封面、星级、设施与入住退房时间时，逐项列进差异而不是说"各项一致"', async () => {
+    const wrapper = await conflictWith({
+      ...disabledHotel,
+      city: '丽江',
+      coverUrl: 'https://example.com/other-cover.jpg',
+      starRating: 5,
+      facilities: ['WIFI', 'PARKING', 'GYM'],
+      checkInTime: '15:00',
+      checkOutTime: '11:00',
+      version: 5
+    })
+
+    const text = diffText(wrapper)
+    for (const label of ['城市', '封面图', '官方星级', '酒店设施', '入住时间', '退房时间']) {
+      expect(text, `差异列表必须包含「${label}」`).toContain(label)
+    }
+    expect(text).not.toContain(NO_DIFFERENCE)
+    expect(wrapper.text()).toContain('丽江')
+    expect(wrapper.text()).toContain('5 星')
+    expect(wrapper.text()).toContain('健身房')
+  })
+
+  it('设施按集合内容比较：只有勾选顺序不同（服务器顺序不同）不算差异', async () => {
+    const wrapper = await conflictWith({
+      ...disabledHotel,
+      facilities: ['PARKING', 'WIFI'],
+      version: 5
+    }, false)
+
+    expect(diffText(wrapper)).toContain(NO_DIFFERENCE)
+    expect(diffText(wrapper)).not.toContain('酒店设施')
+  })
+
+  it('设施少一个 / 多一个必须报差异（集合内容变了）', async () => {
+    const wrapper = await conflictWith({
+      ...disabledHotel,
+      facilities: ['WIFI'],
+      version: 5
+    }, false)
+
+    expect(diffText(wrapper)).toContain('酒店设施')
+    expect(diffText(wrapper)).not.toContain(NO_DIFFERENCE)
+  })
+
+  it('图片按展示顺序比较：只调换 sortOrder（展示顺序变了）必须报差异', async () => {
+    const wrapper = await conflictWith({
+      ...disabledHotel,
+      images: [
+        { url: 'https://example.com/hotel-31-1.jpg', alt: '大堂', sortOrder: 2 },
+        { url: 'https://example.com/hotel-31-2.jpg', alt: null, sortOrder: 1 }
+      ],
+      version: 5
+    }, false)
+
+    expect(diffText(wrapper)).toContain('酒店图片')
+    expect(diffText(wrapper)).not.toContain(NO_DIFFERENCE)
+    expect(wrapper.find('.conflict-grid').text()).toContain('https://example.com/hotel-31-1.jpg')
+  })
+
+  it('图片只是数组顺序不同（sortOrder 未变）不算差异，数量变化才算', async () => {
+    const reordered = await conflictWith({
+      ...disabledHotel,
+      images: [
+        { url: 'https://example.com/hotel-31-2.jpg', alt: null, sortOrder: 2 },
+        { url: 'https://example.com/hotel-31-1.jpg', alt: '大堂', sortOrder: 1 }
+      ],
+      version: 5
+    }, false)
+    expect(diffText(reordered)).toContain(NO_DIFFERENCE)
+    expect(diffText(reordered)).not.toContain('酒店图片')
+
+    const fewer = await conflictWith({
+      ...disabledHotel,
+      images: [{ url: 'https://example.com/hotel-31-1.jpg', alt: '大堂', sortOrder: 1 }],
+      version: 5
+    }, false)
+    expect(diffText(fewer)).toContain('酒店图片')
+    expect(diffText(fewer)).not.toContain(NO_DIFFERENCE)
+  })
+})

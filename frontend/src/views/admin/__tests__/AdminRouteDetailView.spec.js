@@ -491,3 +491,32 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
     expect(createItineraryDay).toHaveBeenCalledTimes(1)
   })
 })
+
+
+it('编辑待确认住宿只修改标题时，保留住宿标准、房型及明确的不含早餐', async () => {
+  fetchRoute.mockResolvedValue(mockRouteDetail([{ ...standardDay, accommodationType: 'PENDING' }]))
+  const wrapper = mountView()
+  await flushPromises()
+  await editDayButton(wrapper).trigger('click')
+  await flushPromises()
+  expect(roomTypeInput(wrapper).element.value).toBe('大床房')
+  expect(breakfastSelect(wrapper).element.value).toBe('false')
+  await dayTitleInput(wrapper).setValue('修改标题')
+  await buttonByText(wrapper, '保存行程').trigger('click')
+  await flushPromises()
+  expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({ accommodationType: 'PENDING',
+    hotelId: null, accommodationStandard: '市区舒适型酒店', roomType: '大床房', breakfastIncluded: false })
+})
+
+it('酒店改为待确认时保留住宿信息并清除酒店关联', async () => {
+  const wrapper = mountView()
+  await flushPromises()
+  await editDayButton(wrapper).trigger('click')
+  await flushPromises()
+  await accommodationSelect(wrapper).setValue('PENDING')
+  await flushPromises()
+  await buttonByText(wrapper, '保存行程').trigger('click')
+  await flushPromises()
+  expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({ accommodationType: 'PENDING', hotelId: null,
+    roomType: '双床房', breakfastIncluded: true })
+})

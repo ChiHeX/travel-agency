@@ -101,7 +101,7 @@ const hotelStays = computed(() => {
               {{ dailyAccommodation(day, dayIndex) }}
             </RouterLink>
             <span v-else>{{ dailyAccommodation(day, dayIndex) }}</span>
-            <template v-if="accommodationTypeOf(day) === 'STANDARD'">
+            <template v-if="['STANDARD', 'PENDING'].includes(accommodationTypeOf(day))">
               <p v-if="day.accommodationStandard">住宿标准：{{ day.accommodationStandard }}</p>
               <p v-if="day.roomType">房型：{{ day.roomType }}</p>
               <p v-if="breakfastLabel(day.breakfastIncluded)">{{ breakfastLabel(day.breakfastIncluded) }}</p>

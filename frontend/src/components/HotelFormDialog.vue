@@ -36,6 +36,13 @@ const conflictLoading = ref(false)
 
 const EDITABLE_FIELD_LABELS = {
   name: '酒店名称',
+  city: '城市',
+  coverUrl: '封面图',
+  images: '酒店图片',
+  starRating: '官方星级',
+  facilities: '酒店设施',
+  checkInTime: '入住时间',
+  checkOutTime: '退房时间',
   address: '详细地址',
   contactPhone: '联系电话',
   status: '运营状态',
@@ -155,6 +162,7 @@ function validate() {
   const dataSource = form.dataSource.trim()
   if (!name) return '请填写酒店名称'
   if (overCodePoints(name, NAME_MAX)) return `酒店名称最多 ${NAME_MAX} 个字符`
+  if (!form.city.trim()) return '请填写城市；旧酒店资料需要补录城市后才能保存'
   if (overCodePoints(form.city.trim(), CITY_MAX)) return `城市最多 ${CITY_MAX} 个字符`
   if (overCodePoints(form.address.trim(), ADDRESS_MAX)) return `酒店地址最多 ${ADDRESS_MAX} 个字符`
   if (overCodePoints(form.contactPhone.trim(), CONTACT_PHONE_MAX)) return `联系电话最多 ${CONTACT_PHONE_MAX} 个字符`
@@ -225,34 +233,45 @@ function close() {
   emit('update:modelValue', false)
 }
 
-/** 冲突面板要展示的差异字段（只列真正不一样的部分，避免整屏都是"服务器 vs 你填写"）。 */
-const conflictDifferences = computed(() => {
-  const latest = conflictLatest.value
-  if (!latest) return []
-  const server = {
-    name: latest.name || '',
-    address: latest.address || '',
-    contactPhone: latest.contactPhone || '',
-    status: latest.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
-    longitude: latest.longitude === null || latest.longitude === undefined ? '' : String(latest.longitude),
-    latitude: latest.latitude === null || latest.latitude === undefined ? '' : String(latest.latitude),
-    intro: latest.intro || '',
-    dataSource: latest.dataSource || ''
+function comparableHotel(source) {
+  return {
+    name: String(source.name || '').trim(),
+    city: String(source.city || '').trim(),
+    address: optional(source.address),
+    contactPhone: optional(source.contactPhone),
+    coverUrl: optional(source.coverUrl),
+    images: (source.images || []).map((image) => ({
+      url: String(image.url || '').trim(), alt: optional(image.alt), sortOrder: Number(image.sortOrder)
+    })).sort((a, b) => a.sortOrder - b.sortOrder),
+    starRating: source.starRating === '' || source.starRating == null ? null : Number(source.starRating),
+    facilities: [...(source.facilities || [])].sort(),
+    checkInTime: optional(source.checkInTime),
+    checkOutTime: optional(source.checkOutTime),
+    status: source.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+    longitude: source.longitude === '' || source.longitude == null ? null : Number(source.longitude),
+    latitude: source.latitude === '' || source.latitude == null ? null : Number(source.latitude),
+    intro: optional(source.intro),
+    dataSource: String(source.dataSource || '').trim()
   }
-  const mine = {
-    name: form.name.trim(),
-    address: form.address.trim(),
-    contactPhone: form.contactPhone.trim(),
-    status: form.status,
-    longitude: String(form.longitude ?? '').trim(),
-    latitude: String(form.latitude ?? '').trim(),
-    intro: form.intro,
-    dataSource: form.dataSource.trim()
-  }
-  return Object.keys(EDITABLE_FIELD_LABELS).filter((key) => server[key] !== mine[key])
+}
+function displayConflictValue(key, value) {
+  if (value == null || value === '') return '（空）'
+  if (key === 'status') return value === 'DISABLED' ? '停用' : '启用'
+  if (key === 'starRating') return value + ' 星'
+  if (key === 'facilities') return value.map((item) => facilityLabel(item) || item).join('、') || '（空）'
+  if (key === 'images') return value.map((image) =>
+    image.sortOrder + '. ' + image.url + (image.alt ? '（' + image.alt + '）' : '')).join('\n') || '（空）'
+  return String(value)
+}
+const conflictRows = computed(() => {
+  if (!conflictLatest.value) return []
+  const server = comparableHotel(conflictLatest.value)
+  const mine = comparableHotel(form)
+  return Object.keys(EDITABLE_FIELD_LABELS)
+    .filter((key) => JSON.stringify(server[key]) !== JSON.stringify(mine[key]))
+    .map((key) => ({ key, label: EDITABLE_FIELD_LABELS[key],
+      server: displayConflictValue(key, server[key]), mine: displayConflictValue(key, mine[key]) }))
 })
-
-const differs = (key) => conflictDifferences.value.includes(key)
 
 /**
  * 取回服务器最新资料：走契约的 `GET /admin/hotels/{hotelId}`，**按主键**读取。
@@ -413,39 +432,18 @@ async function save() {
         <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
         <el-skeleton v-if="conflictLoading" :rows="3" animated />
         <template v-else-if="conflictLatest">
-          <p v-if="conflictDifferences.length" class="conflict-note conflict-diff">
+          <p v-if="conflictRows.length" class="conflict-note conflict-diff">
             与服务器不一致的字段：
-            <strong>{{ conflictDifferences.map((key) => EDITABLE_FIELD_LABELS[key]).join('、') }}</strong>；
+            <strong>{{ conflictRows.map((row) => row.label).join('、') }}</strong>；
             服务器当前版本 {{ conflictLatest.version }}。
           </p>
           <p v-else class="conflict-note conflict-diff">你填写的各项与服务器当前值一致。</p>
           <dl class="conflict-grid">
-            <div :class="{ 'conflict-row-differs': differs('name') }">
-              <dt>酒店名称</dt>
+            <div v-for="row in conflictRows" :key="row.key" class="conflict-row-differs">
+              <dt>{{ row.label }}</dt>
               <dd>
-                <span class="conflict-server">服务器：{{ conflictLatest.name }}</span>
-                <span class="conflict-mine">你填写：{{ form.name.trim() || '（空）' }}</span>
-              </dd>
-            </div>
-            <div :class="{ 'conflict-row-differs': differs('status') }">
-              <dt>运营状态</dt>
-              <dd>
-                <span class="conflict-server">服务器：{{ conflictLatest.status === 'DISABLED' ? '停用' : '启用' }}</span>
-                <span class="conflict-mine">你填写：{{ form.status === 'DISABLED' ? '停用' : '启用' }}</span>
-              </dd>
-            </div>
-            <div :class="{ 'conflict-row-differs': differs('address') }">
-              <dt>详细地址</dt>
-              <dd>
-                <span class="conflict-server">服务器：{{ conflictLatest.address || '（空）' }}</span>
-                <span class="conflict-mine">你填写：{{ form.address.trim() || '（空）' }}</span>
-              </dd>
-            </div>
-            <div :class="{ 'conflict-row-differs': differs('contactPhone') }">
-              <dt>联系电话</dt>
-              <dd>
-                <span class="conflict-server">服务器：{{ conflictLatest.contactPhone || '（空）' }}</span>
-                <span class="conflict-mine">你填写：{{ form.contactPhone.trim() || '（空）' }}</span>
+                <span class="conflict-server">服务器：{{ row.server }}</span>
+                <span class="conflict-mine">你填写：{{ row.mine }}</span>
               </dd>
             </div>
           </dl>
@@ -484,8 +482,7 @@ async function save() {
           {{ codePointLength(form.city) }} / {{ CITY_MAX }}
         </p>
         <p class="form-hint">
-          街道门牌写在「详细地址」里。契约要求新建与修改都必须带城市，留空提交会由后端返回错误提示；
-          旧资料若还没有城市，请在这里补录。
+          街道门牌写在「详细地址」里。城市必填，旧资料若还没有城市，请补录后保存。
         </p>
       </div>
 
@@ -495,6 +492,7 @@ async function save() {
         <p class="form-counter" :class="{ over: overCodePoints(form.contactPhone, CONTACT_PHONE_MAX) }">
           {{ codePointLength(form.contactPhone) }} / {{ CONTACT_PHONE_MAX }}
         </p>
+        <p class="form-hint">仅供后台联系酒店使用，不会展示在用户端酒店详情中。</p>
       </div>
 
       <div class="form-field">
@@ -741,6 +739,8 @@ async function save() {
 }
 
 .conflict-grid dd {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   display: grid;
   gap: 2px;
   margin: 0;

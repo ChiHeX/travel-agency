@@ -160,6 +160,7 @@ describe('HotelFormDialog', () => {
     expect(wrapper.findAll('.image-row')).toHaveLength(2)
 
     await field(wrapper, '酒店名称').setValue('苍山脚下的演示酒店（改名）')
+    await field(wrapper, '城市').setValue('大理')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
 
@@ -238,6 +239,7 @@ describe('HotelFormDialog', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('待停用演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await wrapper.find('select').setValue('DISABLED')
     await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -448,6 +450,7 @@ describe('HotelFormDialog', () => {
     expect(createHotel).not.toHaveBeenCalled()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     // 联系电话的契约上限是 20 个字符
     await field(wrapper, '联系电话').setValue('1'.repeat(21))
@@ -480,6 +483,7 @@ describe('HotelFormDialog', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
 
     // 只填纬度：单点坐标在用户端地图上无法落点，后端同样会回 422。
@@ -506,6 +510,7 @@ describe('HotelFormDialog', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('名'.repeat(128))
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '联系电话').setValue('1'.repeat(20))
     await field(wrapper, '数据来源说明').setValue('源'.repeat(500))
     await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -514,12 +519,14 @@ describe('HotelFormDialog', () => {
 
     // 名称多一个字符：必须拦在本地，不再发第二次请求
     await field(wrapper, '酒店名称').setValue('名'.repeat(129))
+    await field(wrapper, '城市').setValue('大理')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
     expect(createHotel).toHaveBeenCalledTimes(1)
 
     // 数据来源说明多一个字符同样拦下
     await field(wrapper, '酒店名称').setValue('名'.repeat(128))
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('源'.repeat(501))
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
@@ -541,6 +548,7 @@ describe('HotelFormDialog', () => {
     expect(emojiIntro.length).toBeGreaterThan(10000)
 
     await field(wrapper, '酒店名称').setValue(emojiName)
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '酒店简介').setValue(emojiIntro)
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -552,6 +560,7 @@ describe('HotelFormDialog', () => {
 
     // 超出码点上限（129 > 128）仍然要拦下，别把"按码点算"做成"不校验"
     await field(wrapper, '酒店名称').setValue('😀'.repeat(129))
+    await field(wrapper, '城市').setValue('大理')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
     expect(createHotel).toHaveBeenCalledTimes(1)
@@ -565,6 +574,7 @@ describe('HotelFormDialog', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
@@ -576,8 +586,8 @@ describe('HotelFormDialog', () => {
 })
 
 describe('HotelFormDialog（契约新增字段）', () => {
-  it('编辑存量资料：city 是迁移脚本补的空串时照常提交空串，由后端 422 提示补录', async () => {
-    updateHotel.mockResolvedValue({ ...disabledHotel, city: '' })
+  it('存量酒店不猜测城市，补录前阻止保存，补录后提交真实城市', async () => {
+    updateHotel.mockResolvedValue({ ...disabledHotel, city: '大理', version: 4 })
     const wrapper = mountDialog({ ...disabledHotel, city: '' })
     await flushPromises()
 
@@ -585,23 +595,27 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
 
+    expect(updateHotel).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('请填写城市；旧酒店资料需要补录城市后才能保存')
+    await field(wrapper, '城市').setValue(' 大理 ')
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
     expect(updateHotel).toHaveBeenCalledTimes(1)
-    expect(updateHotel.mock.calls[0][1].city).toBe('')
+    expect(updateHotel.mock.calls[0][1].city).toBe('大理')
   })
 
-  it('后端对空城市的 422 message 就地展示，用户输入不丢', async () => {
-    createHotel.mockRejectedValue(
-      Object.assign(new Error('城市不能为空'), { status: 422, code: 'VALIDATION_ERROR' })
-    )
+  it('新建酒店的城市仅含空白时阻止请求，保留用户输入', async () => {
     const wrapper = mountDialog()
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('   ')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('城市不能为空')
+    expect(createHotel).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('请填写城市；旧酒店资料需要补录城市后才能保存')
     expect(field(wrapper, '酒店名称').element.value).toBe('大理演示酒店')
   })
 
@@ -613,6 +627,7 @@ describe('HotelFormDialog（契约新增字段）', () => {
     expect(field(wrapper, '官方星级').element.value).toBe('')
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await field(wrapper, '官方星级').setValue('4')
     await buttonByText(wrapper, '保存酒店').trigger('click')
@@ -638,6 +653,7 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await facilityCheckbox(wrapper, 'GYM').setValue(true)
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
     await buttonByText(wrapper, '保存酒店').trigger('click')
     await flushPromises()
@@ -653,6 +669,7 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
 
     for (const invalid of ['9:00', '24:00', '14:60', '14:00:00', '14时00分']) {
@@ -676,6 +693,7 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await flushPromises()
 
     await field(wrapper, '酒店名称').setValue('大理演示酒店')
+    await field(wrapper, '城市').setValue('大理')
     await field(wrapper, '数据来源说明').setValue('团队测试数据')
 
     await buttonByText(wrapper, '+ 添加图片').trigger('click')
@@ -740,5 +758,43 @@ describe('HotelFormDialog（契约新增字段）', () => {
     await buttonByText(wrapper, '+ 添加图片').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('.image-row')).toHaveLength(10)
+  })
+})
+
+
+describe('酒店新增字段的冲突比较', () => {
+  async function conflict(latest) {
+    updateHotel.mockRejectedValueOnce(Object.assign(new Error('版本冲突'), { status: 409, code: 'HOTEL_VERSION_CONFLICT' }))
+    fetchHotel.mockResolvedValue({ ...disabledHotel, ...latest, version: 4 })
+    const wrapper = mountDialog(disabledHotel)
+    await flushPromises()
+    await buttonByText(wrapper, '保存酒店').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('展示新增字段的服务器值与用户值，避免误报一致', async () => {
+    const wrapper = await conflict({ city: '昆明', coverUrl: 'https://example.com/new.jpg',
+      images: [{ url: 'https://example.com/new-image.jpg', alt: '新外观', sortOrder: 1 }],
+      facilities: ['GYM'], starRating: 5, checkInTime: '15:00', checkOutTime: '11:00' })
+    const panel = wrapper.find('.conflict-panel')
+    for (const label of ['城市', '封面图', '酒店图片', '酒店设施', '官方星级', '入住时间', '退房时间']) {
+      expect(panel.find('.conflict-diff').text()).toContain(label)
+    }
+    for (const value of ['昆明', 'https://example.com/new.jpg', '新外观', '健身房', '5 星', '15:00', '11:00']) {
+      expect(panel.find('.conflict-grid').text()).toContain(value)
+    }
+    expect(panel.text()).not.toContain('各项与服务器当前值一致')
+    expect(field(wrapper, '城市').element.value).toBe('大理')
+  })
+
+  it('设施顺序与图片数组顺序不造成假冲突，但图片说明变化会显示差异', async () => {
+    const wrapper = await conflict({ facilities: ['PARKING', 'WIFI'], images: [...disabledHotel.images].reverse() })
+    expect(wrapper.find('.conflict-diff').text()).toContain('各项与服务器当前值一致')
+    wrapper.unmount()
+    const changed = await conflict({ images: disabledHotel.images.map((image, index) =>
+      ({ ...image, alt: index === 0 ? '修改后的图片说明' : image.alt })) })
+    expect(changed.find('.conflict-diff').text()).toContain('酒店图片')
+    expect(changed.find('.conflict-grid').text()).toContain('修改后的图片说明')
   })
 })

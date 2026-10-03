@@ -224,10 +224,10 @@ async function saveDay() {
     return ElMessage.warning('住宿安排为「只确定住宿标准」时，请填写住宿标准')
   }
   if (accommodationType !== 'HOTEL') hotelId = null
-  const knownArrangement = accommodationType === 'HOTEL' || accommodationType === 'STANDARD'
-  const standard = knownArrangement ? accommodationStandard : null
-  const roomType = knownArrangement ? optional(dayForm.roomType) : null
-  const breakfastIncluded = knownArrangement ? breakfastPayloadValue() : null
+  const hasAccommodation = accommodationType !== 'NONE'
+  const standard = hasAccommodation ? accommodationStandard : null
+  const roomType = hasAccommodation ? optional(dayForm.roomType) : null
+  const breakfastIncluded = hasAccommodation ? breakfastPayloadValue() : null
   const accommodationNote = optional(dayForm.accommodationNote)
   if (codePointLength(standard) > 500) return ElMessage.warning('住宿标准最多 500 个字符')
   if (codePointLength(roomType) > 100) return ElMessage.warning('房型最多 100 个字符')
@@ -615,12 +615,12 @@ onMounted(load)
           <input v-model="dayForm.meals" placeholder="例如：早、午餐" />
         </div>
 
-        <div v-if="dayForm.accommodationType === 'HOTEL' || dayForm.accommodationType === 'STANDARD'" class="form-field wide">
+        <div v-if="dayForm.accommodationType !== 'NONE'" class="form-field wide">
           <label>住宿标准<template v-if="dayForm.accommodationType === 'STANDARD'"> <span class="req">*</span></template></label>
           <input v-model="dayForm.accommodationStandard" placeholder="例如：市区舒适型酒店（有可靠依据时才写星级）" />
         </div>
 
-        <template v-if="dayForm.accommodationType === 'HOTEL' || dayForm.accommodationType === 'STANDARD'">
+        <template v-if="dayForm.accommodationType !== 'NONE'">
           <div class="form-field">
             <label>房型</label>
             <input v-model="dayForm.roomType" placeholder="例如：双床房" />

@@ -272,3 +272,14 @@ describe('RouteItinerary 集中住宿安排', () => {
     expect(wrapper.findAll('.day-heading-copy > span')[2].text()).not.toContain('续住')
   })
 })
+
+
+it('待确认住宿仍展示已确定的房型、住宿标准和早餐', async () => {
+  const wrapper = await mountItinerary([{ id: '1', dayNumber: 1, title: '第一天',
+    accommodationType: 'PENDING', accommodationStandard: '市区酒店', roomType: '双床房', breakfastIncluded: false }])
+  const text = wrapper.find('.daily-accommodation').text()
+  expect(text).toContain('住宿待确认')
+  expect(text).toContain('市区酒店')
+  expect(text).toContain('双床房')
+  expect(text).toContain('不含早餐')
+})

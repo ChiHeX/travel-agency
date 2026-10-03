@@ -57,6 +57,13 @@ const editingGuide = ref(null)
 const keyword = ref('')
 
 /**
+ * 城市筛选（精确匹配）。契约里只有 `GET /admin/hotels` 声明了 `city` 查询参数
+ * （与公开景点列表同口径，不做模糊匹配），景点 / 导游列表都没有这个参数，
+ * 因此只对酒店渲染输入框，也只在酒店这条资源上发送该参数 —— 不给后端发它不认识的查询串。
+ */
+const city = ref('')
+
+/**
  * 契约 AccountStatus：景点 / 酒店 / 导游共用同一套枚举，停用即停止使用
  * （景点从用户端列表与详情撤下；酒店不再被安排进新的每日行程，后端在写行程时以 422 拒绝；
  * 导游的账号同步被冻结，无法登录）。
@@ -146,9 +153,15 @@ const PAGED_RESOURCES = ['attractions', 'hotels', 'guides']
  * 没有 keyword，因此导游列表不做关键字筛选，避免把契约外的查询参数打给后端。
  */
 const SEARCHABLE_RESOURCES = ['attractions', 'hotels']
+/**
+ * 声明了 `city` 查询参数的资源（目前只有酒店）。契约里该参数是**精确匹配**，
+ * 因此这里只做整串比较，不在前端做模糊过滤。
+ */
+const CITY_FILTERED_RESOURCES = ['hotels']
 
 const pagedResource = computed(() => PAGED_RESOURCES.includes(props.resource))
 const searchable = computed(() => SEARCHABLE_RESOURCES.includes(props.resource))
+const cityFilterable = computed(() => CITY_FILTERED_RESOURCES.includes(props.resource))
 
 /** 列表标题与空状态文案用的资源名。 */
 const RESOURCE_LABEL = { attractions: '景点', hotels: '酒店', guides: '导游' }
@@ -163,12 +176,15 @@ async function load(retryOnEmptyPage = true) {
   try {
     // 只有契约里有分页参数的资源才传查询参数；其它资源不传，避免拼出后端不认识的查询串。
     const searching = keyword.value.trim()
+    const cityQuery = city.value.trim()
     const params = pagedResource.value
       ? {
           page: page.value,
           size: PAGE_SIZE,
           // keyword 只发给契约里声明了它的资源（景点 / 酒店）。
-          ...(searchable.value && searching ? { keyword: searching } : {})
+          ...(searchable.value && searching ? { keyword: searching } : {}),
+          // city 只发给契约里声明了它的资源（酒店），且按精确匹配提交去空格后的整串。
+          ...(cityFilterable.value && cityQuery ? { city: cityQuery } : {})
         }
       : undefined
     const result = await loaders[props.resource](params)
@@ -198,7 +214,7 @@ function goToPage(delta) {
 /**
  * 提交筛选：必须先回到第 1 页，否则会停在"上一次筛选下的第 N 页"，很容易落到空页。
  *
- * 契约里 keyword 参数是 maxLength: 100，后端以 @CodePointLength(max = 100) 按字符（码点）校验：
+ * 契约里 keyword 参数是 maxLength: 100、city 是 maxLength: 64，后端按字符（码点）校验：
  * 用 String#length（UTF-16 码元，一个 emoji 记 2）会把 50 个 emoji 的关键字判成超长，
  * 而此前输入框上的 maxlength="100" 又会把 70 个 emoji 的关键字静默截成 35 个、搜出一批
  * 与用户输入不符的结果。因此这里既不给输入框设 maxlength，也不截断，改为提交前按码点拦一次。
@@ -208,6 +224,10 @@ function search() {
     ElMessage.warning('搜索关键字最多 100 个字符')
     return
   }
+  if (codePointLength(city.value.trim()) > 64) {
+    ElMessage.warning('城市最多 64 个字符')
+    return
+  }
   page.value = 1
   load()
 }
@@ -215,6 +235,7 @@ function search() {
 /** 清空筛选项并回到第 1 页。 */
 function clearKeyword() {
   keyword.value = ''
+  city.value = ''
   page.value = 1
   load()
 }
@@ -416,6 +437,7 @@ async function decision(row, action) {
 watch(() => props.resource, () => {
   // 切换资源时清掉上一个资源的筛选词与页码，避免把景点的 keyword/页码带到别的列表上。
   keyword.value = ''
+  city.value = ''
   page.value = 1
   load()
 })
@@ -471,9 +493,17 @@ onMounted(load)
           ? '按酒店名称、地址或简介搜索'
           : '按景点名称、所属城市或简介搜索'"
       />
+      <!-- 城市筛选只属于酒店（契约只有 GET /admin/hotels 声明了 city 参数），且是精确匹配 -->
+      <input
+        v-if="cityFilterable"
+        v-model="city"
+        class="city-filter"
+        placeholder="按城市精确筛选，例如：杭州"
+        aria-label="按城市精确筛选"
+      />
       <button type="submit" class="secondary-button" :disabled="loading">查询</button>
       <button
-        v-if="keyword"
+        v-if="keyword || city"
         type="button"
         class="text-button"
         :disabled="loading"
@@ -527,6 +557,7 @@ onMounted(load)
           </tr>
           <tr v-else-if="resource === 'hotels'">
             <th>酒店名称</th>
+            <th>城市</th>
             <th>地址</th>
             <th>联系电话</th>
             <th>地理经纬度</th>
@@ -678,6 +709,8 @@ onMounted(load)
                 <strong>{{ row.name }}</strong>
                 <div class="muted-text">酒店 #{{ row.id }}</div>
               </td>
+              <!-- 城市是迁移脚本可能补成空串的字段：空串表示尚未录入，不编造城市名 -->
+              <td>{{ row.city || '—' }}</td>
               <td>{{ row.address || '—' }}</td>
               <td>{{ row.contactPhone || '—' }}</td>
               <td>
@@ -713,7 +746,9 @@ onMounted(load)
       <div v-else class="empty-box">
         {{ searchable && keyword.trim()
           ? `没有匹配「${keyword.trim()}」的${RESOURCE_LABEL[resource] || ''}资料，可清空筛选后重试。`
-          : resource === 'guides' ? '暂无导游数据。' : '暂无相关资料数据。' }}
+          : cityFilterable && city.trim()
+            ? `没有位于「${city.trim()}」的${RESOURCE_LABEL[resource] || ''}资料，城市筛选是精确匹配，可清空筛选后重试。`
+            : resource === 'guides' ? '暂无导游数据。' : '暂无相关资料数据。' }}
       </div>
 
       <!-- 景点 / 酒店 / 导游列表分页：后端按 page/size 分页返回，没有这组控件时第 21 条之后无法在界面上管理 -->
@@ -787,6 +822,12 @@ onMounted(load)
   background: white;
   font-size: 13px;
   color: var(--text-primary);
+}
+
+/* 城市筛选是精确匹配的整串比较，输入框不需要和关键字一样宽 */
+.resource-search input.city-filter {
+  flex: 0 1 200px;
+  max-width: 200px;
 }
 
 .resource-pager {

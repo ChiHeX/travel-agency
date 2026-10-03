@@ -24,13 +24,15 @@ const fetchRoute = vi.fn()
 const fetchHotels = vi.fn()
 const fetchAttractions = vi.fn()
 const createItineraryDay = vi.fn()
+const updateItineraryDay = vi.fn()
 
 vi.mock('@/api/modules', () => ({
   adminApi: {
     route: (...args) => fetchRoute(...args),
     hotels: (...args) => fetchHotels(...args),
     attractions: (...args) => fetchAttractions(...args),
-    createItineraryDay: (...args) => createItineraryDay(...args)
+    createItineraryDay: (...args) => createItineraryDay(...args),
+    updateItineraryDay: (...args) => updateItineraryDay(...args)
   }
 }))
 
@@ -58,14 +60,37 @@ const dayOnDisabledHotel = {
   meals: null,
   hotelId: '32',
   hotelName: '已停用演示酒店',
+  accommodationType: 'HOTEL',
+  accommodationStandard: null,
+  roomType: '双床房',
+  breakfastIncluded: true,
+  accommodationNote: null,
   items: []
 }
 
-function mockRouteDetail() {
+/** 只确定住宿标准的一天：住宿标准必填、不能带酒店，早餐用的是 false（不是"未说明"）。 */
+const standardDay = {
+  id: '72',
+  dayNumber: 2,
+  title: '大理',
+  description: null,
+  transportation: null,
+  meals: null,
+  hotelId: null,
+  hotelName: null,
+  accommodationType: 'STANDARD',
+  accommodationStandard: '市区舒适型酒店',
+  roomType: '大床房',
+  breakfastIncluded: false,
+  accommodationNote: '以出团通知为准',
+  items: []
+}
+
+function mockRouteDetail(itinerary = [dayOnDisabledHotel]) {
   return {
     route: { id: '21', name: '云南 6 日', status: 'DRAFT', durationDays: 6 },
     departures: [],
-    itinerary: [dayOnDisabledHotel],
+    itinerary,
     reviews: []
   }
 }
@@ -98,8 +123,49 @@ function editDayButton(wrapper, index = 0) {
   return card.findAll('button').find((item) => item.text().trim() === '编辑')
 }
 
+/**
+ * 酒店下拉里的候选项（不含"不指定"）。
+ *
+ * <p>不能再用"选项文案里含有「酒店」"来筛：住宿安排下拉的第一项就是「指定酒店」，
+ * 那样会把住宿安排类型误当成酒店候选项。这里按"含有『不指定』占位项"定位那个 select。</p>
+ */
+function hotelSelect(wrapper) {
+  const select = wrapper.findAll('select')
+    .find((item) => item.findAll('option').some((option) => option.text() === '不指定'))
+  if (!select) throw new Error('找不到酒店下拉')
+  return select
+}
+
 function hotelOptions(wrapper) {
-  return wrapper.findAll('option').filter((option) => option.text().includes('酒店'))
+  return hotelSelect(wrapper).findAll('option').filter((option) => option.text() !== '不指定')
+}
+
+/** 住宿安排类型下拉（契约 AccommodationType 的四种取值之一）。 */
+function accommodationSelect(wrapper) {
+  const select = wrapper.findAll('select')
+    .find((item) => item.findAll('option').some((option) => option.text() === '当天不含住宿'))
+  if (!select) throw new Error('找不到住宿安排下拉')
+  return select
+}
+
+/** 早餐三态下拉（未说明 / 含 / 不含），只在住宿安排明确时出现。 */
+function breakfastSelect(wrapper) {
+  const select = wrapper.findAll('select')
+    .find((item) => item.findAll('option').some((option) => option.text() === '未说明'))
+  if (!select) throw new Error('找不到早餐下拉')
+  return select
+}
+
+function standardInput(wrapper) {
+  return wrapper.find('input[placeholder^="例如：市区舒适型酒店"]')
+}
+
+function roomTypeInput(wrapper) {
+  return wrapper.find('input[placeholder="例如：双床房"]')
+}
+
+function noteInput(wrapper) {
+  return wrapper.find('textarea[placeholder^="例如：拼房安排"]')
 }
 
 /** 每日行程弹窗里的「行程标题」输入框：占位符在全页唯一。 */
@@ -114,6 +180,7 @@ beforeEach(() => {
     ? { items: [activeHotel], total: 101, totalPages: 2 }
     : { items: [disabledHotel], total: 101, totalPages: 2 }))
   createItineraryDay.mockReset().mockResolvedValue({ id: '99' })
+  updateItineraryDay.mockReset().mockResolvedValue({ id: '71' })
   ElMessage.success.mockClear()
   ElMessage.warning.mockClear()
   ElMessage.error.mockClear()
@@ -206,5 +273,250 @@ describe('AdminRouteDetailView（行程文本按码点校验）', () => {
 
     expect(createItineraryDay).not.toHaveBeenCalled()
     expect(ElMessage.warning).toHaveBeenCalledWith('行程标题最多 200 个字符')
+  })
+})
+
+/**
+ * 每日行程的住宿安排字段（契约 {@code ItineraryDayRequest} 新增的
+ * {@code accommodationType} / {@code accommodationStandard} / {@code roomType} /
+ * {@code breakfastIncluded} / {@code accommodationNote}）。
+ *
+ * <p>契约把这三件事写死了，页面必须在提交前就调成自洽：</p>
+ * <ol>
+ *   <li>{@code HOTEL} 必须有酒店；{@code STANDARD} 必须有住宿标准；{@code STANDARD} /
+ *       {@code NONE} / {@code PENDING} 都不能带酒店；</li>
+ *   <li>{@code breakfastIncluded} 是三态，{@code false}（不含早餐）必须能与"未说明"分别提交；</li>
+ *   <li>请求体是**整体替换**：未提交的可空字段会被服务端清成 {@code null}，
+ *       所以表单永远上送完整状态，不靠"省略字段"表达语义。</li>
+ * </ol>
+ */
+describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
+  async function openNewDayDialog() {
+    const wrapper = mountView()
+    await flushPromises()
+    await buttonByText(wrapper, '新增一日行程').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('新增行程默认「住宿待确认」：不会推断成"不含住宿"，全部住宿字段都显式提交', async () => {
+    const wrapper = await openNewDayDialog()
+
+    // 契约：未提交 accommodationType 时按 hotelId 推断，且永远不会推断成 NONE
+    expect(accommodationSelect(wrapper).element.value).toBe('PENDING')
+    expect(hotelSelect(wrapper).element.value).toBe('')
+
+    await dayTitleInput(wrapper).setValue('上海 → 昆明')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(createItineraryDay).toHaveBeenCalledTimes(1)
+    expect(createItineraryDay.mock.calls[0][1]).toMatchObject({
+      dayNumber: 2,
+      title: '上海 → 昆明',
+      hotelId: null,
+      accommodationType: 'PENDING',
+      accommodationStandard: null,
+      roomType: null,
+      breakfastIncluded: null,
+      accommodationNote: null
+    })
+  })
+
+  it('选中酒店即自动成为「指定酒店」，早餐选"不含"时提交 false（而不是 null）', async () => {
+    const wrapper = await openNewDayDialog()
+
+    await hotelSelect(wrapper).setValue('31')
+    await flushPromises()
+    expect(accommodationSelect(wrapper).element.value).toBe('HOTEL')
+
+    await roomTypeInput(wrapper).setValue('双床房')
+    await breakfastSelect(wrapper).setValue('false')
+    await noteInput(wrapper).setValue('如遇满房将安排同级别酒店')
+    await dayTitleInput(wrapper).setValue('杭州')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    const payload = createItineraryDay.mock.calls[0][1]
+    expect(payload).toMatchObject({
+      hotelId: '31',
+      accommodationType: 'HOTEL',
+      roomType: '双床房',
+      // false 必须原样提交：省略它会被服务端当成"未提交"而清成 null
+      breakfastIncluded: false,
+      accommodationNote: '如遇满房将安排同级别酒店'
+    })
+    expect(payload.breakfastIncluded).toBe(false)
+  })
+
+  it('早餐选「未说明」与选「不含早餐」是不同的提交结果', async () => {
+    const wrapper = await openNewDayDialog()
+    await hotelSelect(wrapper).setValue('31')
+    await flushPromises()
+    await dayTitleInput(wrapper).setValue('杭州')
+
+    await breakfastSelect(wrapper).setValue('false')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay.mock.calls[0][1].breakfastIncluded).toBe(false)
+
+    await breakfastSelect(wrapper).setValue('')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay.mock.calls[1][1].breakfastIncluded).toBeNull()
+  })
+
+  it('住宿安排为「指定酒店」但没选酒店时拦下，不发请求', async () => {
+    const wrapper = await openNewDayDialog()
+
+    await accommodationSelect(wrapper).setValue('HOTEL')
+    await dayTitleInput(wrapper).setValue('杭州')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(createItineraryDay).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('住宿安排为「指定酒店」时，请选择具体酒店')
+  })
+
+  it('「只确定住宿标准」必须填住宿标准，且提交时清空酒店', async () => {
+    const wrapper = await openNewDayDialog()
+
+    // 先选了酒店，再改成"只确定住宿标准"：酒店必须被清掉（契约不允许 STANDARD 带酒店）
+    await hotelSelect(wrapper).setValue('31')
+    await flushPromises()
+    await accommodationSelect(wrapper).setValue('STANDARD')
+    await flushPromises()
+    expect(hotelSelect(wrapper).element.value).toBe('')
+    expect(standardInput(wrapper).exists()).toBe(true)
+
+    await dayTitleInput(wrapper).setValue('大理')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('住宿安排为「只确定住宿标准」时，请填写住宿标准')
+
+    await standardInput(wrapper).setValue('市区舒适型酒店')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(createItineraryDay).toHaveBeenCalledTimes(1)
+    expect(createItineraryDay.mock.calls[0][1]).toMatchObject({
+      hotelId: null,
+      accommodationType: 'STANDARD',
+      accommodationStandard: '市区舒适型酒店'
+    })
+  })
+
+  it('改成「当天不含住宿」后：酒店被清空，房型与早餐不再提交（契约要求一并清空）', async () => {
+    const wrapper = await openNewDayDialog()
+
+    await hotelSelect(wrapper).setValue('31')
+    await flushPromises()
+    await roomTypeInput(wrapper).setValue('双床房')
+    await breakfastSelect(wrapper).setValue('true')
+
+    await accommodationSelect(wrapper).setValue('NONE')
+    await flushPromises()
+
+    expect(hotelSelect(wrapper).element.value).toBe('')
+    // 不含住宿时房型 / 早餐没有意义，界面也不再给入口
+    expect(roomTypeInput(wrapper).exists()).toBe(false)
+    expect(wrapper.findAll('select').some((select) => select.findAll('option').some((option) => option.text() === '未说明'))).toBe(false)
+
+    await noteInput(wrapper).setValue('当晚夜车返程，不含住宿')
+    await dayTitleInput(wrapper).setValue('夜车返程')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(createItineraryDay.mock.calls[0][1]).toMatchObject({
+      hotelId: null,
+      accommodationType: 'NONE',
+      accommodationStandard: null,
+      roomType: null,
+      breakfastIncluded: null,
+      // 住宿说明在不含住宿时仍然有意义（例如"当晚夜车返程"）
+      accommodationNote: '当晚夜车返程，不含住宿'
+    })
+  })
+
+  it('编辑已有的"指定酒店"行程：回填住宿安排与三态早餐，保存时原样提交同一家酒店', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await editDayButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(accommodationSelect(wrapper).element.value).toBe('HOTEL')
+    expect(hotelSelect(wrapper).element.value).toBe('32')
+    expect(breakfastSelect(wrapper).element.value).toBe('true')
+    expect(roomTypeInput(wrapper).element.value).toBe('双床房')
+
+    await dayTitleInput(wrapper).setValue('上海 → 昆明（改）')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(updateItineraryDay).toHaveBeenCalledTimes(1)
+    expect(updateItineraryDay.mock.calls[0][0]).toBe('71')
+    expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({
+      title: '上海 → 昆明（改）',
+      hotelId: '32',
+      accommodationType: 'HOTEL',
+      roomType: '双床房',
+      breakfastIncluded: true
+    })
+  })
+
+  it('编辑"只确定住宿标准"的行程：回填住宿标准，且 breakfastIncluded=false 不会被当成未说明', async () => {
+    fetchRoute.mockResolvedValue(mockRouteDetail([dayOnDisabledHotel, standardDay]))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await editDayButton(wrapper, 1).trigger('click')
+    await flushPromises()
+
+    expect(accommodationSelect(wrapper).element.value).toBe('STANDARD')
+    expect(standardInput(wrapper).element.value).toBe('市区舒适型酒店')
+    expect(roomTypeInput(wrapper).element.value).toBe('大床房')
+    // false 与"未说明"必须能区分：下拉回填的是"不含早餐"，不是空串
+    expect(breakfastSelect(wrapper).element.value).toBe('false')
+    expect(noteInput(wrapper).element.value).toBe('以出团通知为准')
+
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    const payload = updateItineraryDay.mock.calls[0][1]
+    expect(payload.breakfastIncluded).toBe(false)
+    expect(payload.hotelId).toBeNull()
+  })
+
+  it('住宿文案的长度上限与契约一致：住宿标准 500 / 房型 100 / 说明 1000', async () => {
+    const wrapper = await openNewDayDialog()
+    await accommodationSelect(wrapper).setValue('STANDARD')
+    await dayTitleInput(wrapper).setValue('大理')
+
+    await standardInput(wrapper).setValue('标'.repeat(501))
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('住宿标准最多 500 个字符')
+
+    await standardInput(wrapper).setValue('市区舒适型酒店')
+    await roomTypeInput(wrapper).setValue('房'.repeat(101))
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('房型最多 100 个字符')
+
+    await roomTypeInput(wrapper).setValue('双床房')
+    await noteInput(wrapper).setValue('说'.repeat(1001))
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('住宿说明最多 1000 个字符')
+
+    await noteInput(wrapper).setValue('以出团通知为准')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+    expect(createItineraryDay).toHaveBeenCalledTimes(1)
   })
 })

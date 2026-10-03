@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MapPreview from '../MapPreview.vue'
 
@@ -55,8 +55,11 @@ const leaflet = vi.hoisted(() => {
       return { addTo: () => {} }
     },
     circleMarker: (position, options) => {
-      calls.circles.push({ position, options })
-      return { addTo: () => {} }
+      const marker = { position, options }
+      marker.addTo = () => marker
+      marker.bindTooltip = (text) => { marker.tooltip = text; return marker }
+      calls.circles.push(marker)
+      return marker
     }
   }
   return { calls, L }
@@ -66,9 +69,15 @@ vi.mock('leaflet', () => ({ default: leaflet.L }))
 
 const calls = leaflet.calls
 
+const mountedMaps = []
 function mountMap(props = {}) {
-  return mount(MapPreview, { props, attachTo: document.body })
+  const wrapper = mount(MapPreview, { props, attachTo: document.body })
+  mountedMaps.push(wrapper)
+  return wrapper
 }
+afterEach(() => {
+  mountedMaps.splice(0).forEach((wrapper) => wrapper.unmount())
+})
 
 beforeEach(() => {
   calls.markers.length = 0
@@ -148,4 +157,15 @@ describe('MapPreview 地图坐标消费规则', () => {
     expect(calls.circles).toHaveLength(1)
     expect(calls.circles[0].position).toEqual([30.24, 120.13])
   })
+  it('初次打开与窗口尺寸变化后均保留酒店落点和名称，并转义名称内容', () => {
+    const wrapper = mountMap({ focusedPlace: { name: '酒店 <A>', longitude: 120.139, latitude: 30.229 } })
+    expect(calls.circles).toHaveLength(1)
+    expect(calls.circles[0].tooltip).toBe('酒店 &lt;A&gt;')
+    window.dispatchEvent(new Event('resize'))
+    expect(calls.circles).toHaveLength(2)
+    expect(calls.circles[1].position).toEqual([30.229, 120.139])
+    expect(calls.circles[1].tooltip).toBe('酒店 &lt;A&gt;')
+    wrapper.unmount()
+  })
+
 })

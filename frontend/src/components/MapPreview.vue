@@ -32,7 +32,7 @@ function onMapResize() {
   if (!mapInstance) return
   mapInstance.invalidateSize({ pan: false })
   updateMinZoom()
-  if (points().length) renderMap()
+  renderMap()
 }
 
 function points() {
@@ -84,7 +84,10 @@ function renderMap() {
 
   const data = points()
   overlays.clearLayers()
-  if (!data.length) return
+  if (!data.length) {
+    focusPlace()
+    return
+  }
   if (!props.places.length) {
     data.forEach((point) => {
       const icon = L.divIcon({
@@ -114,6 +117,7 @@ function renderMap() {
       : 24],
     maxZoom: 12
   })
+  focusPlace()
 }
 
 function escapeHtml(value = '') {
@@ -128,13 +132,18 @@ function focusPlace() {
     if (!points().length) overlays.clearLayers()
     return
   }
+  if (props.focusedPlace.latitude == null || props.focusedPlace.longitude == null) return
   const latitude = Number(props.focusedPlace.latitude)
   const longitude = Number(props.focusedPlace.longitude)
-  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+  if (Number.isFinite(latitude) && Number.isFinite(longitude) &&
+    Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
     overlays.clearLayers()
-    L.circleMarker([latitude, longitude], {
+    const marker = L.circleMarker([latitude, longitude], {
       radius: 8, color: '#fff', weight: 3, fillColor: '#0071e3', fillOpacity: 1
     }).addTo(overlays)
+    if (props.focusedPlace.name) {
+      marker.bindTooltip(escapeHtml(props.focusedPlace.name), { permanent: true, direction: 'top', offset: [0, -10] })
+    }
     const zoom = Math.max(12, mapInstance.getZoom())
     const isMobile = window.innerWidth <= 900
     const leftOffset = isMobile || !props.drawerOpen ? 0 : (props.sidebarExpanded ? 305 : 243)

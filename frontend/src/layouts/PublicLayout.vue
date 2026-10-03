@@ -21,7 +21,7 @@ const mapPlaces = ref([])
 const mapFocus = ref(null)
 provide('setMapPlaces', (places) => { mapPlaces.value = places })
 provide('setMapFocus', (place) => { mapFocus.value = place })
-const sheetSize = ref(['articles', 'article-detail', 'attraction-detail', 'hotel-detail'].includes(route.name) ? 'full' : 'half')
+const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
 let dragStart = null
 let sheetDragged = false
 
@@ -82,7 +82,7 @@ provide('refreshUnread', refreshUnread)
 watch(() => auth.isLoggedIn, refreshUnread, { immediate: true })
 watch(() => route.path, () => {
   isDrawerOpen.value = route.name !== 'home'
-  sheetSize.value = ['articles', 'article-detail', 'attraction-detail', 'hotel-detail'].includes(route.name) ? 'full' : 'half'
+  sheetSize.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
   refreshUnread()
 })
 

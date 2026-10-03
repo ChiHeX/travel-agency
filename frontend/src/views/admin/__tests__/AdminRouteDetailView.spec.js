@@ -4,22 +4,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { ElMessage } from 'element-plus'
 import AdminRouteDetailView from '../AdminRouteDetailView.vue'
 
-/**
- * 线路详情页「每日行程」表单的接线测试，针对酒店相关的两条规则：
- *
- * <ol>
- *   <li>酒店 / 景点候选项必须逐页取全量：只取第一页时，第 101 条之后的资源
- *       在界面上永远选不到（既看不到也没法安排进行程）；</li>
- *   <li>停用（DISABLED）的酒店不能再被安排进新行程（后端以 422 拒绝），
- *       下拉里要禁掉并标注；但"这一天原本就指向它"时必须保持可选 ——
- *       否则编辑这条行程时下拉显示为空，连带改个餐食说明都会保存失败。</li>
- * </ol>
- *
- * <p>另外钉住行程文本的长度口径：契约 ItineraryDayRequest / ItineraryItemRequest 的
- * maxLength 数的是<b>字符（Unicode 码点）</b>，后端也以 @CodePointLength 按同一口径校验，
- * 而 JS 的 String#length 数的是 UTF-16 码元（一个 emoji 记 2）。用码元判断会把契约允许的
- * emoji 文案误判成超长；此前输入框上的 maxlength 更糟——它会直接静默截断用户输入。</p>
- */
 const fetchRoute = vi.fn()
 const fetchHotels = vi.fn()
 const fetchAttractions = vi.fn()
@@ -46,11 +30,9 @@ vi.mock('element-plus', () => ({
   ElMessageBox: { confirm: vi.fn().mockResolvedValue('confirm') }
 }))
 
-/** 契约 Hotel：停用的那家仍要出现在下拉里（否则看不到它被停用了）。 */
 const activeHotel = { id: '31', name: '杭州湖畔演示酒店', status: 'ACTIVE' }
 const disabledHotel = { id: '32', name: '已停用演示酒店', status: 'DISABLED' }
 
-/** 这一天原本就安排在已停用的酒店上：编辑它时该酒店必须保持可选。 */
 const dayOnDisabledHotel = {
   id: '71',
   dayNumber: 1,
@@ -85,6 +67,23 @@ const standardDay = {
   items: []
 }
 
+const pendingDay = {
+  id: '73',
+  dayNumber: 3,
+  title: '昆明 · 大理',
+  description: null,
+  transportation: null,
+  meals: null,
+  hotelId: null,
+  hotelName: null,
+  accommodationType: 'PENDING',
+  accommodationStandard: '市区舒适型酒店（具体酒店待定）',
+  roomType: '双床房',
+  breakfastIncluded: true,
+  accommodationNote: '具体酒店以出团通知为准',
+  items: []
+}
+
 function mockRouteDetail(itinerary = [dayOnDisabledHotel]) {
   return {
     route: { id: '21', name: '云南 6 日', status: 'DRAFT', durationDays: 6 },
@@ -98,7 +97,6 @@ function mountView() {
   return mount(AdminRouteDetailView, {
     global: {
       stubs: {
-        // 弹窗 stub 直接渲染内容，便于断言下拉选项；其余组件与本用例无关。
         'el-dialog': { template: '<div><slot /><slot name="footer" /></div>' },
         'el-skeleton': true,
         RouteFormDialog: true,
@@ -116,7 +114,6 @@ function buttonByText(wrapper, text) {
   return button
 }
 
-/** 每天的「编辑」按钮：取第 index 张行程卡片上的那个。 */
 function editDayButton(wrapper, index = 0) {
   const card = wrapper.findAll('.day-card')[index]
   return card.findAll('button').find((item) => item.text().trim() === '编辑')
@@ -141,10 +138,14 @@ function accommodationSelect(wrapper) {
 }
 
 function breakfastSelect(wrapper) {
-  const select = wrapper.findAll('select')
-    .find((item) => item.findAll('option').some((option) => option.text() === '未说明'))
+  const select = breakfastSelects(wrapper)[0]
   if (!select) throw new Error('找不到早餐下拉')
   return select
+}
+
+function breakfastSelects(wrapper) {
+  return wrapper.findAll('select')
+    .filter((item) => item.findAll('option').some((option) => option.text() === '未说明'))
 }
 
 function standardInput(wrapper) {
@@ -159,7 +160,6 @@ function noteInput(wrapper) {
   return wrapper.find('textarea[placeholder^="例如：拼房安排"]')
 }
 
-/** 每日行程弹窗里的「行程标题」输入框：占位符在全页唯一。 */
 function dayTitleInput(wrapper) {
   return wrapper.find('input[placeholder="例如：上海 → 昆明"]')
 }
@@ -188,7 +188,6 @@ describe('AdminRouteDetailView（每日行程的酒店选择）', () => {
     expect(fetchHotels).toHaveBeenNthCalledWith(1, { page: 1, size: 100 })
     expect(fetchHotels).toHaveBeenNthCalledWith(2, { page: 2, size: 100 })
     expect(fetchAttractions).toHaveBeenNthCalledWith(1, { page: 1, size: 100 })
-    // 第 2 页的停用酒店同样在选项里（不再被静默截断）
     expect(hotelOptions(wrapper).map((o) => o.text())).toEqual([
       '杭州湖畔演示酒店',
       '已停用演示酒店（已停用）'
@@ -218,18 +217,10 @@ describe('AdminRouteDetailView（每日行程的酒店选择）', () => {
     expect(options).toHaveLength(2)
     const current = options.find((option) => option.text().includes('已停用演示酒店'))
     expect(current.attributes('disabled')).toBeUndefined()
-    // 另一家启用酒店同样保持可选，运营可以主动换走。
     expect(options.find((option) => option.text().includes('杭州湖畔')).attributes('disabled')).toBeUndefined()
   })
 })
 
-/**
- * 行程标题的长度口径（契约 ItineraryDayRequest.title：minLength 1 / maxLength 200）。
- *
- * <p>maxLength 数的是字符（码点），一个 emoji 记 1；JS 的 String#length 与 HTML 的 maxlength
- * 数的是 UTF-16 码元，同一个 emoji 记 2。用码元判断时，200 个 emoji 的标题（码元长度 400）
- * 会被前端当成超长而拒绝，而它其实是契约允许、库内也存得下的输入。</p>
- */
 describe('AdminRouteDetailView（行程文本按码点校验）', () => {
   it('200 个码点的 emoji 标题通过前端校验并原样提交（码元长度是 400，不是 200）', async () => {
     const wrapper = mountView()
@@ -247,7 +238,6 @@ describe('AdminRouteDetailView（行程文本按码点校验）', () => {
 
     expect(ElMessage.warning).not.toHaveBeenCalled()
     expect(createItineraryDay).toHaveBeenCalledTimes(1)
-    // 提交的标题一字不少：既没有被判成超长，也没有被静默截断
     expect(createItineraryDay).toHaveBeenCalledWith('21', expect.objectContaining({ title }))
   })
 
@@ -460,6 +450,82 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
     expect(payload.hotelId).toBeNull()
   })
 
+  it('编辑「住宿待确认」行程只改标题时：已填写的住宿标准/房型/早餐必须保留', async () => {
+    fetchRoute.mockResolvedValue(mockRouteDetail([pendingDay]))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await editDayButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(accommodationSelect(wrapper).element.value).toBe('PENDING')
+    expect(standardInput(wrapper).element.value).toBe('市区舒适型酒店（具体酒店待定）')
+    expect(roomTypeInput(wrapper).element.value).toBe('双床房')
+    expect(breakfastSelect(wrapper).element.value).toBe('true')
+
+    await dayTitleInput(wrapper).setValue('上海 → 昆明（只改标题）')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(updateItineraryDay).toHaveBeenCalledTimes(1)
+    expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({
+      title: '上海 → 昆明（只改标题）',
+      hotelId: null,
+      accommodationType: 'PENDING',
+      accommodationStandard: '市区舒适型酒店（具体酒店待定）',
+      roomType: '双床房',
+      breakfastIncluded: true,
+      accommodationNote: '具体酒店以出团通知为准'
+    })
+  })
+
+  it('「住宿待确认」也能新增填写住宿标准、房型与早餐（不是只有指定酒店才能填）', async () => {
+    const wrapper = await openNewDayDialog()
+
+    expect(accommodationSelect(wrapper).element.value).toBe('PENDING')
+    await dayTitleInput(wrapper).setValue('大理')
+    await standardInput(wrapper).setValue('市区舒适型酒店')
+    await roomTypeInput(wrapper).setValue('大床房')
+    await breakfastSelect(wrapper).setValue('false')
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    const payload = createItineraryDay.mock.calls[0][1]
+    expect(payload).toMatchObject({
+      accommodationType: 'PENDING',
+      accommodationStandard: '市区舒适型酒店',
+      roomType: '大床房'
+    })
+    expect(payload.breakfastIncluded).toBe(false)
+    expect(payload.hotelId).toBeNull()
+  })
+
+  it('改成「当天不含住宿」才清空住宿标准、房型与早餐（NONE 是唯一清空的类型）', async () => {
+    fetchRoute.mockResolvedValue(mockRouteDetail([pendingDay]))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await editDayButton(wrapper).trigger('click')
+    await flushPromises()
+    await accommodationSelect(wrapper).setValue('NONE')
+    await flushPromises()
+
+    expect(standardInput(wrapper).exists()).toBe(false)
+    expect(roomTypeInput(wrapper).exists()).toBe(false)
+    expect(breakfastSelects(wrapper)).toHaveLength(0)
+
+    await buttonByText(wrapper, '保存行程').trigger('click')
+    await flushPromises()
+
+    expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({
+      accommodationType: 'NONE',
+      hotelId: null,
+      accommodationStandard: null,
+      roomType: null,
+      breakfastIncluded: null
+    })
+  })
+
   it('住宿文案的长度上限与契约一致：住宿标准 500 / 房型 100 / 说明 1000', async () => {
     const wrapper = await openNewDayDialog()
     await accommodationSelect(wrapper).setValue('STANDARD')
@@ -491,7 +557,6 @@ describe('AdminRouteDetailView（每日行程的住宿安排）', () => {
     expect(createItineraryDay).toHaveBeenCalledTimes(1)
   })
 })
-
 
 it('编辑待确认住宿只修改标题时，保留住宿标准、房型及明确的不含早餐', async () => {
   fetchRoute.mockResolvedValue(mockRouteDetail([{ ...standardDay, accommodationType: 'PENDING' }]))

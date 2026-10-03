@@ -261,3 +261,41 @@ describe('RouteItinerary 早餐三态', () => {
     expect(wrapper.text()).toContain('不含早餐')
   })
 })
+
+
+describe('RouteItinerary 集中住宿安排', () => {
+  const day = (number, overrides = {}) => ({
+    id: String(number), dayNumber: number, title: '行程 ' + number,
+    accommodationType: 'HOTEL', hotelId: '31', hotelName: hotelSummary.name,
+    hotel: hotelSummary, roomType: '双床房', breakfastIncluded: true, ...overrides
+  })
+
+  it('连续入住只显示一张卡片，保留不同日期的房型与早餐，不含住宿不计入晚数', async () => {
+    const wrapper = await mountItinerary([
+      day(1), day(2), day(3, { roomType: '大床房', breakfastIncluded: false }),
+      day(4, { accommodationType: 'NONE', hotelId: null, hotelName: null, hotel: null })
+    ])
+    expect(wrapper.findAll('.hotel-card')).toHaveLength(1)
+    expect(wrapper.find('.stay-period').text()).toContain('第 1–3 晚')
+    expect(wrapper.find('.stay-period').text()).toContain('3 晚')
+    expect(wrapper.findAll('.stay-details')).toHaveLength(2)
+    expect(wrapper.find('.stay-overview').text()).toContain('第 1–2 晚')
+    expect(wrapper.find('.stay-overview').text()).toContain('大床房')
+    expect(wrapper.find('.stay-overview').text()).toContain('不含早餐')
+    await wrapper.find('.itinerary-toolbar button').trigger('click')
+    const days = wrapper.findAll('.itinerary-day')
+    expect(days[1].find('.daily-accommodation').text()).toContain('续住 ' + hotelSummary.name)
+    expect(days[3].find('.daily-accommodation').text()).toContain('当天不含住宿')
+    expect(wrapper.findAll('.day-body .hotel-card')).toHaveLength(0)
+  })
+
+  it('换酒店或中断入住后分别展示；最后一天的实际酒店安排仍保留', async () => {
+    const wrapper = await mountItinerary([
+      day(1), day(2, { hotelId: '32', hotel: { ...hotelSummary, id: '32' } }),
+      day(3), day(5)
+    ])
+    expect(wrapper.findAll('.stay-card')).toHaveLength(4)
+    expect(wrapper.findAll('.stay-period')[3].text()).toContain('第 5 晚')
+    expect(wrapper.findAll('.day-heading-copy > span')[2].text()).not.toContain('续住')
+  })
+})

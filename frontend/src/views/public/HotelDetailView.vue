@@ -1,10 +1,9 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { routeApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
-import MapPreview from '@/components/MapPreview.vue'
 import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import RequestState from '@/components/RequestState.vue'
 import { checkInLabel, checkOutLabel, facilityLabel, starRatingLabel } from '@/utils/hotel'
@@ -22,6 +21,7 @@ import { checkInLabel, checkOutLabel, facilityLabel, starRatingLabel } from '@/u
  * 用户不需要看到一个后端错误码，也不需要知道后台酒店的启用状态。</p>
  */
 const route = useRoute()
+const setMapFocus = inject('setMapFocus', () => {})
 const loading = ref(false)
 const error = ref('')
 const hotel = ref(null)
@@ -40,13 +40,6 @@ const facilities = computed(() => (hotel.value?.facilities || [])
 const starLabel = computed(() => starRatingLabel(hotel.value?.starRating))
 const checkIn = computed(() => checkInLabel(hotel.value?.checkInTime))
 const checkOut = computed(() => checkOutLabel(hotel.value?.checkOutTime))
-/** 坐标只在经纬度都是数字时才落点，否则位置数据不可靠（契约明确要求前端不得自行编造位置）。 */
-const hasCoordinates = computed(
-  () => typeof hotel.value?.longitude === 'number' && typeof hotel.value?.latitude === 'number'
-)
-const locationPoints = computed(() => (hasCoordinates.value
-  ? [{ name: hotel.value.name, longitude: hotel.value.longitude, latitude: hotel.value.latitude }]
-  : []))
 
 let requestId = 0
 async function load() {
@@ -54,11 +47,18 @@ async function load() {
   loading.value = true
   error.value = ''
   hotel.value = null
+  setMapFocus(null)
   try {
     const result = await routeApi.hotel(route.params.routeId, route.params.hotelId)
     if (current !== requestId) return
     hotel.value = result || null
     if (!hotel.value) error.value = '该酒店资料暂不可查看'
+    const { longitude, latitude, name } = hotel.value || {}
+    if (typeof longitude === 'number' && typeof latitude === 'number' &&
+      Number.isFinite(longitude) && Number.isFinite(latitude) &&
+      Math.abs(longitude) <= 180 && Math.abs(latitude) <= 90) {
+      setMapFocus({ name, longitude, latitude })
+    }
   } catch {
     // 404（线路未发布 / 酒店未安排在这条线路 / 酒店已停用）与网络失败对用户是同一件事：
     // 现在看不到这份资料。不回显后端 message，也不区分原因。
@@ -78,6 +78,10 @@ async function share() {
   } catch (cause) { if (cause.name !== 'AbortError') ElMessage.warning('分享失败，请复制浏览器地址栏中的链接') }
 }
 watch(() => [route.params.routeId, route.params.hotelId], load, { immediate: true })
+onBeforeUnmount(() => {
+  requestId++
+  setMapFocus(null)
+})
 </script>
 
 <template>
@@ -123,14 +127,6 @@ watch(() => [route.params.routeId, route.params.hotelId], load, { immediate: tru
                 <span v-for="facility in facilities" :key="facility.value" class="hotel-facility">{{ facility.label }}</span>
               </div>
               <p v-else class="hotel-empty">酒店暂未提供设施资料。</p>
-            </div>
-          </section>
-
-          <!-- 坐标都非空才落点；契约要求前端不得自行编造位置 -->
-          <section v-if="hasCoordinates">
-            <h2>酒店位置</h2>
-            <div class="hotel-map">
-              <MapPreview :places="locationPoints" />
             </div>
           </section>
 
@@ -183,11 +179,8 @@ watch(() => [route.params.routeId, route.params.hotelId], load, { immediate: tru
 .hotel-intro { margin: 0; font-size: 12px; line-height: 1.8; color: var(--text-secondary); white-space: pre-wrap; }
 .hotel-facilities { display: flex; flex-wrap: wrap; gap: 8px; }
 .hotel-facility { padding: 5px 10px; border-radius: 999px; background: var(--theme-blue-tint); color: var(--theme-blue); font-size: 11px; }
-.hotel-map { position: relative; height: 240px; border-radius: var(--radius-md); overflow: hidden; background: #edf0f5; }
-/* MapPreview 原本是全屏地图面板，嵌进详情页时恢复成容器内定位（它针对 ≤900px 有下移规则） */
-.hotel-map :deep(.map-preview-card) { inset: 0; }
 .hotel-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .hotel-gallery img { width: 100%; height: 110px; border-radius: var(--radius-sm); background: #edf0f5; object-fit: cover; }
 .hotel-error-hint { margin: 12px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
-.hotel-back { display: inline-block; margin-top: 28px; }
+.hotel-back { display: inline-flex; align-items: center; justify-content: center; margin-top: 28px; text-align: center; }
 </style>

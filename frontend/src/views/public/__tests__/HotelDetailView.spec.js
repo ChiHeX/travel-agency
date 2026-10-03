@@ -11,7 +11,7 @@ import HotelDetailView from '../HotelDetailView.vue'
  *   <li>请求必须打在新的公开端点上，并且**只**用路由参数；</li>
  *   <li>封面回退顺序是 {@code coverUrl → images[0] → 占位块}，{@code images} 为 {@code []} 时不许报错；</li>
  *   <li>官方星级只在非空时出现；设施里的未知枚举跳过而不是把枚举原文印出来；</li>
- *   <li>坐标只有成对且为数字时才落点，否则整块地图不出现（契约明确不许前端自行编造位置）；</li>
+ *   <li>坐标只有成对且为数字时才传给主地图（契约明确不许前端自行编造位置）；</li>
  *   <li>接口失败（未发布线路 / 未安排该酒店 / 酒店已停用都返回同一个 404）时给用户可读文案，
  *       而不是把后端错误码抛出来，并且仍然保留「返回线路详情」这个出口。</li>
  * </ul>
@@ -24,8 +24,6 @@ vi.mock('vue-router', () => ({ useRoute: () => ({ params: { routeId: '7', hotelI
 vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() }
 }))
-// MapPreview 会 import leaflet：测试里不需要真的地图实现
-vi.mock('leaflet', () => ({ default: {} }))
 
 /** 契约 PublicHotelDetail 的字段形状。 */
 function publicHotel(overrides = {}) {
@@ -51,16 +49,18 @@ function publicHotel(overrides = {}) {
   }
 }
 
+const setMapFocus = vi.fn()
+
 function mountView() {
   return mount(HotelDetailView, {
     global: {
+      provide: { setMapFocus },
       stubs: {
         StickyDetailBar: {
           props: ['title', 'fallbackTo'],
           emits: ['share'],
           template: '<div class="bar"><span class="bar-title">{{ title }}</span><button class="bar-share" @click="$emit(\'share\')">分享</button></div>'
         },
-        MapPreview: { name: 'MapPreview', props: ['places'], template: '<div class="map-stub"></div>' },
         // RouterLink 替身：把目标路由名与参数放进 data 属性，便于断言"链接指向哪里"
         RouterLink: {
           props: ['to'],
@@ -77,6 +77,7 @@ function backLink(wrapper) {
 }
 
 beforeEach(() => {
+  setMapFocus.mockClear()
   api.hotel.mockReset().mockResolvedValue(publicHotel())
 })
 
@@ -186,26 +187,29 @@ describe('HotelDetailView 封面回退', () => {
 })
 
 describe('HotelDetailView 地图与返回入口', () => {
-  it('经纬度都是数字时才渲染地图，并把酒店坐标交给它', async () => {
+  it('将酒店坐标和名称传给大地图，不再渲染小地图，并在离开时清理标记', async () => {
     const wrapper = mountView()
     await flushPromises()
-
-    const map = wrapper.find('.map-stub')
-    expect(map.exists()).toBe(true)
-    expect(wrapper.findComponent({ name: 'MapPreview' }).props('places')).toEqual([
-      { name: '杭州湖畔演示酒店', longitude: 120.139, latitude: 30.229 }
-    ])
-    // 酒店位置一节才配套展示坐标
-    expect(wrapper.text()).toContain('酒店位置')
+    expect(setMapFocus).toHaveBeenLastCalledWith({
+      name: '杭州湖畔演示酒店', longitude: 120.139, latitude: 30.229
+    })
+    expect(wrapper.find('.hotel-map').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('酒店位置')
+    wrapper.unmount()
+    expect(setMapFocus).toHaveBeenLastCalledWith(null)
   })
 
-  it('坐标缺失（契约允许为 null）时整块地图不出现，也不编造位置', async () => {
-    api.hotel.mockResolvedValue(publicHotel({ longitude: null, latitude: null }))
+  it.each([
+    { longitude: null, latitude: null },
+    { longitude: 120.139, latitude: null },
+    { longitude: 181, latitude: 30.229 }
+  ])('坐标缺失或越界时不向大地图传入酒店位置：%o', async (coordinates) => {
+    api.hotel.mockResolvedValue(publicHotel(coordinates))
     const wrapper = mountView()
     await flushPromises()
-
-    expect(wrapper.find('.map-stub').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('酒店位置')
+    expect(setMapFocus).toHaveBeenCalledTimes(1)
+    expect(setMapFocus).toHaveBeenLastCalledWith(null)
+    expect(wrapper.find('.hotel-map').exists()).toBe(false)
   })
 
   it('成功拿到资料时也保留「返回线路详情」，指向当前线路', async () => {

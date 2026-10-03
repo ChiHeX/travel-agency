@@ -202,9 +202,12 @@ onBeforeUnmount(() => setMapItinerary([]))
             </div>
             <div class="route-rating-summary">
               <template v-if="data.route.ratingCount">
-                <strong>{{ data.route.ratingAvg }}</strong>
-                <span>/ 5</span>
-                <small>{{ data.route.ratingCount }} 条评价</small>
+                <div class="rating-score" :aria-label="`评分 ${data.route.ratingAvg}，满分 5 分`">
+                  <AppIcon name="star" size="14" />
+                  <strong>{{ data.route.ratingAvg }}</strong>
+                  <span>/ 5</span>
+                </div>
+                <small class="rating-count">{{ data.route.ratingCount }} 条评价</small>
               </template>
               <span v-else class="muted-rating">暂无评分</span>
             </div>
@@ -523,6 +526,7 @@ onBeforeUnmount(() => setMapItinerary([]))
 
 .route-overview-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -539,22 +543,48 @@ onBeforeUnmount(() => setMapItinerary([]))
 }
 
 .route-rating-summary {
-  display: grid;
-  min-width: 78px;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   color: var(--text-secondary);
   font-size: 11px;
 }
 
-.route-rating-summary strong {
+.rating-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(180,83,9,.1);
+  border-radius: 10px;
+  background: rgba(255,247,230,.8);
   color: #b45309;
-  font-size: 20px;
+  white-space: nowrap;
+}
+
+.rating-score > svg {
+  align-self: center;
+  margin-right: 2px;
+}
+
+.rating-score strong {
+  font-size: 18px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
-.route-rating-summary small {
-  color: var(--text-tertiary);
-  font-size: 10px;
+.rating-score span {
+  color: #94734c;
+  font-size: 11px;
+}
+
+.rating-count {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .muted-rating {
@@ -700,10 +730,6 @@ onBeforeUnmount(() => setMapItinerary([]))
 @media (max-width: 420px) {
   .route-overview-head {
     display: grid;
-  }
-
-  .route-rating-summary {
-    justify-items: start;
   }
 
   .detail-notes-grid {

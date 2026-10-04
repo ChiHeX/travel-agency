@@ -2,10 +2,18 @@ package com.travelagency;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.enums.DepartureStatus;
+import com.travelagency.common.enums.OrderStatus;
+import com.travelagency.common.enums.PaymentStatus;
+import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.Refund;
+import com.travelagency.domain.entity.SysUser;
+import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.RefundMapper;
+import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,11 +71,11 @@ class AdminDashboardContractIntegrationTest {
 
     private static final String MONEY = "^(0|[1-9][0-9]*)\\.[0-9]{2}$";
 
-    /** 契约 DashboardData：11 个字段，全部必填（additionalProperties: false）。 */
+    /** 契约 DashboardData：12 个字段，全部必填（additionalProperties: false）。 */
     private static final Set<String> DATA_FIELDS = Set.of(
             "userCount", "publishedRouteCount", "openDepartureCount", "todayOrderCount",
             "pendingConfirmCount", "pendingRefundCount", "participantCount", "grossOrderAmount",
-            "orderTrend", "popularRoutes", "popularDestinations");
+            "orderTrend", "popularRoutes", "popularDestinations", "departureEnrollment");
 
     /** 契约里声明为 integer 的计数字段。 */
     private static final List<String> COUNT_FIELDS = List.of(
@@ -78,6 +86,10 @@ class AdminDashboardContractIntegrationTest {
             Set.of("date", "orderCount", "participantCount", "orderAmount");
 
     private static final Set<String> DESTINATION_FIELDS = Set.of("destination", "validBookingCount");
+
+    private static final Set<String> ENROLLMENT_FIELDS = Set.of(
+            "departureId", "routeId", "routeName", "startDate", "maxPeople", "reservedPeople",
+            "confirmedPeople", "remainingSeats");
 
     /** 契约 RouteSummary 的全部字段（复用 /routes 的装配，字段集应完全一致）。 */
     private static final Set<String> ROUTE_SUMMARY_FIELDS = Set.of(
@@ -104,6 +116,16 @@ class AdminDashboardContractIntegrationTest {
 
     @Autowired
     private TravelRouteMapper routeMapper;
+
+    @Autowired
+    private SysUserMapper userMapper;
+
+    @Autowired
+    private RefundMapper refundMapper;
+
+    /** 生成用例内唯一的账号名 / 订单号，避免与演示数据或其他用例相撞。 */
+    private static final java.util.concurrent.atomic.AtomicInteger SEQ =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private MockMvc mvc;
 
@@ -138,7 +160,7 @@ class AdminDashboardContractIntegrationTest {
     }
 
     @Test
-    @DisplayName("响应字段集与契约一致：data/popularRoutes/popularDestinations 都不多不少")
+    @DisplayName("响应字段集与契约一致：data/popularRoutes/popularDestinations/departureEnrollment 都不多不少")
     void fieldSetsMatchContract() throws Exception {
         JsonNode data = dashboard("/api/admin/dashboard");
         assertFieldsExactly(data, DATA_FIELDS, DATA_FIELDS, "DashboardData");
@@ -151,6 +173,9 @@ class AdminDashboardContractIntegrationTest {
         for (JsonNode item : data.get("popularRoutes")) {
             assertFieldsExactly(item, ROUTE_SUMMARY_FIELDS, ROUTE_SUMMARY_REQUIRED, "RouteSummary");
         }
+        for (JsonNode item : data.get("departureEnrollment")) {
+            assertFieldsExactly(item, ENROLLMENT_FIELDS, ENROLLMENT_FIELDS, "DepartureEnrollment");
+        }
     }
 
     /**
@@ -161,9 +186,13 @@ class AdminDashboardContractIntegrationTest {
      * {@code orderCount}、{@code participantCount}、{@code validBookingCount}、{@code ratingCount}
      * 之前只校验了字段名。契约把它们都声明为 {@code integer}，这里逐项断言类型，
      * 避免以后有人把其中任一改成 {@code Long}（或经 {@code Map} 装箱）时静默回归。</p>
+     *
+     * <p>{@code DepartureEnrollment} 是同一类风险的新增字段：名字里都带 People，
+     * 很容易被写成 {@code long} 或 {@code Integer}，所以在有数据时按类型逐项断言；
+     * 没有符合条件的团期时数组为空，此时另由 {@code departureEnrollmentListsUpcomingSales} 造数据覆盖。</p>
      */
     @Test
-    @DisplayName("嵌套结构里的计数字段也是数字：orderTrend / popularDestinations / popularRoutes")
+    @DisplayName("嵌套结构里的计数字段也是数字：orderTrend / popularDestinations / popularRoutes / departureEnrollment")
     void nestedCountFieldsAreNumbers() throws Exception {
         JsonNode data = dashboard("/api/admin/dashboard");
 
@@ -184,6 +213,17 @@ class AdminDashboardContractIntegrationTest {
             assertTrue(route.get("ratingCount").isNumber(), "popularRoutes[].ratingCount 应是数字：" + route);
             assertTrue(route.get("validBookingCount").isNumber(),
                     "popularRoutes[].validBookingCount 应是数字：" + route);
+        }
+
+        for (JsonNode row : data.get("departureEnrollment")) {
+            for (String field : List.of("maxPeople", "reservedPeople", "confirmedPeople", "remainingSeats")) {
+                assertTrue(row.get(field).isNumber(),
+                        "departureEnrollment[]. " + field + " 应是数字：" + row);
+            }
+            assertTrue(row.get("departureId").isTextual(),
+                    "departureEnrollment[].departureId 是契约 Id，应是字符串：" + row);
+            assertTrue(row.get("routeId").isTextual(),
+                    "departureEnrollment[].routeId 是契约 Id，应是字符串：" + row);
         }
     }
 
@@ -217,17 +257,7 @@ class AdminDashboardContractIntegrationTest {
         // 先把库里原有团期全部取消，让计数只反映本用例插入的几条（事务内执行，用例结束回滚）。
         departureMapper.update(null, new UpdateWrapper<Departure>().set("status", DepartureStatus.CANCELLED));
 
-        TravelRoute route = new TravelRoute();
-        route.name = "Dashboard open departure route";
-        route.departureCity = "Dashboard city";
-        route.destination = "Dashboard destination";
-        route.durationDays = 1;
-        route.status = RouteStatus.PUBLISHED;
-        route.ratingAvg = new BigDecimal("0.00");
-        route.ratingCount = 0;
-        route.validBookingCount = 0;
-        route.deleted = 0;
-        routeMapper.insert(route);
+        TravelRoute route = publishedRoute("Dashboard open departure route", "Dashboard destination");
 
         departureMapper.insert(departure(route.id, today.minusDays(1), DepartureStatus.OPEN));
         departureMapper.insert(departure(route.id, today, DepartureStatus.OPEN));
@@ -239,17 +269,207 @@ class AdminDashboardContractIntegrationTest {
                 "只应统计 OPEN 且 start_date >= 库内当天的团期");
     }
 
+    /**
+     * 热门目的地按「有效报名游客数量」统计（PRD §27）：既不是订单条数，也不是线路上那个
+     * {@code valid_booking_count}（那一列存的正是订单条数）。
+     *
+     * <p>造两个目的地：A 只有 1 张订单但是 5 人，B 有 3 张订单但共 3 人 —— 按订单数 B 在前，
+     * 按人数 A 在前，断言 A 排在 B 前面，这个用例才能区分两种口径。</p>
+     *
+     * <p>同时钉住「有效报名」的边界：待确认（{@code PAID_WAIT_CONFIRM}）与已取消不计入；
+     * 退款申请中的订单要看退款单上的 {@code original_order_status —— 由已确认发起的仍算有效
+     * （退款完成才回退），由待确认发起的从来就没被计入过。</p>
+     */
+    @Test
+    @DisplayName("popularDestinations 按有效报名游客数量统计：人数优先于订单数，且只认已确认的订单")
+    void popularDestinationsCountPeopleNotOrders() throws Exception {
+        // 把库里已有订单全部作废，让排行只反映本用例的数据（事务内执行，用例结束回滚）。
+        orderMapper.update(null, new UpdateWrapper<TravelOrder>().set("status", OrderStatus.CANCELLED));
+        SysUser buyer = buyer();
+
+        TravelRoute peopleFirst = publishedRoute("Dashboard people-first route", "Dashboard people-first");
+        TravelRoute ordersFirst = publishedRoute("Dashboard orders-first route", "Dashboard orders-first");
+        Departure peopleFirstDeparture = departure(peopleFirst.id, orderMapper.databaseToday().plusDays(10),
+                DepartureStatus.OPEN);
+        Departure ordersFirstDeparture = departure(ordersFirst.id, orderMapper.databaseToday().plusDays(11),
+                DepartureStatus.OPEN);
+        departureMapper.insert(peopleFirstDeparture);
+        departureMapper.insert(ordersFirstDeparture);
+
+        // A：1 张已确认订单 5 人 + 1 张「由已确认发起、正在申请退款」的订单 2 人 = 7 人（退款完成前仍算有效）
+        order(peopleFirst.id, peopleFirstDeparture.id, buyer.id, OrderStatus.CONFIRMED, 4, 1);
+        TravelOrder refundingConfirmed = order(peopleFirst.id, peopleFirstDeparture.id, buyer.id,
+                OrderStatus.REFUND_APPLYING, 1, 1);
+        refund(refundingConfirmed.id, buyer.id, OrderStatus.CONFIRMED);
+        // A 上不该计入的三种：待确认、由待确认发起的退款申请、已取消（人数故意给大，一旦计入就会翻转顺序）
+        order(peopleFirst.id, peopleFirstDeparture.id, buyer.id, OrderStatus.PAID_WAIT_CONFIRM, 8, 1);
+        TravelOrder refundingUnconfirmed = order(peopleFirst.id, peopleFirstDeparture.id, buyer.id,
+                OrderStatus.REFUND_APPLYING, 8, 1);
+        refund(refundingUnconfirmed.id, buyer.id, OrderStatus.PAID_WAIT_CONFIRM);
+        order(peopleFirst.id, peopleFirstDeparture.id, buyer.id, OrderStatus.CANCELLED, 8, 1);
+        // B：3 张已确认订单各 1 人 = 3 人（按订单数 3 > A 的 2，按人数 3 < A 的 7）
+        for (int i = 0; i < 3; i++) {
+            order(ordersFirst.id, ordersFirstDeparture.id, buyer.id, OrderStatus.CONFIRMED, 1, 0);
+        }
+        order(ordersFirst.id, ordersFirstDeparture.id, buyer.id, OrderStatus.PAID_WAIT_CONFIRM, 9, 0);
+
+        JsonNode destinations = dashboard("/api/admin/dashboard").get("popularDestinations");
+        int peopleFirstIndex = indexOfDestination(destinations, "Dashboard people-first");
+        int ordersFirstIndex = indexOfDestination(destinations, "Dashboard orders-first");
+
+        assertEquals(7, destinations.get(peopleFirstIndex).get("validBookingCount").asInt(),
+                "应统计已确认（含退款申请中）订单的游客人数，排除待确认与已取消");
+        assertEquals(3, destinations.get(ordersFirstIndex).get("validBookingCount").asInt());
+        assertTrue(peopleFirstIndex < ordersFirstIndex,
+                "应按人数排行：1 单 7 人的目的地要排在 3 单 3 人的目的地前面，实际顺序为 "
+                        + destinations);
+    }
+
+    /**
+     * {@code departureEnrollment} 是「团期报名情况」：未来尚未出发、仍在销售（OPEN/FULL）的
+     * 最近 5 个团期，按出发日期升序，{@code remainingSeats} = {@code max - reserved - confirmed}。
+     *
+     * <p>除了 5 条应出现的团期，还故意插入 5 条"应当被排除"的：已过出发日期、{@code DRAFT}、
+     * {@code CLOSED}、{@code CANCELLED}、未发布线路下的团期。<b>它们的日期都落在窗口之内</b>
+     * （只比对应位置晚一个 id），所以任何一条过滤条件被去掉，都会有额外的行挤进前 5 条、
+     * 把后面的行顶出去 —— 断言才能真的失败。早先把这些排除项放在窗口之后（第 6、7、8 天），
+     * 去掉过滤也不影响前 5 条，等于没测。另外第 6 条有效团期用于验证 {@code LIMIT 5}
+     * 与"已占用超过名额时 {@code remainingSeats} 钳在 0"。</p>
+     */
+    @Test
+    @DisplayName("departureEnrollment：未来 OPEN/FULL 团期按日期升序最多 5 条，remainingSeats 有下限")
+    void departureEnrollmentListsUpcomingSales() throws Exception {
+        LocalDate today = orderMapper.databaseToday();
+        // 库里已有团期全部取消，让窗口只反映本用例插入的数据（事务内执行，用例结束回滚）。
+        departureMapper.update(null, new UpdateWrapper<Departure>().set("status", DepartureStatus.CANCELLED));
+        TravelRoute route = publishedRoute("Dashboard enrollment route", "Dashboard enrollment destination");
+        TravelRoute draftRoute = route("Dashboard enrollment draft route", "Dashboard enrollment draft",
+                RouteStatus.DRAFT);
+
+        Departure first = departure(route.id, today.plusDays(1), DepartureStatus.OPEN, 10, 2, 3);
+        Departure second = departure(route.id, today.plusDays(2), DepartureStatus.OPEN, 10, 0, 10);
+        Departure third = departure(route.id, today.plusDays(3), DepartureStatus.FULL, 8, 1, 7);
+        Departure fourth = departure(route.id, today.plusDays(4), DepartureStatus.OPEN, 20, 5, 5);
+        // 脏数据：已占用 18 人 > 名额 8 人，remainingSeats 必须是 0 而不是 -10。
+        Departure overbooked = departure(route.id, today.plusDays(5), DepartureStatus.OPEN, 8, 9, 9);
+        List.of(first, second, third, fourth, overbooked).forEach(departureMapper::insert);
+
+        // 以下都应被排除；日期都插在上面对应团期的同一天（id 更大，因此排在它后面），
+        // 一旦对应的过滤条件失效就会挤进前 5 条、改变结果。
+        Departure draft = departure(route.id, today.plusDays(1), DepartureStatus.DRAFT);
+        Departure closed = departure(route.id, today.plusDays(2), DepartureStatus.CLOSED);
+        Departure cancelled = departure(route.id, today.plusDays(4), DepartureStatus.CANCELLED);
+        Departure unpublishedRoute = departure(draftRoute.id, today.plusDays(3), DepartureStatus.OPEN);
+        Departure departed = departure(route.id, today.minusDays(1), DepartureStatus.OPEN);
+        // 第 6 条有效团期：验证窗口只有 5 条。
+        Departure sixth = departure(route.id, today.plusDays(6), DepartureStatus.OPEN);
+        List.of(draft, closed, cancelled, unpublishedRoute, departed, sixth).forEach(departureMapper::insert);
+
+        JsonNode rows = dashboard("/api/admin/dashboard").get("departureEnrollment");
+        List<String> startDates = new ArrayList<>();
+        rows.forEach(row -> startDates.add(row.get("startDate").asString()));
+        assertEquals(List.of(
+                        today.plusDays(1).toString(), today.plusDays(2).toString(), today.plusDays(3).toString(),
+                        today.plusDays(4).toString(), today.plusDays(5).toString()),
+                startDates, "应只含未来 5 个仍在销售的团期，按出发日期升序");
+        assertEquals(5, rows.get(0).get("remainingSeats").asInt(), "10 - 2 - 3 = 5");
+        assertEquals(0, rows.get(1).get("remainingSeats").asInt(), "名额已满时剩余为 0");
+        assertEquals(0, rows.get(2).get("remainingSeats").asInt(), "FULL 团期（受 max 限制）剩余为 0");
+        assertEquals(10, rows.get(3).get("remainingSeats").asInt(), "20 - 5 - 5 = 10");
+        assertEquals(0, rows.get(4).get("remainingSeats").asInt(), "已占用超过名额时为 0，不能是负数");
+        assertEquals("Dashboard enrollment route", rows.get(0).get("routeName").asString());
+        assertEquals(route.id.toString(), rows.get(0).get("routeId").asString());
+        assertEquals(overbooked.id.toString(), rows.get(4).get("departureId").asString());
+    }
+
+    /** 造一条已上架线路，只填契约/表结构要求非空的列。 */
+    private TravelRoute publishedRoute(String name, String destination) {
+        return route(name, destination, RouteStatus.PUBLISHED);
+    }
+
+    private TravelRoute route(String name, String destination, String status) {
+        TravelRoute route = new TravelRoute();
+        route.name = name;
+        route.departureCity = "Dashboard city";
+        route.destination = destination;
+        route.durationDays = 1;
+        route.status = status;
+        route.ratingAvg = new BigDecimal("0.00");
+        route.ratingCount = 0;
+        route.validBookingCount = 0;
+        route.deleted = 0;
+        routeMapper.insert(route);
+        return route;
+    }
+
+    private SysUser buyer() {
+        SysUser user = new SysUser();
+        user.username = "dashboard_buyer_" + SEQ.incrementAndGet();
+        user.nickname = "工作台统计测试游客";
+        user.passwordHash = "unused-test-hash";
+        user.status = 1;
+        user.deleted = 0;
+        userMapper.insert(user);
+        return user;
+    }
+
+    private TravelOrder order(Long routeId, Long departureId, Long userId, String status,
+                              int adultCount, int childCount) {
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "TA-DASHBOARD-" + SEQ.incrementAndGet();
+        order.userId = userId;
+        order.routeId = routeId;
+        order.departureId = departureId;
+        order.contactName = "测试联系人";
+        order.contactPhone = "13800138000";
+        order.adultCount = adultCount;
+        order.childCount = childCount;
+        order.adultUnitPrice = new BigDecimal("100.00");
+        order.childUnitPrice = new BigDecimal("100.00");
+        order.totalAmount = new BigDecimal("100.00").multiply(BigDecimal.valueOf(adultCount + childCount));
+        order.status = status;
+        order.paymentStatus = PaymentStatus.PAID;
+        orderMapper.insert(order);
+        return order;
+    }
+
+    /** 给订单挂一张"申请中"的退款单，{@code originalOrderStatus} 是申请前的业务状态。 */
+    private void refund(Long orderId, Long userId, String originalOrderStatus) {
+        Refund refund = new Refund();
+        refund.orderId = orderId;
+        refund.userId = userId;
+        refund.amount = new BigDecimal("100.00");
+        refund.reason = "工作台统计测试退款";
+        refund.originalOrderStatus = originalOrderStatus;
+        refund.status = RefundStatus.APPLYING;
+        refundMapper.insert(refund);
+    }
+
+    private static int indexOfDestination(JsonNode destinations, String destination) {
+        for (int i = 0; i < destinations.size(); i++) {
+            if (destination.equals(destinations.get(i).get("destination").asString())) {
+                return i;
+            }
+        }
+        throw new AssertionError("popularDestinations 里没有目的地「" + destination + "」：" + destinations);
+    }
+
     /** 建一条可插入的团期，只填契约/表结构要求非空的列。 */
     private static Departure departure(Long routeId, LocalDate startDate, String status) {
+        return departure(routeId, startDate, status, 10, 0, 0);
+    }
+
+    private static Departure departure(Long routeId, LocalDate startDate, String status,
+                                       int maxPeople, int reservedPeople, int confirmedPeople) {
         Departure departure = new Departure();
         departure.routeId = routeId;
         departure.startDate = startDate;
         departure.endDate = startDate.plusDays(1);
         departure.adultPrice = new BigDecimal("100.00");
         departure.childPrice = new BigDecimal("100.00");
-        departure.maxPeople = 10;
-        departure.reservedPeople = 0;
-        departure.confirmedPeople = 0;
+        departure.maxPeople = maxPeople;
+        departure.reservedPeople = reservedPeople;
+        departure.confirmedPeople = confirmedPeople;
         departure.status = status;
         departure.version = 0;
         return departure;

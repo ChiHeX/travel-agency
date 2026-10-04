@@ -3689,7 +3689,7 @@ components:
       required: [destination, validBookingCount]
       properties:
         destination: { type: string, example: 云南 }
-        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        validBookingCount: { type: integer, minimum: 0, description: 该目的地「有效报名」的游客数量（已确认且未完成退款的订单人数，不是订单条数）, example: 132 }
     HomeData:
       type: object
       additionalProperties: false
@@ -4245,10 +4245,24 @@ components:
         orderCount: { type: integer, minimum: 0, example: 8 }
         participantCount: { type: integer, minimum: 0, example: 15 }
         orderAmount: { $ref: '#/components/schemas/Money' }
+    DepartureEnrollment:
+      type: object
+      additionalProperties: false
+      description: 团期报名情况的一行：尚未出发、仍在销售中的团期及其名额占用。
+      required: [departureId, routeId, routeName, startDate, maxPeople, reservedPeople, confirmedPeople, remainingSeats]
+      properties:
+        departureId: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: string, example: 昆明大理丽江 6 日跟团游 }
+        startDate: { $ref: '#/components/schemas/Date' }
+        maxPeople: { type: integer, minimum: 0, example: 30 }
+        reservedPeople: { type: integer, minimum: 0, description: 已下单待工作人员确认、正在占用名额的人数, example: 2 }
+        confirmedPeople: { type: integer, minimum: 0, description: 已确认报名的人数, example: 18 }
+        remainingSeats: { type: integer, minimum: 0, description: maxPeople 减去 reservedPeople 与 confirmedPeople，下限为 0（不出现负数名额）, example: 10 }
     DashboardData:
       type: object
       additionalProperties: false
-      required: [userCount, publishedRouteCount, openDepartureCount, todayOrderCount, pendingConfirmCount, pendingRefundCount, participantCount, grossOrderAmount, orderTrend, popularRoutes, popularDestinations]
+      required: [userCount, publishedRouteCount, openDepartureCount, todayOrderCount, pendingConfirmCount, pendingRefundCount, participantCount, grossOrderAmount, orderTrend, popularRoutes, popularDestinations, departureEnrollment]
       properties:
         userCount: { type: integer, minimum: 0, example: 128 }
         publishedRouteCount: { type: integer, minimum: 0, example: 12 }
@@ -4267,6 +4281,10 @@ components:
         popularDestinations:
           type: array
           items: { $ref: '#/components/schemas/DestinationStatistic' }
+        departureEnrollment:
+          type: array
+          description: 未来最近 5 个尚未出发且仍在销售（OPEN/FULL）的团期报名情况，按出发日期升序；没有符合条件的团期时为空数组
+          items: { $ref: '#/components/schemas/DepartureEnrollment' }
 
     AccountStatusUpdateRequest:
       type: object

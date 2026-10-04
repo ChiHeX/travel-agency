@@ -2,10 +2,16 @@ package com.travelagency;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.enums.DepartureStatus;
+import com.travelagency.common.enums.OrderStatus;
+import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.SysUser;
+import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.SysUserMapper;
+import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.service.HomeService;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +43,8 @@ class HomeContractIntegrationTest {
     @Autowired WebApplicationContext context;
     @Autowired TravelRouteMapper routes;
     @Autowired DepartureMapper departures;
+    @Autowired TravelOrderMapper orders;
+    @Autowired SysUserMapper users;
     @Autowired HomeService homeService;
     private MockMvc mvc;
 
@@ -65,6 +73,11 @@ class HomeContractIntegrationTest {
         Departure nextDeparture = departure(route.id, LocalDate.now().plusDays(1), new BigDecimal("200.00"));
         departures.insert(laterCheaperDeparture);
         departures.insert(nextDeparture);
+
+        // 热门目的地按"有效报名游客数量"统计（PRD §27），数据来自订单而不是线路上的
+        // valid_booking_count（那一列是订单条数）：这里造一张已确认、1 成人 + 1 儿童的订单，
+        // 该目的地的人数是 2。线路上的计数同时置为 2，用来区分"线路排行看计数、目的地排行看人数"。
+        confirmedOrder(route.id, nextDeparture.id, 1, 1);
 
         var home = homeService.get();
         assertTrue(home.popularDestinations().stream()
@@ -107,5 +120,33 @@ class HomeContractIntegrationTest {
         departure.status = DepartureStatus.OPEN;
         departure.version = 0;
         return departure;
+    }
+
+    /** 造一张"有效报名"的订单（已确认且未退款），供热门目的地的人数统计使用。 */
+    private void confirmedOrder(Long routeId, Long departureId, int adultCount, int childCount) {
+        SysUser buyer = new SysUser();
+        buyer.username = "home_contract_buyer";
+        buyer.passwordHash = "unused-test-hash";
+        buyer.nickname = "首页契约测试游客";
+        buyer.status = 1;
+        buyer.deleted = 0;
+        users.insert(buyer);
+
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "TA-HOME-CONTRACT-1";
+        order.userId = buyer.id;
+        order.routeId = routeId;
+        order.departureId = departureId;
+        order.contactName = "测试联系人";
+        order.contactPhone = "13800138000";
+        order.adultCount = adultCount;
+        order.childCount = childCount;
+        order.adultUnitPrice = new BigDecimal("100.00");
+        order.childUnitPrice = new BigDecimal("100.00");
+        order.totalAmount = new BigDecimal("100.00")
+                .multiply(BigDecimal.valueOf(adultCount + childCount));
+        order.status = OrderStatus.CONFIRMED;
+        order.paymentStatus = PaymentStatus.PAID;
+        orders.insert(order);
     }
 }

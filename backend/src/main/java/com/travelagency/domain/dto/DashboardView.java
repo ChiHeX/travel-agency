@@ -22,9 +22,28 @@ public record DashboardView(
         BigDecimal grossOrderAmount,
         List<Metric> orderTrend,
         List<RouteSummaryView> popularRoutes,
-        List<HomeView.Destination> popularDestinations) {
+        List<HomeView.Destination> popularDestinations,
+        List<Enrollment> departureEnrollment) {
 
     /** 契约 {@code DashboardMetric}：按日聚合的一行。 */
     public record Metric(LocalDate date, int orderCount, int participantCount, BigDecimal orderAmount) {
+    }
+
+    /**
+     * 契约 {@code DepartureEnrollment}：一个尚未出发、仍在销售中的团期的报名情况。
+     *
+     * <p>{@code departureId} / {@code routeId} 用 {@code Long}：契约把它们声明为 {@code Id}（字符串），
+     * 全局 JacksonConfig 正好把 {@code Long} 序列化成字符串；名额相关的计数字段反过来必须是
+     * {@code int}，否则会被序列化成契约不接受的字符串（见类注释）。</p>
+     */
+    public record Enrollment(
+            Long departureId,
+            Long routeId,
+            String routeName,
+            LocalDate startDate,
+            int maxPeople,
+            int reservedPeople,
+            int confirmedPeople,
+            int remainingSeats) {
     }
 }

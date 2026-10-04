@@ -181,7 +181,8 @@ public class AdminController {
                 .stream().findFirst().orElse(0)).intValue();
         return ApiResponse.ok(new DashboardView(users, routes, departures, todayOrders,
                 pendingConfirm, pendingRefund, participants, revenue,
-                orderTrend(Integer.parseInt(days), today), popularRoutes(), routeMapper.popularDestinations()));
+                orderTrend(Integer.parseInt(days), today), popularRoutes(), routeMapper.popularDestinations(),
+                departureMapper.upcomingEnrollment()));
     }
 
     /**

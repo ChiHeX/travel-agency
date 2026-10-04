@@ -536,3 +536,262 @@ a {
   .app-layout-shell .form-field select,
   .app-layout-shell .form-field textarea { min-width: 0; width: 100%; }
 }
+
+/* ==========================================================================
+   Admin Workspace (back-office shell)
+   ==========================================================================
+   后台框架（侧栏 + 顶栏 + 内容区）与工作台共用卡片。
+
+   这些类名一直写在 AdminLayout.vue 与各后台页面里，但它们的样式块在
+   b2fc15e「重写 global.css」时被整块删掉了：`.admin-shell` / `.admin-sidebar` /
+   `.admin-topbar` / `.admin-content` 全仓库再无定义，后台页面只能靠默认的文档流渲染
+   （侧栏链接堆在页面顶部），`.stats-grid` / `.stat-card` 也只有 AdminDashboardView
+   自带了一份 scoped 版本，导游工作台那边一直是无样式状态。
+
+   这里按当前设计语言（--theme-blue / --border-divider / --bg-secondary / --radius-*）
+   重新给出定义，只覆盖后台确实在用的类名，不恢复旧的绿色主题配色。
+   ========================================================================== */
+
+.admin-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg-secondary);
+}
+
+.admin-sidebar {
+  position: sticky;
+  top: 0;
+  flex: 0 0 232px;
+  width: 232px;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 14px;
+  background: #ffffff;
+  border-right: 1px solid var(--border-divider);
+}
+
+.admin-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 10px;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--theme-blue);
+  color: #ffffff;
+}
+
+.brand-text strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.brand-text small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+}
+
+.sidebar-caption {
+  padding: 6px 10px 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.nested-caption {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+}
+
+.side-nav {
+  display: grid;
+  gap: 2px;
+}
+
+.side-nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.side-nav a svg {
+  flex-shrink: 0;
+}
+
+.side-nav a:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.side-nav a.router-link-active {
+  background: var(--theme-blue-tint);
+  color: var(--theme-blue);
+  font-weight: 600;
+}
+
+.back-home {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 12px 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.back-home:hover {
+  color: var(--theme-blue);
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 28px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border-divider);
+}
+
+.admin-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.admin-content {
+  width: 100%;
+  max-width: 1440px;
+  padding: 24px 28px 48px;
+}
+
+/* 后台页面标题区与工作台指标卡：多个页面共用，此前只有部分页面各自定义了一份 scoped 版本。 */
+.admin-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-page-head h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.admin-page-head p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.stat-card {
+  padding: 18px;
+  background: #ffffff;
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-md);
+}
+
+.stat-card .label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.stat-card .value {
+  margin-top: 10px;
+  color: var(--text-primary);
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.stat-card .hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .admin-shell {
+    display: block;
+  }
+
+  .admin-sidebar {
+    position: static;
+    width: 100%;
+    flex: none;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border-divider);
+  }
+
+  .side-nav {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .back-home {
+    margin-top: 8px;
+    border-top: none;
+  }
+
+  .admin-topbar {
+    padding: 14px 16px;
+  }
+
+  .admin-content {
+    padding: 18px 14px 40px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

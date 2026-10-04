@@ -6,8 +6,9 @@ import { adminApi } from '@/api/modules'
  * 后台工作台（Dashboard 数据统计）。
  *
  * <p>页面不做任何本地造数：标量指标直接渲染契约 {@code GET /admin/dashboard} 的
- * {@code DashboardData}，{@code orderTrend} / {@code popularRoutes} / {@code popularDestinations}
- * 三个必填数组此前完全没有被消费（只留了「后端提供数据后此处显示」的占位文案），这里补齐趋势图与两个排行。
+ * {@code DashboardData}，四个数组（{@code orderTrend} / {@code popularRoutes} /
+ * {@code popularDestinations} / {@code departureEnrollment}）此前都没有被页面消费
+ * （只留了「后端提供数据后此处显示」的占位文案），这里补齐趋势图、两个排行与团期报名情况。
  * 契约里 {@code days} 只控制 {@code orderTrend} 的窗口长度，窗口内缺失日期由后端补零。</p>
  */
 
@@ -51,6 +52,7 @@ const monthDay = (date) => (typeof date === 'string' ? date.slice(5) : '')
 const trend = computed(() => metrics.value?.orderTrend ?? [])
 const popularRoutes = computed(() => metrics.value?.popularRoutes ?? [])
 const popularDestinations = computed(() => metrics.value?.popularDestinations ?? [])
+const departureEnrollment = computed(() => metrics.value?.departureEnrollment ?? [])
 
 /** 窗口合计由返回的序列累加得到；金额按分累加，避免浮点误差。 */
 const trendTotals = computed(() => trend.value.reduce((sum, item) => ({
@@ -97,6 +99,17 @@ const destinationPeak = computed(() =>
 const barWidth = (value, peak) => {
   const ratio = count(value) / peak
   return ratio <= 0 ? '0%' : `${Math.max(4, Math.round(ratio * 100))}%`
+}
+
+/**
+ * 团期名额占用比例（已确认 + 待确认）。上限 100%：历史脏数据里已占用可能超过名额，
+ * 后端已把 remainingSeats 钳在 0，进度条同样不能画出超过一整条。
+ */
+const enrolledPercent = (row) => {
+  const max = count(row.maxPeople)
+  if (max <= 0) return '0%'
+  const used = count(row.confirmedPeople) + count(row.reservedPeople)
+  return `${Math.min(100, Math.round((used / max) * 100))}%`
 }
 </script>
 
@@ -272,6 +285,39 @@ const barWidth = (value, peak) => {
       </div>
     </div>
 
+    <div v-if="metrics" class="admin-panel enrollment-panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">DEPARTURE ENROLLMENT</span>
+          <h3>团期报名情况</h3>
+        </div>
+        <span class="panel-note">未来最近 5 个仍在销售的团期</span>
+      </div>
+
+      <div v-if="departureEnrollment.length" class="enrollment-grid">
+        <div v-for="row in departureEnrollment" :key="row.departureId" class="enrollment-card">
+          <RouterLink class="enrollment-route" :to="{ name: 'admin-route-detail', params: { id: row.routeId } }">
+            {{ row.routeName }}
+          </RouterLink>
+          <span class="enrollment-date">出发 {{ row.startDate }}</span>
+          <div class="enrollment-bar-wrap">
+            <div class="enrollment-bar" :style="{ width: enrolledPercent(row) }"></div>
+          </div>
+          <div class="enrollment-foot">
+            <span class="enrollment-count">
+              已确认 {{ row.confirmedPeople }} / {{ row.maxPeople }} 人
+              <template v-if="row.reservedPeople">· 待确认 {{ row.reservedPeople }} 人</template>
+            </span>
+            <span class="tag" :class="row.remainingSeats > 0 ? 'success' : 'danger'">
+              {{ row.remainingSeats > 0 ? `剩余 ${row.remainingSeats} 位` : '名额已满' }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="empty-box">暂无未出发的开放团期。</div>
+    </div>
+
     <div v-if="metrics" class="admin-panel popular-route-panel">
       <div class="panel-head">
         <div>
@@ -305,61 +351,11 @@ const barWidth = (value, peak) => {
 
 <style scoped>
 /*
- * 样式自带在本组件内：后台共用的 .admin-shell / .stats-grid / .stat-card 等设计系统样式在
- * b2fc15e 重写 global.css 时被整块删掉，此后新加的后台页面（如地点指南管理）也都各自定义局部样式。
+ * 只保留工作台自己的样式：后台框架（.admin-shell/.admin-sidebar/.admin-topbar/.admin-content）、
+ * 页面标题区（.admin-page-head）与指标卡（.stats-grid/.stat-card）都是多个后台页面共用的，
+ * 已在 styles/global.css 的「Admin Workspace」一节统一定义（它们的样式块曾被 b2fc15e 删掉，
+ * 这里不再各自复制一份）。
  */
-.admin-page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.admin-page-head h2 {
-  margin: 0 0 4px;
-  font-size: 18px;
-}
-
-.admin-page-head p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  margin-bottom: 22px;
-}
-
-.stat-card {
-  background: #ffffff;
-  border: 1px solid var(--border-divider);
-  border-radius: var(--radius-md);
-  padding: 18px;
-}
-
-.stat-card .label {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.stat-card .value {
-  margin-top: 10px;
-  font-size: 28px;
-  font-weight: 800;
-  color: var(--text-primary);
-}
-
-.stat-card .hint {
-  margin-top: 5px;
-  display: block;
-  color: var(--text-tertiary);
-  font-size: 11px;
-}
-
 .text-warning {
   color: var(--status-orange) !important;
 }
@@ -386,6 +382,14 @@ const barWidth = (value, peak) => {
   margin-bottom: 22px;
 }
 
+/* 趋势图的加载/失败提示：占住图表的高度，切换窗口时页面不会跳动。 */
+.trend-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 232px;
+}
+
 .dashboard-error p {
   margin: 0;
 }
@@ -398,6 +402,72 @@ const barWidth = (value, peak) => {
 
 .popular-route-panel {
   margin-top: 20px;
+}
+
+.enrollment-panel {
+  margin-top: 20px;
+}
+
+.panel-note {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.enrollment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.enrollment-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-sm);
+}
+
+.enrollment-route {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.enrollment-route:hover {
+  color: var(--theme-blue);
+  text-decoration: underline;
+}
+
+.enrollment-date {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.enrollment-bar-wrap {
+  height: 6px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.enrollment-bar {
+  height: 100%;
+  background: var(--theme-blue);
+  border-radius: var(--radius-full);
+}
+
+.enrollment-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.enrollment-count {
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
 .panel-head {

@@ -635,6 +635,10 @@
 
 退款申请被拒绝。
 
+> 约定：`REFUND_PROCESSING` 与 `REFUND_REJECTED` 是**契约保留值**，订单本身不会停在它们上面 ——
+> 退款的"处理中"记在退款单（`refund.status = PROCESSING`），拒绝则直接用申请前的业务状态
+> 恢复订单。理由与实际链路见 [ARCHITECTURE.md](ARCHITECTURE.md) 的「订单状态机」。
+
 ---
 
 # 13. 报名确认

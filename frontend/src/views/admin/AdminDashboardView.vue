@@ -196,7 +196,13 @@ const barWidth = (value, peak) => {
           </div>
         </div>
 
-        <div v-if="trend.length" class="chart-visual">
+        <div v-if="loading" class="empty-box trend-state" role="status">
+          正在加载近 {{ days }} 天订单趋势…
+        </div>
+        <div v-else-if="errorMessage" class="empty-box trend-state">
+          近 {{ days }} 天订单趋势加载失败，请重新加载。
+        </div>
+        <div v-else-if="trend.length" class="chart-visual">
           <svg
             class="trend-svg"
             :viewBox="`0 0 ${CHART.width} ${CHART.height}`"
@@ -235,6 +241,7 @@ const barWidth = (value, peak) => {
             窗口内合计：订单 {{ trendTotals.orderCount }} 单 · 报名 {{ trendTotals.participantCount }} 人次 ·
             已支付 {{ money(trendTotals.amountCents / 100) }}
           </div>
+          <p v-if="trendTotals.orderCount === 0" class="chart-legend">该窗口内没有订单记录。</p>
         </div>
 
         <div v-else class="empty-box">该窗口内没有订单记录。</div>

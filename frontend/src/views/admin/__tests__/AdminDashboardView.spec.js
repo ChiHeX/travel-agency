@@ -177,6 +177,48 @@ describe('AdminDashboardView', () => {
     expect(wrapper.findAll('.stat-card')).toHaveLength(8)
   })
 
+  it('切换窗口加载中或失败时不展示旧窗口的图表，重试成功才展示新数据', async () => {
+    dashboard.mockResolvedValueOnce(dashboardData())
+    const wrapper = mountView()
+    await flushPromises()
+
+    let rejectThirty
+    dashboard.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectThirty = reject }))
+    await buttonByText(wrapper, '近 30 天').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.trend-svg').exists()).toBe(false)
+    expect(wrapper.find('.chart-legend').exists()).toBe(false)
+    expect(wrapper.find('.trend-state').text()).toContain('正在加载近 30 天')
+
+    rejectThirty(new Error('统计服务暂不可用'))
+    await flushPromises()
+    expect(wrapper.find('.dashboard-error').text()).toContain('统计服务暂不可用')
+    expect(wrapper.find('.trend-svg').exists()).toBe(false)
+    expect(wrapper.find('.chart-legend').exists()).toBe(false)
+    expect(wrapper.find('.trend-state').text()).toContain('近 30 天订单趋势加载失败')
+
+    dashboard.mockResolvedValueOnce(dashboardData({ orderTrend: thirtyDayTrend }))
+    await buttonByText(wrapper.find('.dashboard-error'), '重新加载').trigger('click')
+    await flushPromises()
+    expect(dashboard).toHaveBeenLastCalledWith({ days: 30 })
+    expect(wrapper.find('.trend-svg').attributes('aria-label')).toContain('近 30 天')
+    expect(wrapper.find('.chart-legend').text()).toContain('订单 4 单')
+    expect(wrapper.find('.dashboard-error').exists()).toBe(false)
+  })
+
+  it('后端补零的无订单窗口保留日期刻度和零合计，并说明没有订单记录', async () => {
+    const emptyTrend = sevenDayTrend.map((item) => metric(item.date, 0, 0, '0.00'))
+    dashboard.mockResolvedValueOnce(dashboardData({ orderTrend: emptyTrend }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('rect.chart-bar')).toHaveLength(0)
+    expect(wrapper.findAll('text.chart-label')).toHaveLength(7)
+    expect(wrapper.find('.chart-legend').text()).toContain('订单 0 单')
+    expect(wrapper.text()).toContain('该窗口内没有订单记录。')
+  })
+
   it('过期响应被丢弃：先发的窗口请求后返回，不覆盖当前窗口的数据', async () => {
     dashboard.mockResolvedValueOnce(dashboardData())
     const wrapper = mountView()

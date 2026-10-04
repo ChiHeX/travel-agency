@@ -1,5 +1,13 @@
 package com.travelagency;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.travelagency.common.enums.DepartureStatus;
+import com.travelagency.common.enums.RouteStatus;
+import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.TravelOrderMapper;
+import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +23,7 @@ import org.springframework.web.context.WebApplicationContext;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -88,7 +97,13 @@ class AdminDashboardContractIntegrationTest {
 
     /** 与生产同源：工作台的"今天"取自库内日期，测试不再用 JVM 时区自行推导期望值。 */
     @Autowired
-    private com.travelagency.domain.mapper.TravelOrderMapper orderMapper;
+    private TravelOrderMapper orderMapper;
+
+    @Autowired
+    private DepartureMapper departureMapper;
+
+    @Autowired
+    private TravelRouteMapper routeMapper;
 
     private MockMvc mvc;
 
@@ -182,6 +197,62 @@ class AdminDashboardContractIntegrationTest {
                     .andExpect(jsonPath("$.errors[0].field", endsWith("days")))
                     .andExpect(jsonPath("$.errors[0].message").value("days 只能是 7 或 30"));
         }
+    }
+
+    /**
+     * {@code openDepartureCount} 是 PRD 的「可报名团期」：{@code OPEN} <b>且未过出发日期</b>。
+     *
+     * <p>只按 {@code status = OPEN} 计数会把「已经出发、但工作人员还没把状态推进到
+     * TRAVELLING/FINISHED」的团期也算成可报名，而全站其它地方一律按
+     * 「OPEN + {@code start_date >= 当天}」判定（下单校验与占名额的条件 UPDATE、
+     * {@code RouteService} 的公开团期、{@code HomeService} 的近期团期），
+     * 并且库里没有任何定时任务会自动收口过期团期 —— 它们会一直留在计数里。</p>
+     *
+     * <p>用「昨天 / 当天 / 未来」三条团期钉住边界：当天可报名，昨天不可报名。</p>
+     */
+    @Test
+    @DisplayName("openDepartureCount 只统计未过出发日期的 OPEN 团期（当天仍可报名）")
+    void openDepartureCountExcludesDepartedDepartures() throws Exception {
+        LocalDate today = orderMapper.databaseToday();
+        // 先把库里原有团期全部取消，让计数只反映本用例插入的几条（事务内执行，用例结束回滚）。
+        departureMapper.update(null, new UpdateWrapper<Departure>().set("status", DepartureStatus.CANCELLED));
+
+        TravelRoute route = new TravelRoute();
+        route.name = "Dashboard open departure route";
+        route.departureCity = "Dashboard city";
+        route.destination = "Dashboard destination";
+        route.durationDays = 1;
+        route.status = RouteStatus.PUBLISHED;
+        route.ratingAvg = new BigDecimal("0.00");
+        route.ratingCount = 0;
+        route.validBookingCount = 0;
+        route.deleted = 0;
+        routeMapper.insert(route);
+
+        departureMapper.insert(departure(route.id, today.minusDays(1), DepartureStatus.OPEN));
+        departureMapper.insert(departure(route.id, today, DepartureStatus.OPEN));
+        departureMapper.insert(departure(route.id, today.plusDays(10), DepartureStatus.OPEN));
+        // 非 OPEN 的团期本来就不可报名，即使日期在未来也不计入。
+        departureMapper.insert(departure(route.id, today.plusDays(3), DepartureStatus.FULL));
+
+        assertEquals(2, dashboard("/api/admin/dashboard").get("openDepartureCount").asInt(),
+                "只应统计 OPEN 且 start_date >= 库内当天的团期");
+    }
+
+    /** 建一条可插入的团期，只填契约/表结构要求非空的列。 */
+    private static Departure departure(Long routeId, LocalDate startDate, String status) {
+        Departure departure = new Departure();
+        departure.routeId = routeId;
+        departure.startDate = startDate;
+        departure.endDate = startDate.plusDays(1);
+        departure.adultPrice = new BigDecimal("100.00");
+        departure.childPrice = new BigDecimal("100.00");
+        departure.maxPeople = 10;
+        departure.reservedPeople = 0;
+        departure.confirmedPeople = 0;
+        departure.status = status;
+        departure.version = 0;
+        return departure;
     }
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authed(String url) {

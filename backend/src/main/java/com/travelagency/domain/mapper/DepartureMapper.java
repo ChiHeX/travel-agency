@@ -1,6 +1,7 @@
 package com.travelagency.domain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.travelagency.domain.dto.DashboardView;
 import com.travelagency.domain.entity.Departure;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -11,6 +12,36 @@ import java.util.List;
 
 @Mapper
 public interface DepartureMapper extends BaseMapper<Departure> {
+
+    /**
+     * 未来尚未出发、仍在销售中的团期的报名情况，供后台工作台的 {@code departureEnrollment} 使用。
+     *
+     * <p>取 {@code OPEN}（可报名）与 {@code FULL}（名额已满）两种状态：{@code DRAFT} 尚未发布、
+     * {@code CLOSED} 已停止销售，都不是「报名情况」要关心的；而 {@code FULL} 恰恰是运营最需要
+     * 看到的一档（该加团期了），所以不能只取 {@code OPEN}。日期口径与全站一致：
+     * {@code start_date >= 当天}（当天仍可报名），未发布的线路不计入。</p>
+     *
+     * <p>{@code remainingSeats} 直接在 SQL 里算：契约把它声明为 {@code minimum: 0}，
+     * 而名额校验只作用于写入路径，历史脏数据里 {@code reserved + confirmed} 可能已经超过
+     * {@code max_people}，直接相减会发出负数。用 {@code GREATEST(..., 0)} 钳住下限，
+     * 顺带让结果集的列数与 {@code DashboardView.Enrollment} 的构造参数一一对应
+     * —— MyBatis 的构造器自动映射要求两者数量相同，少一列会在取数时直接抛
+     * {@code Constructor auto-mapping ... failed}。</p>
+     */
+    @Select("""
+            SELECT d.id AS departureId, d.route_id AS routeId, r.name AS routeName,
+                   d.start_date AS startDate, d.max_people AS maxPeople,
+                   d.reserved_people AS reservedPeople, d.confirmed_people AS confirmedPeople,
+                   GREATEST(d.max_people - d.reserved_people - d.confirmed_people, 0) AS remainingSeats
+            FROM departure d
+            JOIN travel_route r ON r.id = d.route_id
+            WHERE d.status IN ('OPEN', 'FULL')
+              AND d.start_date >= CURRENT_DATE()
+              AND r.status = 'PUBLISHED' AND r.deleted = 0
+            ORDER BY d.start_date ASC, d.id ASC
+            LIMIT 5
+            """)
+    List<DashboardView.Enrollment> upcomingEnrollment();
 
     /**
      * 当前读（locking read）：跳过事务的一致性快照，直接读取该行**最新已提交**版本并加排他锁。

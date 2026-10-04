@@ -156,7 +156,7 @@ describe('AdminDashboardView', () => {
     expect(buttonByText(wrapper, '近 30 天').attributes('aria-pressed')).toBe('true')
   })
 
-  it('渲染 popularDestinations 排行，条形宽度按最大值归一、0 不画', async () => {
+  it('热门目的地按报名人次展示，条形宽度按最大值归一、0 不画', async () => {
     dashboard.mockResolvedValue(dashboardData())
     const wrapper = mountView()
     await flushPromises()
@@ -164,7 +164,8 @@ describe('AdminDashboardView', () => {
     const rows = wrapper.findAll('.ranking-row')
     expect(rows).toHaveLength(3)
     expect(rows[0].text()).toContain('云南')
-    expect(rows[0].text()).toContain('6 单')
+    expect(rows[0].text()).toContain('6 人次')
+    expect(rows[0].text()).not.toContain('6 单')
     const widths = wrapper.findAll('.rank-bar').map((bar) => bar.attributes('style'))
     expect(widths[0]).toContain('width: 100%')
     expect(widths[1]).toContain('width: 50%')

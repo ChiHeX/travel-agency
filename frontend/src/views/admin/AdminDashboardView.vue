@@ -277,7 +277,7 @@ const enrolledPercent = (row) => {
                 <div class="rank-bar" :style="{ width: barWidth(item.validBookingCount, destinationPeak) }"></div>
               </div>
             </div>
-            <span class="rank-sales">{{ item.validBookingCount }} 单</span>
+            <span class="rank-sales">{{ item.validBookingCount }} 人次</span>
           </div>
         </div>
 

@@ -614,6 +614,7 @@ paths:
       tags: [Orders]
       operationId: createRefund
       summary: 为已支付订单申请退款
+      description: LOCAL_SIMULATION 渠道不发生资金交易，返回 409 LOCAL_PAYMENT_REFUND_UNSUPPORTED；退款联调使用支付宝沙箱订单。
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
@@ -654,6 +655,46 @@ paths:
               schema: { $ref: '#/components/schemas/ReviewEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /payments/options:
+    get:
+      tags: [Orders]
+      operationId: getPaymentOptions
+      summary: 查询当前环境支持的支付方式
+      description: 需要登录。只有 local-payment profile 且无 prod/production profile 时 localSimulationEnabled 为 true，默认 false。
+      responses:
+        '200':
+          description: 支付方式配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentOptionsEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payments/local/{orderNo}:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: simulateLocalPayment
+      summary: 本地开发环境模拟支付成功
+      description: >-
+        仅 local-payment profile 且无 prod/production profile 时注册，其他环境返回 404。
+        必须登录且是订单所有者。无请求体，金额取数据库订单快照。
+        仅 WAIT_PAY + UNPAID 且未发起支付宝支付的订单可模拟；标记支付渠道 LOCAL_SIMULATION、
+        交易号 LOCAL- 前缀，通过服务层入账并推进 PAID_WAIT_CONFIRM。
+        以订单号为幂等单位，串行/并发重试不重复入账和发通知；已模拟支付的订单返回当前 Payment。
+        不允许代付他人订单（403 ACCESS_DENIED），订单/支付状态不适用返回 409 ORDER_STATE_CONFLICT，
+        金额不一致返回 409 PAYMENT_AMOUNT_MISMATCH。普通支付宝接口不自动降级。
+      responses:
+        '200':
+          description: 已记录的本地模拟支付
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /payments/alipay/notify:
     post:
@@ -1533,6 +1574,8 @@ paths:
       operationId: approveRefund
       summary: 同意退款申请
       description: |
+        LOCAL_SIMULATION 渠道的测试订单返回 409 LOCAL_PAYMENT_REFUND_UNSUPPORTED，不调用支付宝出款。
+
         审核通过时**必须先真正完成出款，再落退款状态**：实现按
         「抢占 APPLYING→PROCESSING → 校验出款配置 → 调支付宝 `alipay.trade.refund`
         → 成功后才释放名额、回退线路有效报名数、把退款单 / 订单 / 支付单落成 `REFUNDED`」
@@ -3934,7 +3977,7 @@ components:
         id: { $ref: '#/components/schemas/Id' }
         paymentNo: { type: string, example: PAY202609070001 }
         orderNo: { type: string, example: TA202609070001 }
-        channel: { type: string, enum: [ALIPAY_SANDBOX] }
+        channel: { type: string, enum: [ALIPAY_SANDBOX, LOCAL_SIMULATION] }
         amount: { $ref: '#/components/schemas/Money' }
         status: { $ref: '#/components/schemas/PaymentStatus' }
         thirdPartyTradeNo: { type: [string, 'null'] }
@@ -3944,6 +3987,23 @@ components:
             - { type: 'null' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
+    PaymentOptionsEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [localSimulationEnabled]
+              properties:
+                localSimulationEnabled: { type: boolean }
+    PaymentEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Payment' }
     PaymentStart:
       type: object
       additionalProperties: false

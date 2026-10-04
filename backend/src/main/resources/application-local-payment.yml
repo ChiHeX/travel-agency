@@ -1,0 +1,4 @@
+# Explicitly opt in with --spring.profiles.active=local-payment.
+# The service refuses to start if this binding is overridden to a public address.
+server:
+  address: 127.0.0.1

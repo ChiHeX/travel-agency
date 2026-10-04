@@ -34,6 +34,8 @@ export const routeApi = {
 }
 
 export const orderApi = {
+  paymentOptions: () => request.get('/payments/options'),
+  simulatePayment: (orderNo) => request.post(`/payments/local/${encodeURIComponent(orderNo)}`),
   list: (params) => request.get('/orders', { params }),
   detail: (orderNo) => request.get(`/orders/${orderNo}`),
   create: (payload, idempotencyKey) => request.post('/orders', payload, idempotentConfig(idempotencyKey)),

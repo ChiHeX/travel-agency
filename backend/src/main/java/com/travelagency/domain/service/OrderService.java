@@ -427,7 +427,7 @@ public class OrderService {
                 return replayStartPayment(orderNo, replay);
             }
         }
-        TravelOrder order = findByNo(orderNo);
+        TravelOrder order = findByNoForUpdate(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许支付");
@@ -550,7 +550,7 @@ public class OrderService {
      */
     @Transactional
     public OrderView cancel(String orderNo, Long userId) {
-        TravelOrder order = findByNo(orderNo);
+        TravelOrder order = findByNoForUpdate(orderNo);
         ensureOwner(order, userId);
         if (!OrderStatus.WAIT_PAY.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "仅待支付订单可以直接取消，已支付订单请申请退款");
@@ -563,7 +563,7 @@ public class OrderService {
     }
 
     /**
-     * This method is called only after the payment adapter has verified Alipay's signature.
+     * Called by the verified Alipay adapter or the explicitly enabled local payment simulator.
      * It is idempotent so a repeated notification cannot advance the order twice.
      */
     @Transactional
@@ -582,7 +582,7 @@ public class OrderService {
      */
     @Transactional
     public void markPaid(String orderNo, String tradeNo, BigDecimal callbackAmount) {
-        TravelOrder order = findByNo(orderNo);
+        TravelOrder order = findByNoForUpdate(orderNo);
         Payment payment = paymentFor(order.id);
         if (PaymentStatus.PAID.equals(payment.status)) {
             return;
@@ -613,7 +613,8 @@ public class OrderService {
         order.status = OrderStatus.PAID_WAIT_CONFIRM;
         order.paidAt = LocalDateTime.now();
         orderMapper.updateById(order);
-        notify(order.userId, "支付成功", "订单 " + order.orderNo + " 已支付，等待旅行社确认报名。", "PAYMENT_SUCCESS");
+        String title = LocalPaymentService.CHANNEL.equals(payment.channel) ? "本地模拟支付成功" : "支付成功";
+        notify(order.userId, title, "订单 " + order.orderNo + " 已支付，等待旅行社确认报名。", "PAYMENT_SUCCESS");
     }
 
     /** 金额按数值比较，避免 "2500.0" 与 "2500.00" 因标度不同被误判为不一致。 */
@@ -697,6 +698,7 @@ public class OrderService {
                 || OrderStatus.CONFIRMED.equals(order.status))) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "当前订单状态不允许申请退款");
         }
+        rejectSimulatedRefund(order.id);
         Refund existing = refundMapper.selectOne(new QueryWrapper<Refund>()
                 .eq("order_id", order.id).in("status", RefundStatus.APPLYING, RefundStatus.PROCESSING));
         if (existing != null) {
@@ -785,6 +787,7 @@ public class OrderService {
         if (order == null) {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "关联订单不存在");
         }
+        rejectSimulatedRefund(order.id);
         // 原子闸门：并发审批同一退款单时，只有一个请求能把 APPLYING 抢成 PROCESSING。
         // 否则两个请求都会通过上面的状态检查，导致名额被释放两次、线路有效报名数被回退两次。
         int claimed = refundMapper.update(null, new UpdateWrapper<Refund>()
@@ -1096,6 +1099,14 @@ public class OrderService {
             throw new BusinessException(404, "RESOURCE_NOT_FOUND", "订单不存在");
         }
         return order;
+    }
+
+    private void rejectSimulatedRefund(Long orderId) {
+        Payment payment = paymentMapper.selectOne(new QueryWrapper<Payment>().eq("order_id", orderId));
+        if (payment != null && LocalPaymentService.CHANNEL.equals(payment.channel)) {
+            throw new BusinessException(409, "LOCAL_PAYMENT_REFUND_UNSUPPORTED",
+                    "本地模拟支付未发生资金交易，不支持支付宝退款；退款联调请使用沙箱支付订单");
+        }
     }
 
     public Payment paymentFor(Long orderId) {

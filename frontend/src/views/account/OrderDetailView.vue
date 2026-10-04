@@ -114,6 +114,7 @@ async function cancelOrder() {
 }
 
 const canRefund = computed(() =>
+  detail.value?.payment?.channel !== 'LOCAL_SIMULATION' &&
   ['PAID_WAIT_CONFIRM', 'CONFIRMED'].includes(detail.value?.order?.status) &&
   !(detail.value?.refunds || []).some((item) => ['APPLYING', 'PROCESSING'].includes(item.status))
 )
@@ -223,7 +224,7 @@ onMounted(load)
             <div><span>支付时间</span><strong>{{ detail.order.paidAt || '—' }}</strong></div>
             <template v-if="detail.payment">
               <div><span>支付单号</span><strong>{{ detail.payment.paymentNo }}</strong></div>
-              <div><span>支付渠道</span><strong>{{ detail.payment.channel === 'ALIPAY_SANDBOX' ? '支付宝沙箱' : detail.payment.channel }}</strong></div>
+              <div><span>支付渠道</span><strong>{{ detail.payment.channel === 'LOCAL_SIMULATION' ? '本地模拟支付（测试）' : detail.payment.channel === 'ALIPAY_SANDBOX' ? '支付宝沙箱' : detail.payment.channel }}</strong></div>
               <div><span>支付金额</span><strong>¥{{ detail.payment.amount }}</strong></div>
               <div><span>第三方交易号</span><strong>{{ detail.payment.thirdPartyTradeNo || '—' }}</strong></div>
             </template>

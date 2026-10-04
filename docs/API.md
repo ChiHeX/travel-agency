@@ -452,6 +452,18 @@ OpenAPI 路径、模型、权限和错误
 
 当前 `openapi.yaml` 根节点的 `x-contract-status` 为 `FROZEN`，表示其中已定义的接口可供前端和后端并行实现；它不表示后端已经实现。
 
+### 13.1 本地模拟支付的兼容扩展
+
+新增已认证的 `GET /payments/options` 和 `POST /payments/local/{orderNo}`，精确契约见 OpenAPI。
+后者仅在显式启用 `local-payment` 且无 `prod` / `production` profile 时注册；默认环境返回 404。
+金额由订单快照读取，无请求体，以订单号实现重复/并发请求幂等，权限仍由后端校验。
+原 `/orders/{orderNo}/pay` 配置缺失时继续拒绝。
+
+`Payment.channel` 增加 `LOCAL_SIMULATION`；此类测试数据只能用于本地开发库，
+不可当作真实经营数据。模拟支付复用业务入账；第三方回调仍执行官方验签。
+模拟支付订单申请或审核退款返回 409 `LOCAL_PAYMENT_REFUND_UNSUPPORTED`，不会调用支付宝出款。
+前后端、契约及测试随本功能同步修改。
+
 ## 14. 实现与验收要求
 
 后端实现每个接口时必须逐项核对 OpenAPI 中的 `operationId`、路径、方法、请求模型、成功状态码、响应模型、权限、幂等要求和错误响应。Controller 使用独立 DTO / VO，不得直接暴露 Entity；Java `Long` 主键必须按字符串输出，金额必须由 `BigDecimal` 计算并按十进制字符串输出。

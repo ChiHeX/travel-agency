@@ -8,6 +8,7 @@ import com.travelagency.auth.service.AuthService;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.AccountStatus;
+import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RoleCode;
@@ -146,17 +147,25 @@ public class AdminController {
      * JS 精度截断），而契约给这些字段写的是 {@code integer} —— 用 {@code long} 会输出 {@code "15"}
      * 这类字符串。{@code days} 只控制 {@code orderTrend} 的窗口长度，缺失的日期补零，保证前端拿到的
      * 是一条连续序列而不是稀疏点。</p>
+     *
+     * <p>{@code openDepartureCount} 的口径是 PRD 的「可报名团期」——{@code OPEN} <b>且未过出发日期</b>，
+     * 与全站同一定义一致（{@code OrderService} 下单校验与占名额的条件 UPDATE、{@code RouteService}
+     * 的公开团期、{@code HomeService} 的近期团期都要求 {@code start_date >= 当天}，当天可报名）。
+     * 只看 {@code status = OPEN} 会把「已经出发、但工作人员尚未把它推进到 TRAVELLING/FINISHED」的团期
+     * 也算成可报名：库里没有任何定时任务会自动收口这类团期，所以过期的 OPEN 团期会一直留在计数里。</p>
      */
     @GetMapping("/dashboard")
     public ApiResponse<DashboardView> dashboard(
             @RequestParam(defaultValue = "7")
             @Pattern(regexp = "7|30", message = "days 只能是 7 或 30") String days) {
-        // 当天日期以库内为准：todayOrderCount 与 orderTrend 都按自然日切分，
+        // 当天日期以库内为准：todayOrderCount、orderTrend 与可报名团期都按自然日切分，
         // 用 JVM 的 LocalDate.now() 会在 JVM 与库会话时区不一致时（CI 常见 UTC）错开一天。
         LocalDate today = orderMapper.databaseToday();
         int users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0)).intValue();
         int routes = (int) routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
-        int departures = departureMapper.selectCount(new QueryWrapper<Departure>().eq("status", "OPEN")).intValue();
+        int departures = departureMapper.selectCount(new QueryWrapper<Departure>()
+                .eq("status", DepartureStatus.OPEN)
+                .ge("start_date", today)).intValue();
         int todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
                 .ge("created_at", today.atStartOfDay())).intValue();
         int pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()

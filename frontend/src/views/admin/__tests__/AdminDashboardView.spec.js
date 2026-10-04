@@ -68,6 +68,28 @@ function dashboardData(overrides = {}) {
       { destination: '北京', validBookingCount: 3 },
       { destination: '成都', validBookingCount: 0 }
     ],
+    departureEnrollment: [
+      {
+        departureId: '11',
+        routeId: '3',
+        routeName: '昆明大理丽江 6 日跟团游',
+        startDate: '2026-10-15',
+        maxPeople: 30,
+        reservedPeople: 2,
+        confirmedPeople: 18,
+        remainingSeats: 10
+      },
+      {
+        departureId: '12',
+        routeId: '4',
+        routeName: '北京中轴线文化 4 日跟团游',
+        startDate: '2026-10-22',
+        maxPeople: 25,
+        reservedPeople: 0,
+        confirmedPeople: 25,
+        remainingSeats: 0
+      }
+    ],
     ...overrides
   }
 }
@@ -154,11 +176,70 @@ describe('AdminDashboardView', () => {
     const wrapper = mountView()
     await flushPromises()
 
+    // 团期报名情况的卡片也是 RouterLink，这里只看热门线路那一组。
     const links = wrapper.findAllComponents(RouterLinkStub)
+      .filter((link) => link.classes().includes('popular-route-row'))
     expect(links).toHaveLength(1)
     expect(links[0].props('to')).toEqual({ name: 'admin-route-detail', params: { id: '3' } })
     expect(links[0].text()).toContain('昆明大理丽江 6 日跟团游')
     expect(links[0].text()).toContain('有效报名 132 单')
+  })
+
+  it('渲染 departureEnrollment：名额占用、剩余位与已满标签都来自接口数据', async () => {
+    dashboard.mockResolvedValue(dashboardData())
+    const wrapper = mountView()
+    await flushPromises()
+
+    const cards = wrapper.findAll('.enrollment-card')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].text()).toContain('昆明大理丽江 6 日跟团游')
+    expect(cards[0].text()).toContain('出发 2026-10-15')
+    expect(cards[0].text()).toContain('已确认 18 / 30 人')
+    expect(cards[0].text()).toContain('待确认 2 人')
+    expect(cards[0].text()).toContain('剩余 10 位')
+    // 进度条是「已确认 + 待确认」占名额的比例：(18 + 2) / 30 = 67%
+    expect(cards[0].find('.enrollment-bar').attributes('style')).toContain('width: 67%')
+
+    expect(cards[1].text()).toContain('名额已满')
+    expect(cards[1].find('.enrollment-bar').attributes('style')).toContain('width: 100%')
+
+    const links = wrapper.findAllComponents(RouterLinkStub)
+      .filter((link) => link.classes().includes('enrollment-route'))
+    expect(links.map((link) => link.props('to'))).toEqual([
+      { name: 'admin-route-detail', params: { id: '3' } },
+      { name: 'admin-route-detail', params: { id: '4' } }
+    ])
+  })
+
+  it('已占用超过名额时进度条封顶 100%，剩余为 0 显示已满，不出现负数', async () => {
+    dashboard.mockResolvedValue(dashboardData({
+      departureEnrollment: [{
+        departureId: '13',
+        routeId: '3',
+        routeName: '脏数据团期',
+        startDate: '2026-11-01',
+        maxPeople: 8,
+        reservedPeople: 9,
+        confirmedPeople: 9,
+        remainingSeats: 0
+      }]
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.find('.enrollment-card')
+    expect(card.find('.enrollment-bar').attributes('style')).toContain('width: 100%')
+    expect(card.text()).toContain('名额已满')
+    expect(card.text()).not.toContain('剩余 -')
+  })
+
+  it('没有未出发的开放团期时显示空状态', async () => {
+    dashboard.mockResolvedValue(dashboardData({ departureEnrollment: [] }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('.enrollment-card')).toHaveLength(0)
+    expect(wrapper.text()).toContain('暂无未出发的开放团期。')
   })
 
   it('请求失败显示错误与重试入口，而不是「暂无统计数据」', async () => {

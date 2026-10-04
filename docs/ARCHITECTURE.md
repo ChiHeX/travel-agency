@@ -44,9 +44,22 @@ WAIT_PAY ──支付回调──> PAID_WAIT_CONFIRM ──工作人员确认─
    └─取消──> CANCELLED                           └─导游开始──> TRAVELLING ──结束──> COMPLETED
 
 PAID_WAIT_CONFIRM / CONFIRMED ──用户申请──> REFUND_APPLYING
-REFUND_APPLYING ──同意──> REFUND_PROCESSING ──完成──> REFUNDED
-REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态──> 原状态
+REFUND_APPLYING ──同意（先真出款，成功才落状态）──> REFUNDED
+REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / CONFIRMED）
 ```
+
+**订单状态里不出现 `REFUND_PROCESSING` 与 `REFUND_REJECTED`**，尽管契约的 `OrderStatus` 枚举保留了它们：
+
+- 退款的"处理中"落在**退款单**上（`refund.status = PROCESSING`，出款已发起但结果未确认的持久态），
+  订单在确认结果前一直是 `REFUND_APPLYING`。把订单也推成 `REFUND_PROCESSING` 没有收益，
+  反而会让"拒绝即恢复订单"这条路径在钱可能已经退出去时变得不可判。
+- 拒绝路径直接用 `refund.original_order_status` 把订单恢复成申请前的业务状态，
+  `REFUND_REJECTED` 只是个瞬时中间值，落库没有任何可观察意义。
+
+两个枚举值保留是为了契约兼容（客户端可能仍按它们分支）。订单一旦离开 `REFUND_APPLYING`，
+只可能变成 `REFUNDED`（出款成功）或回到申请前的业务状态（拒绝）。
+`OrderStatusReservedValuesTest` 钉住"实现里不写这两个状态"：谁要真正落库，
+就得同时更新本节、PRD §12 与该测试。
 
 订单创建时在事务内用条件 `UPDATE` 增加 `reserved_people`，支付待确认仍占用名额；取消/退款释放名额。工作人员确认时再次检查 `confirmed_people + 当前人数 <= max_people`，避免并发超卖。
 

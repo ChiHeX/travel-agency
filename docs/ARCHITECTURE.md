@@ -75,3 +75,9 @@ REFUND_APPLYING ──拒绝──> REFUND_REJECTED ──恢复原业务状态�
 - 用户端主地图使用 Leaflet，默认加载天地图 Web Mercator WMTS 矢量底图与中文注记，并保留可切换的 OpenStreetMap 底图。地图源配置集中在前端 `src/api/mapTiles.js`，浏览器端 Key 通过 `VITE_TIANDITU_KEY` 注入；用户选择保存在本地存储，切换只替换底图层，保留视角与业务覆盖物。缺少 Key 或加载失败时显示提示。线路详情加载后，在主地图上显示景点标记与顺序连线。地图保留当前平台版权及来源提示；坐标仍使用行程数据提供的 WGS-84，不调用导航服务，不改变业务 API 或数据库。
 - 地点指南单独使用 `place_guide` 和 `place_guide_item` 保存多景点清单；指南详情使用景点坐标确定地图聚焦区域，不显示景点标记或线路连线。地点详情通过行程项的 `attraction_id` 关联已发布线路，并依据未来开放团期去重展示线路卡片；用户在线路详情查看和选择团期。
 - 支付仅定位于支付宝沙箱业务链路演示，不处理真实商业资金。
+- 本地模拟支付由 `local-payment & !prod & !production` 条件下的 `LocalPaymentService` 和
+  `LocalPaymentController` 提供，且启动时要求 `server.address` 为回环地址。默认不注册模拟入口。
+  `/payments/options` 向已登录用户报告是否可用；`/payments/local/{orderNo}` 校验所有者、订单/支付状态及金额，
+  对订单和支付记录加行锁，以订单号保证幂等，复用 `OrderService.markPaid` 事务入账逻辑。
+  支付渠道为 `LOCAL_SIMULATION`，交易号带 `LOCAL-` 前缀。支付宝发起支付、入账及取消订单也锁定订单行，
+  防止模拟入账与取消/支付请求互相覆盖。模拟订单申请和审核退款均被拒绝，不调用支付宝退款网关。

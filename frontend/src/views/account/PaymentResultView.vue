@@ -15,6 +15,7 @@ let attempts = 0
 let disposed = false
 
 const paymentStatus = computed(() => detail.value?.payment?.status || detail.value?.order?.paymentStatus)
+const isLocal = computed(() => detail.value?.payment?.channel === 'LOCAL_SIMULATION')
 const paid = computed(() =>
   paymentStatus.value === 'PAID' ||
   ['PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_REJECTED'].includes(detail.value?.order?.status)
@@ -61,10 +62,10 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
             {{ paid ? '✓' : failed ? '×' : '···' }}
           </div>
           <h1>{{ paid ? '支付已确认' : failed ? '支付未完成' : '正在确认支付结果' }}</h1>
-          <p v-if="paid">已收到付款，请在订单详情中查看旅行社确认情况。</p>
+          <p v-if="paid">{{ isLocal ? '已记录本地模拟付款，未发生资金交易。请在订单详情中查看旅行社确认情况。' : '已收到付款，请在订单详情中查看旅行社确认情况。' }}</p>
           <p v-else-if="failed">当前支付未成功，您可以返回订单后重新发起沙箱支付。</p>
           <p v-else>付款结果可能稍有延迟，确认后会自动更新。你也可以稍后在订单中查看。</p>
-          <small class="sandbox-caption">支付宝沙箱测试订单</small>
+          <small class="sandbox-caption">{{ isLocal ? '本地模拟支付 · 测试订单' : '支付宝沙箱测试订单' }}</small>
 
           <dl class="result-details">
             <div><dt>订单号</dt><dd>{{ detail.order.orderNo }}</dd></div>

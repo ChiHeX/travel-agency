@@ -11,15 +11,24 @@ const detail = ref(null)
 const loading = ref(true)
 const paying = ref(false)
 const errorMessage = ref('')
+const localSimulationEnabled = ref(false)
+const paymentMethod = ref('alipay')
 let paymentKey = createIdempotencyKey()
 
 const canPay = computed(() => detail.value?.order?.status === 'WAIT_PAY')
+const canSimulate = computed(() => localSimulationEnabled.value && canPay.value && detail.value?.payment?.status === 'UNPAID')
+const isLocal = computed(() => paymentMethod.value === 'local')
 
 async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
-    detail.value = await orderApi.detail(route.params.orderNo)
+    const [order, options] = await Promise.all([
+      orderApi.detail(route.params.orderNo), orderApi.paymentOptions()
+    ])
+    detail.value = order
+    localSimulationEnabled.value = options.localSimulationEnabled === true
+    paymentMethod.value = canSimulate.value ? 'local' : 'alipay'
   } catch (error) {
     errorMessage.value = error.message || '订单信息加载失败'
   } finally {
@@ -31,6 +40,12 @@ async function startPayment() {
   if (!canPay.value || paying.value) return
   paying.value = true
   try {
+    if (isLocal.value) {
+      if (!canSimulate.value) throw new Error('当前订单无法使用本地模拟支付')
+      await orderApi.simulatePayment(route.params.orderNo)
+      await router.push({ name: 'order-payment-result', params: { orderNo: route.params.orderNo } })
+      return
+    }
     const payment = await orderApi.pay(route.params.orderNo, paymentKey)
     if (!isSafePaymentUrl(payment?.paymentUrl)) {
       throw new Error('支付地址无效，请稍后重试')
@@ -62,8 +77,13 @@ onMounted(load)
     <div v-else-if="detail" class="checkout-grid">
       <div class="checkout-information">
         <section class="method-section" aria-label="付款方式">
-          <label class="payment-method">
-            <input type="radio" name="payment-method" value="alipay" checked aria-label="支付宝沙箱" />
+          <label v-if="localSimulationEnabled" class="payment-method" :class="{ selected: isLocal, unavailable: !canSimulate }">
+            <input v-model="paymentMethod" type="radio" name="payment-method" value="local" :disabled="paying || !canSimulate" aria-label="本地模拟支付" />
+            <span class="method-copy"><strong>本地模拟支付</strong><small>{{ canSimulate ? '直接记录测试付款，无需支付宝密钥' : '仅未发起支付的待付款订单可使用' }}</small></span>
+            <span class="sandbox-label">本地测试</span>
+          </label>
+          <label class="payment-method" :class="{ selected: !isLocal }">
+            <input v-model="paymentMethod" type="radio" name="payment-method" value="alipay" :disabled="paying" aria-label="支付宝沙箱" />
             <span class="method-copy"><strong>支付宝</strong><small>将在支付宝页面完成付款</small></span>
             <span class="sandbox-label">沙箱</span>
           </label>
@@ -98,10 +118,10 @@ onMounted(load)
           <div v-if="detail.order.childCount"><dt>儿童 × {{ detail.order.childCount }}</dt><dd>¥{{ detail.order.childUnitPrice }} <span>/ 人</span></dd></div>
         </dl>
         <div class="summary-total"><span>{{ canPay ? '本次应付' : '订单金额' }}</span><strong><small>¥</small>{{ detail.order.totalAmount }}</strong></div>
-        <p class="payment-note">当前为支付宝沙箱测试支付，不涉及真实资金。</p>
+        <p class="payment-note">{{ isLocal ? '本地模拟支付仅用于测试，不涉及资金交易。付款记录将标记为本地模拟支付。' : '当前为支付宝沙箱测试支付，不涉及真实资金。' }}</p>
         <template v-if="canPay">
-          <p class="after-payment-note">确认行程与联系人信息后，即可前往支付宝付款。付款完成后，等待旅行社确认报名。</p>
-          <button type="button" class="pay-button" :disabled="paying" @click="startPayment">{{ paying ? '正在前往支付宝…' : '前往支付宝付款' }}</button>
+          <p class="after-payment-note">{{ isLocal ? '确认后将记录模拟付款，订单进入待旅行社确认状态。' : '确认行程与联系人信息后，即可前往支付宝付款。付款完成后，等待旅行社确认报名。' }}</p>
+          <button type="button" class="pay-button" :disabled="paying" @click="startPayment">{{ isLocal ? (paying ? '正在记录模拟付款…' : '确认模拟付款') : (paying ? '正在前往支付宝…' : '前往支付宝付款') }}</button>
           <RouterLink class="later-link" :to="{ name: 'order-detail', params: { orderNo: detail.order.orderNo } }">稍后付款，查看订单</RouterLink>
         </template>
         <div v-else class="finished-state" role="status">
@@ -119,10 +139,12 @@ onMounted(load)
 .checkout-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 58px; }
 .checkout-information { display: flex; flex-direction: column; gap: 48px; }
 h2 { margin: 0 0 20px; font-size: 17px; font-weight: 650; }
-.method-section { order: 0; }
+.method-section { order: 0; display: grid; gap: 16px; }
 .trip-section { order: 2; }
 .payment-method { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 20px; min-height: 174px; padding: 24px; border: 1px solid var(--theme-blue); border-radius: 14px; background: var(--theme-blue-tint); cursor: pointer; }
 .payment-method input { width: 26px; height: 26px; margin: 0; accent-color: var(--theme-blue); }
+.payment-method:not(.selected) { border-color: var(--border-divider); background: var(--app-bg); }
+.payment-method.unavailable { opacity: .6; cursor: not-allowed; }
 .method-copy { display: grid; gap: 8px; }.method-copy strong { font-size: 17px; font-weight: 550; }.method-copy small { font-size: 15px; color: var(--text-secondary); line-height: 1.5; }
 .sandbox-label { position: absolute; top: 24px; right: 24px; padding: 4px 10px; border-radius: 6px; background: var(--theme-blue-tint); color: var(--theme-blue); font-size: 12px; }
 .contact-grid { display: grid; gap: 20px; }

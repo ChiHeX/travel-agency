@@ -80,6 +80,13 @@ onMounted(load)
           :key="item.id"
           class="message-card-item"
           :class="{ unread: !item.read }"
+          :role="!item.read ? 'button' : undefined"
+          :tabindex="!item.read ? 0 : undefined"
+          :aria-label="!item.read ? `${item.title}，标为已读` : undefined"
+          :aria-disabled="!item.read ? pending : undefined"
+          @click="read(item)"
+          @keydown.enter.self.prevent="read(item)"
+          @keydown.space.self.prevent="read(item)"
         >
           <div class="msg-status-indicator">
             <span class="dot-dot" :class="{ unread: !item.read }"></span>
@@ -91,7 +98,6 @@ onMounted(load)
               <span class="msg-time">{{ item.createdAt }}</span>
             </div>
             <p class="msg-body-text">{{ item.content }}</p>
-            <button v-if="!item.read" class="text-button" :disabled="pending" @click="read(item)">标为已读</button>
           </div>
         </article>
       </div>
@@ -129,6 +135,11 @@ onMounted(load)
 .message-card-item:hover {
   border-color: var(--brand-blue);
   box-shadow: var(--shadow-sm);
+}
+
+.message-card-item:focus-visible {
+  outline: 2px solid var(--brand-blue);
+  outline-offset: 3px;
 }
 
 .message-card-item.unread {

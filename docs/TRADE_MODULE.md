@@ -126,6 +126,18 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 - **事务边界**：`processRefund` 是 `approveRefund` / `rejectRefund` 的共用实现，**不是事务入口**
   （自调用，Spring 代理不生效，因此它不标 `@Transactional`）。`noRollbackFor` 挂在两个公开入口上。
 
+### 6.2 时间戳必须由数据库维护
+
+`updatedAt` 在契约里是**必返字段**（订单、团期、酒店、线路、文章、出行人…），前端拿它当"最后更新时间"，
+所以它必须真的随改动前进。`BaseEntity.updatedAt` 没有任何填充注解，实体又是从库里读出来的 ——
+持有的正是**旧值**；MyBatis-Plus `updateById` 默认按 NOT_NULL 策略把它写进 `SET`，
+压掉了列定义上的 `ON UPDATE CURRENT_TIMESTAMP`，该列于是永远停在创建时间。
+**最坏的是支付回调**：条件 UPDATE 先原子推进支付单（此时 `ON UPDATE` 生效、时间戳前进），
+紧接着 `updateById` 又把旧值写回去，等于前进后再倒退。
+
+修法：给两列时间戳加 `@TableField(updateStrategy = FieldStrategy.NEVER)`，把写入权交回数据库
+（只禁 update，insert 仍走 `DEFAULT CURRENT_TIMESTAMP`）。实测见 §8.3。
+
 ## 7. 支付与出款链路
 
 ### 7.1 收银台
@@ -176,6 +188,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 | `DepartureCapacityConcurrencyIntegrationTest` | 名额守恒压测（30 抢 10）、单车超容量、**并发确认只生效一次**、并发退款审核、**审核异常"业务回滚 + 留痕通知提交"** |
 | `RefundPendingConfirmationIntegrationTest` | 「出款结果未确认」的事务语义：新连接读到持久 `PROCESSING`、拒绝被拦、同请求号重试收敛、**待确认与通过的审计留痕都已提交** |
 | `OrderAuditRollbackIntegrationTest` | **审计写入失败 ⇒ 业务修改一起回滚**：用 `operation_log.operator_id` 的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计、确认留痕、确认通知全部随事务回滚（含合法操作人的对照组） |
+| `UpdatedAtDatabaseMaintainedIntegrationTest` | **`updated_at` 必须由数据库维护**：取消订单与支付回调两条路径都要真的推进该列（跨秒边界断言，避免"同一秒假绿"） |
 | `TradingFlowContractIntegrationTest` | 端到端契约：报名→支付→回调→确认→出团→完成→评价，以及取消/退款全链路 |
 | `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
 | `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
@@ -217,13 +230,34 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 ```
 
 同一变异下全量 **571 条中只红这一条**（`succeeded=570 failed=1`），说明断言精准指向这条性质，
-不是大面积误伤。还原后全量恢复 **571/571**。
+不是大面积误伤。还原后全量恢复 **571/571**。（该次实验在 #55 分支上进行，当时全量 571 条；
+合并进 `dev` 后加上 §8.3 新增的 2 条为 573，见 §9。）
+
+### 8.3 时间戳由数据库维护（真实 MySQL）
+
+`updated_at` 被 `updateById` 写回旧值这件事，只有**跨过秒边界再看一眼**才暴露得出来：
+`DATETIME` 没有小数位，插入与更新若落在同一秒，即使该列从未前进，两次读到的值也相等 ——
+不跨秒的断言会假绿。用例因此在两次读之间等待 1.1 秒。
+
+```text
+修复前（同一库、同一路径）
+  cancel   : before=2026-10-07T18:02:12  after=2026-10-07T18:02:12   ← 冻结
+  markPaid : before=2026-10-07T18:02:13  after=2026-10-07T18:02:13   ← 冻结
+
+修复后
+  cancel   : before=2026-10-07T18:02:41  after=2026-10-07T18:02:42   ← 前进 1 秒
+  markPaid : before=2026-10-07T18:02:42  after=2026-10-07T18:02:43   ← 前进 1 秒
+```
+
+库里留下的那几行订单本身就是证据：修复前跑出来的行 `updated_at == created_at`，
+修复后跑出来的行 `updated_at = created_at + 1s`，同库同表并列可见。
 
 ## 9. 回归结果与前置条件
 
-**最新全量回归**：后端 **571 条用例，571 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。本次改动新增 10 条用例（`561 → 571`；
-末一条 `OrderAuditRollbackIntegrationTest` 是应评审意见补的"审计写失败 ⇒ 业务回滚"数据库测试）。
+**最新全量回归**：后端 **573 条用例，573 通过、0 失败、0 跳过**
+（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。
+`571 → 573` 即 §8.3 新增的 2 条（`561 → 571` 那 10 条来自 #55：B-01~B-04 的代码与
+`OrderAuditRollbackIntegrationTest`）。
 
 > ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
@@ -231,9 +265,9 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 > 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
 > （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
 >
-> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 34 / payment 34 / refund 8 /
+> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 40 / payment 40 / refund 9 /
 > departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /
-> staff 1 / operation_log 27`）。
+> staff 1 / operation_log 30 / sys_message 30`）。
 
 ## 10. 未完成项与风险
 

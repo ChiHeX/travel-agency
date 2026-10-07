@@ -202,7 +202,7 @@ npm run build
 
 项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。
 
-其它交付文档：部署（含 HTTPS）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，数据库设计见 [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)，数据来源与许可见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)，资源与导游模块说明见 [docs/MODULE_RESOURCES.md](docs/MODULE_RESOURCES.md)。
+其它文档：部署（含 HTTPS）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，数据库设计（E-R、字段与索引）见 [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)，数据来源与许可见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)。
 
 ## 站内消息与提醒
 

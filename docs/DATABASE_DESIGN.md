@@ -1,15 +1,16 @@
-# 数据库设计说明（成员 C 交付）
+# 数据库设计说明
 
-> 目标：给出本项目数据库的 **E-R 关系、关键字段与索引说明、初始化与迁移验证证据、演示数据标注**。
+> 目标：给出本项目数据库的 **E-R 关系、表与索引说明、演示数据标注**。
 >
-> 规范来源：结构基线 `sql/schema.sql`，增量变更 `sql/migrations/NNN-*.sql`（见 [迁移说明](../sql/migrations/README.md)），
+> 规范来源：结构基线 `sql/schema.sql`，增量变更 `sql/migrations/NNN-*.sql`（清单与执行方式见
+> [迁移说明](../sql/migrations/README.md)，本文不重复维护），
 > 协作规则见 [CONTRIBUTING §12](../CONTRIBUTING.md)。全部业务数据来自数据库，禁止硬编码假数据（[DEVELOPMENT_GUIDE §5](DEVELOPMENT_GUIDE.md)）。
 
 ## 1. 基线与迁移策略
 
 - `sql/schema.sql`：**全量基线**，面向全新库，通篇 `CREATE TABLE IF NOT EXISTS`。
 - `sql/migrations/`：**增量迁移**，面向已存在的库；按 `NNN-描述.sql` 命名、按序号执行。
-- 两者必须同步：任何结构变更都要同时补回 `schema.sql`。当前增量脚本共 11 个（`001`–`011`）。
+- 两者必须同步：任何结构变更都要同时补回 `schema.sql`。
 - `sql/test-data.sql`：演示/测试数据，**每次初始化全新库时导入**；不通过重复导入修复存量库。
 
 > ⚠️ 对已存在的库重复执行 `schema.sql` **不会**补齐后加的列/索引（`IF NOT EXISTS` 只保证不报错），
@@ -181,35 +182,7 @@ erDiagram
 
 （完整清单以 `sql/schema.sql` 为准。）
 
-## 5. 初始化与迁移验证记录
-
-> 验证环境：MySQL 9.7.1。为得到**独立测试库**，另起一个隔离实例（独立数据目录、端口 3307、`--no-defaults`），
-> 与开发库互不影响；验证完成后已关闭并清理。
-
-| 场景 | 操作 | 结果 |
-|---|---|---|
-| 全新库初始化 | 执行 `sql/schema.sql` | ✅ 建表 29 张，含 `departure_reminder` |
-| 存量库升级 | 先建结构 → 删除 `departure_reminder`（模拟缺 `011`）→ 按序执行 `migrations/001..011` | ✅ 无报错；脚本可重复执行（`005`/`010` 输出 `skipped`，`006`/`008` 幂等补列） |
-| 结构一致性 | 比较两个库的 `departure_reminder` 定义 | ✅ `IDENTICAL` |
-| 开发库应用 | 对现有 `travel_agency` 执行 `011`，并复跑一次 | ✅ 建表成功；第二次 `CREATE TABLE IF NOT EXISTS` 无副作用 |
-
-**迁移执行方式**：
-
-```bash
-mysql -h localhost -u travel -p travel_agency < sql/migrations/011-add-departure-reminder.sql
-```
-
-**行为级验证**（同一事务内构造受控数据、验证后回滚，不落库）：
-
-| 校验 | 结果 |
-|---|---|
-| C-01 提醒候选：`CONFIRMED` + 团期未取消未完成 + `start_date ∈ [today, today+3]` | 命中受控已确认订单（=1） |
-| C-03 即将出发：旧口径（仅日期）= 2，新口径（排除取消/完成/在途）= 1 | ✅ 已取消的未来团期被正确排除 |
-| C-02 团期通知批量插入：团期下同时存在 `CONFIRMED` 与 `WAIT_PAY` 订单 | 只插入 1 条（`DISTINCT` + 排除未支付） |
-| C-01 提醒幂等：同一 (order_id, remind_type) 插入两次 | 第一次 =1，第二次被忽略 =0 |
-| 回滚残留 | 提醒记录 0、受控订单 0，未污染开发库 |
-
-## 6. 演示数据标注
+## 5. 演示数据标注
 
 - `sql/test-data.sql` 全部为**课程测试/演示数据**，不代表真实旅行社经营数据；账号、订单、联系方式、评价均为虚构。
 - `data_source` 表登记了演示数据的来源与许可：
@@ -219,11 +192,36 @@ mysql -h localhost -u travel -p travel_agency < sql/migrations/011-add-departure
   | 扩展线路、订单与攻略测试资料 | 团队原创整理的课程测试数据 | TEAM_TEST_DATA | 仅限课程项目开发、测试与答辩演示 |
 - 图片、景点、坐标的来源与许可清单见 [DATA_SOURCES.md](DATA_SOURCES.md)。
 
-## 7. 数据一致性注意事项
+## 6. 数据一致性注意事项
 
-- **热门线路 `travel_route.valid_booking_count` 与真实订单可能不一致**：该列在工作人员确认报名时 `+1`、
-  退款完成时 `-1`，而 `test-data.sql` 里为演示直接预置了较大的数值（如 `106`），与库中实际
-  `CONFIRMED/TRAVELLING/COMPLETED` 订单数不匹配。**这不是功能缺陷**，但演示时应知晓：
-  「热门线路」使用该列排行，「热门目的地」按真实订单游客数计算，两者数量级会不同。
-  详见 [ACCEPTANCE_REPORT_MEMBER_C.md](ACCEPTANCE_REPORT_MEMBER_C.md) 的 Dashboard 核验。
-- 名额计数只由下单/支付/退款/确认链路维护，禁止编辑接口整体写回实体覆盖计数（`DepartureService.update` 用显式字段 `UPDATE`）。
+### 6.1 `travel_route.valid_booking_count` 是计数器，不会自动对齐真实订单
+
+该列由业务链路维护：工作人员确认报名时 `+1`，退款完成时 `-1`。
+但 `test-data.sql` 为演示效果直接预置了较大的数值（如 `106`），因此它与库中真实的
+`CONFIRMED / TRAVELLING / COMPLETED` 订单数之间存在一个**固定的偏差**。
+
+⚠️ **这个偏差不会自动修正。** 后续的 `+1 / -1` 只是在这个预置基数上做增减：
+确认一单让它变成 107，退款一单让它变回 106，永远围绕预置基数浮动，而不是向真实订单数收敛。
+要让它重新等于真实订单数，只能显式重算：
+
+```sql
+UPDATE travel_route r
+SET valid_booking_count = (
+    SELECT COUNT(*) FROM travel_order o
+    WHERE o.route_id = r.id AND o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED'));
+```
+
+演示时需知晓由此带来的口径差异：
+
+| 看板指标 | 数据来源 | 与真实订单的关系 |
+|---|---|---|
+| 热门线路 | `travel_route.valid_booking_count` | 预置基数 + 增量，可能明显高于真实订单数 |
+| 热门目的地 | 按真实订单的有效报名人数统计 | 与真实订单一致 |
+
+两者数量级不同属于演示数据的固有特征，不是功能缺陷；演示前可执行上面的重算语句对齐，
+或直接说明「热门线路」展示的是演示基数。真实环境不应预置该列。
+
+### 6.2 名额计数只由业务链路维护
+
+名额计数只由下单 / 支付 / 退款 / 确认链路维护，禁止编辑接口整体写回实体覆盖计数
+（`DepartureService.update` 用显式字段 `UPDATE`）。

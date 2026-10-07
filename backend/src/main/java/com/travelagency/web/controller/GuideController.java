@@ -29,10 +29,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/guide")
@@ -71,15 +73,16 @@ public class GuideController {
     @GetMapping("/dashboard")
     public ApiResponse<GuideDashboardView> dashboard() {
         List<DepartureView> departures = departureService.listOfGuide(currentGuide().id);
+        // "今天"取库内日期，与列表查询的 CURRENT_DATE() 保持同一时区口径。
+        LocalDate today = departureMapper.databaseToday();
         List<DepartureView> current = departures.stream()
                 .filter(departure -> DepartureStatus.TRAVELLING.equals(departure.status())).toList();
         List<DepartureView> history = departures.stream()
                 .filter(departure -> DepartureStatus.FINISHED.equals(departure.status())).toList();
-        // upcoming 表示"还没出发"：排除行程中、已完成和已取消的团期。
+        // upcoming 与列表 scope=UPCOMING 共用同一份定义：排除行程中、已完成、已取消，
+        // 且出发日期不早于当天。此前工作台只排除状态、没有日期限制，会把过期未出发的团期也列进来。
         List<DepartureView> upcoming = departures.stream()
-                .filter(departure -> !DepartureStatus.TRAVELLING.equals(departure.status())
-                        && !DepartureStatus.FINISHED.equals(departure.status())
-                        && !DepartureStatus.CANCELLED.equals(departure.status()))
+                .filter(departure -> DepartureService.isUpcoming(departure.status(), departure.startDate(), today))
                 .toList();
         return ApiResponse.ok(new GuideDashboardView(upcoming, current, history));
     }
@@ -87,8 +90,9 @@ public class GuideController {
     /**
      * 查询当前导游负责的团期，对齐契约 GET /guide/departures（DeparturePageEnvelope）。
      *
-     * <p>此前返回裸数组，前端按 {@code data.items} 取值会得到空列表。scope 为契约可选参数：
-     * CURRENT / HISTORY 按团期状态过滤，UPCOMING 按"出发日期未过"过滤。</p>
+     * <p>scope 为契约可选参数：CURRENT / HISTORY 按团期状态过滤；UPCOMING 采用与工作台一致的定义 ——
+     * 排除行程中、已完成、已取消，且出发日期不早于当天（此前只限制日期，会把取消、完成、
+     * 行程中的团期一并混入）。</p>
      */
     @GetMapping("/departures")
     public ApiResponse<PageResponse<DepartureView>> departures(
@@ -96,18 +100,19 @@ public class GuideController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         Guide guide = currentGuide();
-        String status = null;
-        LocalDate startDateFrom = null;
-        if (scope != null && !scope.isBlank()) {
-            switch (scope.trim().toUpperCase()) {
-                case "CURRENT" -> status = DepartureStatus.TRAVELLING;
-                case "HISTORY" -> status = DepartureStatus.FINISHED;
-                case "UPCOMING" -> startDateFrom = LocalDate.now();
-                default -> throw new BusinessException(422, "VALIDATION_ERROR",
-                        "scope 只能是 UPCOMING、CURRENT 或 HISTORY");
-            }
+        if (scope == null || scope.isBlank()) {
+            return ApiResponse.ok(departureService.page(null, guide.id, null, null, null, page, size));
         }
-        return ApiResponse.ok(departureService.page(null, guide.id, status, startDateFrom, null, page, size));
+        String value = scope.trim().toUpperCase();
+        return switch (value) {
+            case "CURRENT" -> ApiResponse.ok(
+                    departureService.page(null, guide.id, DepartureStatus.TRAVELLING, null, null, page, size));
+            case "HISTORY" -> ApiResponse.ok(
+                    departureService.page(null, guide.id, DepartureStatus.FINISHED, null, null, page, size));
+            case "UPCOMING" -> ApiResponse.ok(departureService.pageUpcoming(null, guide.id, page, size));
+            default -> throw new BusinessException(422, "VALIDATION_ERROR",
+                    "scope 只能是 UPCOMING、CURRENT 或 HISTORY");
+        };
     }
 
     /**
@@ -180,14 +185,36 @@ public class GuideController {
         return departure;
     }
 
+    /**
+     * 本人团期的游客名单。
+     *
+     * <p>先一次性取出该团期的有效订单，再用一条 {@code IN (orderIds)} 批量取全部出行人快照，
+     * 在内存里按订单分组回填 —— 取代此前"每张订单各查一次出行人"的 N+1。订单与出行人各自
+     * 显式按主键升序，返回顺序与接口语义保持不变；脱敏规则仍走 {@link OrderService#maskId(String)}。</p>
+     *
+     * <p>范围严格限定在本人团期（调用方已通过 {@link #ownedDeparture} 校验归属）与有效订单
+     * （排除待支付 / 已取消 / 已退款），与工作台、通知的口径一致。</p>
+     */
     private List<Map<String, Object>> passengerList(Long departureId) {
-        return orderMapper.selectList(new QueryWrapper<TravelOrder>()
-                        .eq("departure_id", departureId)
-                        .notIn("status", "WAIT_PAY", "CANCELLED", "REFUNDED"))
-                .stream().flatMap(order -> orderTravelerMapper.selectList(new QueryWrapper<OrderTraveler>()
-                                .eq("order_id", order.id).orderByAsc("id"))
-                        .stream().map(traveler -> passenger(order, traveler)))
-                .toList();
+        List<TravelOrder> orders = orderMapper.selectList(new QueryWrapper<TravelOrder>()
+                .eq("departure_id", departureId)
+                .notIn("status", "WAIT_PAY", "CANCELLED", "REFUNDED")
+                .orderByAsc("id"));
+        if (orders.isEmpty()) {
+            return List.of();
+        }
+        List<Long> orderIds = orders.stream().map(order -> order.id).toList();
+        Map<Long, List<OrderTraveler>> travelersByOrder = orderTravelerMapper.selectList(
+                        new QueryWrapper<OrderTraveler>().in("order_id", orderIds).orderByAsc("order_id", "id"))
+                .stream()
+                .collect(Collectors.groupingBy(traveler -> traveler.orderId, LinkedHashMap::new, Collectors.toList()));
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (TravelOrder order : orders) {
+            for (OrderTraveler traveler : travelersByOrder.getOrDefault(order.id, List.of())) {
+                result.add(passenger(order, traveler));
+            }
+        }
+        return result;
     }
 
     private Map<String, Object> passenger(TravelOrder order, OrderTraveler traveler) {

@@ -485,3 +485,19 @@ CREATE TABLE IF NOT EXISTS idempotency_record (
     UNIQUE KEY uk_idempotency_user_scope_key (user_id, scope, idem_key),
     CONSTRAINT fk_idempotency_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 出发提醒发送记录：承载"即将出发提醒"（PRD §29）等按订单只发一次的站内消息。
+-- 唯一键 (order_id, remind_type) 是幂等闸门：定时任务重复执行、或多实例并发触发时，
+-- 每个订单同一类提醒只有一条记录能插入成功，只有它对应的站内消息会被发出，
+-- 从而保证"任务重复执行不重复发消息"。
+-- 存量库升级请执行 sql/migrations/011-add-departure-reminder.sql。
+CREATE TABLE IF NOT EXISTS departure_reminder (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    order_id BIGINT NOT NULL,
+    remind_type VARCHAR(32) NOT NULL,
+    sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_departure_reminder_order_type (order_id, remind_type),
+    CONSTRAINT fk_departure_reminder_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

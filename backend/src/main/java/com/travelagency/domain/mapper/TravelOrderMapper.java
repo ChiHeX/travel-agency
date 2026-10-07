@@ -2,6 +2,7 @@ package com.travelagency.domain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.travelagency.domain.dto.DashboardView;
+import com.travelagency.domain.dto.UpcomingReminderTarget;
 import com.travelagency.domain.entity.TravelOrder;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -46,4 +47,28 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
             ORDER BY date ASC
             """)
     List<DashboardView.Metric> dailyTrend(@Param("since") LocalDateTime since);
+
+    /**
+     * 即将出发提醒的候选订单：出行条件成立、且团期已进入提醒窗口。
+     *
+     * <p>「符合出行条件」在本系统里定义为：订单状态为 {@code CONFIRMED}（旅行社已审核通过、游客确定出行），
+     * 且所属团期未取消、未完成。这样取消（{@code CANCELLED}）、退款完成（{@code REFUNDED}）、
+     * 未支付（{@code WAIT_PAY}）以及待确认（{@code PAID_WAIT_CONFIRM}）的订单都不会被提醒。</p>
+     *
+     * <p>提醒窗口 {@code [当天, 当天 + futureDays]} 用 {@code CURRENT_DATE()} 在库内判定，
+     * 与全站「今天」的口径一致；{@code futureDays} 即"提前多久提醒"，由配置提供。</p>
+     */
+    @Select("""
+            SELECT o.id AS orderId, o.order_no AS orderNo, o.user_id AS userId,
+                   d.start_date AS startDate, r.name AS routeName
+            FROM travel_order o
+            JOIN departure d ON d.id = o.departure_id
+            JOIN travel_route r ON r.id = o.route_id
+            WHERE o.status = 'CONFIRMED'
+              AND d.status NOT IN ('CANCELLED', 'FINISHED')
+              AND d.start_date BETWEEN CURRENT_DATE()
+                                   AND DATE_ADD(CURRENT_DATE(), INTERVAL #{futureDays} DAY)
+            ORDER BY d.start_date ASC, o.id ASC
+            """)
+    List<UpcomingReminderTarget> selectUpcomingReminderTargets(@Param("futureDays") int futureDays);
 }

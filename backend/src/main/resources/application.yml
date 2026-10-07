@@ -41,6 +41,13 @@ app:
     # 本地开发可在 Git 忽略的 backend/config/application-local.properties 中配置 JWT_SECRET。
     secret: ${JWT_SECRET:}
     expire-hours: ${JWT_EXPIRE_HOURS:24}
+  reminder:
+    # 即将出发提醒（PRD §29）：定时任务在出发前 upcoming-days 天内，为符合出行条件的订单
+    # （已确认报名、团期未取消未完成）各发一条站内消息；每条提醒以 (order_id, remind_type)
+    # 唯一键保证"任务重复执行不重复发消息"。默认提前 3 天，每天 09:00 执行。
+    upcoming-enabled: ${DEPARTURE_REMINDER_ENABLED:true}
+    upcoming-days: ${DEPARTURE_REMINDER_DAYS:3}
+    upcoming-cron: ${DEPARTURE_REMINDER_CRON:0 0 9 * * *}
   integrations:
     alipay:
       sandbox: ${ALIPAY_SANDBOX:true}

@@ -5,11 +5,13 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
@@ -67,6 +69,7 @@ class DepartureStateConcurrencyIntegrationTest {
     @Autowired GuideMapper guides;
     @Autowired SysUserMapper users;
     @Autowired TravelOrderMapper orders;
+    @Autowired MessageMapper messages;
 
     private Long routeId;
     private Long guideId;
@@ -110,7 +113,9 @@ class DepartureStateConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // 按外键依赖倒序清理：订单 → 团期 → 线路 → 导游 → 用户。
+        // 按外键依赖倒序清理：订单 → 团期 → 线路 → 导游 → 消息 → 用户。
+        // 消息必须删：团期状态迁移现在会向受影响订单的用户投递站内消息（sys_message.user_id 外键），
+        // 不先清理会因 fk_message_user 无法删除用户。
         if (departureId != null) {
             orders.delete(new QueryWrapper<TravelOrder>().eq("departure_id", departureId));
             departures.deleteById(departureId);
@@ -122,6 +127,7 @@ class DepartureStateConcurrencyIntegrationTest {
             guides.deleteById(guideId);
         }
         if (userId != null) {
+            messages.delete(new QueryWrapper<Message>().eq("user_id", userId));
             users.deleteById(userId);
         }
     }

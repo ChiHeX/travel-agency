@@ -50,7 +50,7 @@ public class HomeService {
         if (routeIds.isEmpty()) return Map.of();
         return departures.selectList(new QueryWrapper<Departure>()
                 .in("route_id", routeIds)
-                .eq("status", DepartureStatus.OPEN).ge("start_date", LocalDate.now())
+                .eq("status", DepartureStatus.OPEN).apply("start_date >= CURRENT_DATE()")
                 .apply("reserved_people + confirmed_people < max_people"))
                 .stream().collect(Collectors.groupingBy(departure -> departure.routeId));
     }

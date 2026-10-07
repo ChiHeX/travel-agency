@@ -86,6 +86,21 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
      * {@code CANCELLED}/{@code FINISHED} 的事务，都必须等本事务结束，
      * 复核通过之后不会再出现状态被改走却照样发送的窗口。</p>
      *
+     * <p>两个后果都要挡：</p>
+     * <ol>
+     *   <li><b>资格已经失效</b>：订单被取消/退款完成、团期被取消/完成 —— 照着旧结果发送就是给一笔
+     *       已退款的订单推「即将出发」；</li>
+     *   <li><b>内容已经过期</b>：团期改期后新日期仍落在提醒窗口内，资格判定照样通过，
+     *       但消息正文若沿用旧快照就会写出<b>旧出发日期</b>；而去重记录此时已经写好，
+     *       后续不会再补发一条正确的 —— 游客拿着错误日期出发，比不发更糟。</li>
+     * </ol>
+     *
+     * <p>因此本查询不返回布尔值，而是把 {@code order_no} / {@code user_id} / 出发日期 / 线路名
+     * 一并按<b>当前读</b>取回，调用方直接用它的值拼消息正文。</p>
+     *
+     * <p>{@code FOR UPDATE OF o, d} 是**当前读 + 排他锁**，且只锁本语句真正做判定的两张表。
+     * 刻意不加锁 {@code travel_route}：线路改名只影响文案措辞、不影响判定，没必要扩大锁面。</p>
+     *
      * <p>返回 {@code null} 表示复核不通过（订单或团期已不符合出行条件），调用方直接跳过，
      * 且不会留下任何"已发送"标记 —— 该订单若之后仍符合条件，下一个调度周期还能正常提醒。</p>
      *
@@ -96,15 +111,18 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
      * 唯一键保证不会因此重复发送。</p>
      */
     @Select("""
-            SELECT o.id
+            SELECT o.id AS orderId, o.order_no AS orderNo, o.user_id AS userId,
+                   d.start_date AS startDate, r.name AS routeName
             FROM travel_order o
             JOIN departure d ON d.id = o.departure_id
+            JOIN travel_route r ON r.id = o.route_id
             WHERE o.id = #{orderId}
               AND o.status = 'CONFIRMED'
               AND d.status NOT IN ('CANCELLED', 'FINISHED')
               AND d.start_date BETWEEN CURRENT_DATE()
                                    AND DATE_ADD(CURRENT_DATE(), INTERVAL #{futureDays} DAY)
-            FOR UPDATE
+            FOR UPDATE OF o, d
             """)
-    Long lockEligibleReminderOrder(@Param("orderId") Long orderId, @Param("futureDays") int futureDays);
+    UpcomingReminderTarget lockEligibleReminderOrder(@Param("orderId") Long orderId,
+                                                     @Param("futureDays") int futureDays);
 }

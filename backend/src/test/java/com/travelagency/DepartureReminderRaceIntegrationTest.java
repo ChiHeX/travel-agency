@@ -38,6 +38,8 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,19 +48,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 即将出发提醒的「候选查询 → 发送」竞态回归测试。
  *
  * <p>候选查询 {@code selectUpcomingReminderTargets} 是普通查询，读的是事务的<b>一致性快照</b>。
- * 从查出候选到真正写消息之间存在窗口：期间退款可能刚完成、团期可能刚被取消。
+ * 从查出候选到真正写消息之间存在窗口，期间退款可能刚完成、团期可能刚被取消、也可能刚被改期。
  * 旧实现直接按候选结果发送，于是给一笔已经退款的订单推了「即将出发」；唯一键只防重复，防不了这件事。
  * 现在每条候选在写入前都要经过 {@code lockEligibleReminderOrder} 的当前读复核，
- * 本类钉住这条复核确实生效。</p>
+ * 并<b>用复核返回的最新数据拼正文</b>，本类钉住这两条都确实生效。</p>
  *
  * <p><b>怎么把时序固定下来</b>：不靠 sleep，也不靠多线程撞运气，而是利用快照本身：</p>
  * <ol>
  *   <li>夹具先在独立事务里<b>提交</b>；</li>
  *   <li>在事务 T 里先跑一次候选查询 —— 快照就此钉在"状态变更之前"，并断言该订单确实在候选里
  *       （这是前置条件，说明后面的"跳过"不是候选查询过滤掉的，而是复核拦下的）；</li>
- *   <li>用 {@code REQUIRES_NEW}（独立连接、独立事务）提交状态变更，模拟并发退款/取消；</li>
- *   <li>回到 T 里跑提醒任务：候选查询仍读到旧的 {@code CONFIRMED}，复核是当前读、能看到新状态，
- *       于是跳过该订单、不写消息、也不写"已发送"标记。</li>
+ *   <li>用 {@code REQUIRES_NEW}（独立连接、独立事务）提交状态变更，模拟并发退款/取消/改期；</li>
+ *   <li>回到 T 里跑提醒任务：候选查询仍读到旧数据，复核是当前读、能看到新数据 ——
+ *       资格失效就跳过（不写消息、不写"已发送"标记），仍然合格就用复核返回的<b>新</b>内容发消息。</li>
  * </ol>
  *
  * <p>全程在 T 里执行并最终回滚，因此不会往库里留下提醒记录或站内消息。</p>
@@ -198,6 +200,35 @@ class DepartureReminderRaceIntegrationTest {
     }
 
     @Test
+    @DisplayName("候选查出后团期改期：仍发送，但正文必须写新出发日期")
+    void writesRescheduledDateInsteadOfTheStaleOne() {
+        LocalDate originalDate = LocalDate.now().plusDays(2);
+        LocalDate rescheduledDate = LocalDate.now().plusDays(3);
+
+        runInTransactionWithRollback(() -> {
+            assertOrderIsCandidate("前置条件：改期前该订单必须出现在候选里");
+            // 快照里的候选内容仍是旧日期 —— 新实现若照抄它，消息就会写错。
+            assertEquals(originalDate, candidateOfOrder().startDate(), "前置条件：候选里应是改期前的出发日期");
+
+            // 另一个事务给团期改期并提交；新日期仍在 [今天, 今天+3] 窗口内，资格判定依然成立。
+            independentTransaction.executeWithoutResult(status ->
+                    departures.update(null, new UpdateWrapper<Departure>()
+                            .eq("id", departureId)
+                            .set("start_date", rescheduledDate)
+                            .set("end_date", rescheduledDate.plusDays(5))));
+
+            reminderService.sendUpcomingReminders();
+
+            assertNotNull(reminderOf(orderId), "改期后仍符合出行条件，应照常发送");
+            String content = reminderContent(userId);
+            assertTrue(content.contains(rescheduledDate.toString()),
+                    "提醒正文必须写改期后的新出发日期 " + rescheduledDate + "，实际：" + content);
+            assertFalse(content.contains(originalDate.toString()),
+                    "提醒正文不能残留旧的出发日期 " + originalDate + "，实际：" + content);
+        });
+    }
+
+    @Test
     @DisplayName("对照：期间没有任何状态变更时，提醒照常发送")
     void stillRemindsWhenNothingChanged() {
         runInTransactionWithRollback(() -> {
@@ -228,6 +259,25 @@ class DepartureReminderRaceIntegrationTest {
     private void assertOrderIsCandidate(String message) {
         List<UpcomingReminderTarget> candidates = orders.selectUpcomingReminderTargets(UPCOMING_DAYS);
         assertTrue(candidates.stream().anyMatch(target -> target.orderId().equals(orderId)), message);
+    }
+
+    /** 候选快照里该订单那一条，用于断言"复核之前看到的是旧数据"。 */
+    private UpcomingReminderTarget candidateOfOrder() {
+        return orders.selectUpcomingReminderTargets(UPCOMING_DAYS).stream()
+                .filter(target -> target.orderId().equals(orderId))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("前置条件：该订单应在候选里"));
+    }
+
+    /** 该用户收到的最后一条「即将出发提醒」正文。 */
+    private String reminderContent(Long userId) {
+        Message message = messages.selectOne(new QueryWrapper<Message>()
+                .eq("user_id", userId)
+                .eq("type", DepartureReminderService.TYPE_UPCOMING)
+                .orderByDesc("id")
+                .last("LIMIT 1"));
+        assertNotNull(message, "应已写入即将出发提醒");
+        return message.content;
     }
 
     private void assertNoReminderForTheOrder(String message) {

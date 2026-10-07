@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { guideApi } from '@/api/modules'
@@ -9,6 +9,18 @@ const currentRoute = useRoute()
 const rows = ref([])
 const data = ref(null)
 const loading = ref(false)
+const pending = ref(false)
+
+/**
+ * 契约 POST /guide/departures/{departureId}/start 允许的前置状态
+ * （与后端 `DepartureService#STARTABLE_STATUSES` 一致）：已开售 / 已满 / 已截止，
+ * 都还没出发。DRAFT 刻意不在其中——草稿团期还没上架，后端会返回 409，
+ * 因此按钮也不该出现，避免导游点进去才发现不能开始。
+ */
+const STARTABLE_STATUSES = ['OPEN', 'FULL', 'CLOSED']
+
+const canStart = computed(() => STARTABLE_STATUSES.includes(data.value?.departure?.status))
+const canComplete = computed(() => data.value?.departure?.status === 'TRAVELLING')
 
 const itemTypeNames = {
   ATTRACTION: '景点', TRANSPORT: '交通', MEAL: '餐食', ACTIVITY: '活动', OTHER: '其他'
@@ -33,10 +45,33 @@ async function load() {
   }
 }
 
+/**
+ * 团期状态推进：先调接口，再按结果提示并重新拉取，保证页面显示的是服务端真实状态。
+ *
+ * <p>重复点击用 `pending` 挡下：后端的状态机是条件 UPDATE，第二次请求只会拿到 409，
+ * 让用户看到一条无意义的冲突提示。</p>
+ */
+async function transition(action, successText) {
+  if (pending.value) return
+  pending.value = true
+  try {
+    await action(data.value.departure.id)
+    ElMessage.success(successText)
+  } catch (cause) {
+    ElMessage.error(cause?.message || '操作失败，请稍后重试')
+  } finally {
+    pending.value = false
+    await load()
+  }
+}
+
+/** 开始行程：OPEN / FULL / CLOSED → TRAVELLING，同时把该团期订单级联为在途。 */
+async function startTrip() {
+  await transition(guideApi.start, '行程已开始，祝带团顺利')
+}
+
 async function markFinished() {
-  await guideApi.complete(data.value.departure.id)
-  ElMessage.success('团期已顺利标记为完成')
-  load()
+  await transition(guideApi.complete, '团期已顺利标记为完成')
 }
 
 onMounted(load)
@@ -50,14 +85,26 @@ onMounted(load)
           <h2>带团详情与游客名单</h2>
           <p>核对集合情况，仅展示出团必须的游客联系与脱敏信息。</p>
         </div>
-        <button
-          v-if="data?.departure?.status === 'TRAVELLING'"
-          type="button"
-          class="primary-button"
-          @click="markFinished"
-        >
-          标记行程已结束
-        </button>
+        <div class="trip-actions">
+          <button
+            v-if="canStart"
+            type="button"
+            class="primary-button"
+            :disabled="pending"
+            @click="startTrip"
+          >
+            {{ pending ? '处理中…' : '开始行程' }}
+          </button>
+          <button
+            v-if="canComplete"
+            type="button"
+            class="primary-button"
+            :disabled="pending"
+            @click="markFinished"
+          >
+            {{ pending ? '处理中…' : '标记行程已结束' }}
+          </button>
+        </div>
       </div>
 
       <div v-if="loading" class="admin-panel">
@@ -205,6 +252,13 @@ onMounted(load)
 <style scoped>
 .trip-hero-card {
   margin-bottom: 20px;
+}
+
+.trip-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .trip-hero-card h3 {

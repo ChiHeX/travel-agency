@@ -67,16 +67,21 @@
 ## 4. 前端对接点
 
 - 统一封装：`src/api/modules.js`。导游调用集中在 `guideApi`（`dashboard` / `departures` / `detail` / `passengers` / `start` / `complete`）；后台资源调用在 `adminApi`。
-- 页面：`views/guide/GuideDashboardView.vue`（工作台）、`views/guide/GuideTripsView.vue`（团期）、带团详情页；后台资源页集中在 `views/admin/`。
+- 页面：`views/guide/GuideDashboardView.vue`（工作台）、`views/guide/GuideTripsView.vue`（团期列表与带团详情页）；后台资源页集中在 `views/admin/`。
 - 工作台卡片「即将出发班期」的文案说明为**「尚未出发的团期」**，与后端 `UPCOMING` 口径一致（此前误写为「未来 7 天内出团」）。
+- 带团详情页的操作按钮由团期当前状态唯一决定，与后端状态机 `STARTABLE_STATUSES` / `TRAVELLING` 对齐：
+  - `OPEN` / `FULL` / `CLOSED` → 显示「开始行程」（`guideApi.start`）；
+  - `TRAVELLING` → 显示「标记行程已结束」（`guideApi.complete`）；
+  - 其余状态（`DRAFT` 草稿、`FINISHED`、`CANCELLED`）不显示按钮，避免前端放出一个后端必然返回 409 的入口。
+  - 两个按钮都带 `pending` 防重，失败时提示服务端错误信息并重新拉取，保证页面展示的是服务端真实状态。
 
 ## 5. 联调结论（C-10）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 后端开始行程接口与前端按钮接通 | ✅ | `guideApi.start/complete` ↔ `POST /api/guide/departures/{id}/start|complete`，契约返回更新后的团期 |
-| 团期列表分页可用 | ✅ | `GET /api/guide/departures` 返回分页信封；`scope` 非法值返回 422 |
-| 分类（scope）可用 | ✅ | `UPCOMING / CURRENT / HISTORY` 三分类，定义见 §3.2 |
+| 后端开始行程接口与前端按钮接通 | ✅ | `GuideTripsView.vue` 带团详情页的「开始行程」按钮 → `guideApi.start` → `POST /api/guide/departures/{id}/start`；「标记行程已结束」→ `guideApi.complete` → `POST .../complete`。两个按钮只出现于契约允许的状态，契约返回更新后的团期 |
+| 团期列表分页可用 | ✅（接口层） | `GET /api/guide/departures` 返回分页信封；`scope` 非法值返回 422。前端 `GuideTripsView.vue` 的「我的全部带团班次」当前一次取默认分页、未做翻页控件，**页面侧分页 UI 仍待成员 E 在该页面接入** |
+| 分类（scope）可用 | ✅（接口层） | `UPCOMING / CURRENT / HISTORY` 三分类，定义见 §3.2；前端暂以工作台三个分组呈现，**列表页的 `scope` 切换控件仍待接入** |
 | 资源列表分页/筛选 | ✅ | 线路、景点、酒店、指南、团期均返回分页信封，支持契约声明的筛选参数 |
 | 后端测试 | 见 [ACCEPTANCE_REPORT_MEMBER_C.md](ACCEPTANCE_REPORT_MEMBER_C.md) | 单元测试随 `mvn test`；集成测试需 `TRAVEL_MYSQL_TEST=true` |
 

@@ -18,7 +18,7 @@
 | C-06/C-07 | 验收与统计核验 | 本文 §3、§4 |
 | C-08 | HTTPS 部署 | `deploy/nginx.https.conf`、`deploy/docker-compose.https.yml`、[DEPLOYMENT.md](DEPLOYMENT.md) |
 | C-09 | 数据库设计/迁移/来源 | [DATABASE_DESIGN.md](DATABASE_DESIGN.md)、[DATA_SOURCES.md](DATA_SOURCES.md)、`migrations/011` |
-| C-10 | 模块文档与联调 | [MODULE_RESOURCES.md](MODULE_RESOURCES.md) |
+| C-10 | 模块文档与联调 | `MODULE_RESOURCES.md`、`views/guide/GuideTripsView.vue`（开始/结束行程按钮） |
 
 ## 1. C-01 即将出发提醒
 
@@ -134,14 +134,15 @@ SELECT COALESCE(SUM(adult_count+child_count),0) FROM travel_order WHERE status N
 | 命令 | 结果 |
 |---|---|
 | 后端 `mvn -o -ntp test`（`TRAVEL_MYSQL_TEST=true`） | ✅ **571 passed / 0 failed / 0 errors / 0 skipped，BUILD SUCCESS** |
-| 新增测试实际执行 | ✅ `DepartureReminderServiceTest`(4)、`DepartureReminderIntegrationTest`(1)、`GuideUpcomingContractIntegrationTest`(2)、`DepartureAdminServiceTest`(48)、`GuideTripContractIntegrationTest`(9) |
-| 前端 `npx vitest run` | ✅ **228 passed**（23 个测试文件） |
+| 新增测试实际执行 | ✅ `DepartureReminderServiceTest`(4)、`DepartureReminderIntegrationTest`(1)、`GuideUpcomingContractIntegrationTest`(2)、`DepartureAdminServiceTest`(48)、`GuideTripContractIntegrationTest`(9)、`GuideTripsView.spec.js`(11) |
+| 前端 `npx vitest run` | 共 **239 用例 / 24 个文件**。CI（Node 24）为全绿；本机 Node 25 下为 **229 passed / 10 failed**，失败全部集中在 `MapPreview.spec.js` / `MapPreview.lifecycle.spec.js` 的 `window.localStorage.clear is not a function` —— Node 25 默认解除 `--experimental-webstorage` 限制后自带的 `localStorage` 全局覆盖了 jsdom 的 Storage，与本次改动无关（本分支前端只动了 `views/guide/`） |
 | 前端 `npm run build` | ✅ 构建成功 |
 | 契约 `npm run contract:validate` | ✅ All good |
 | 数据库初始化与迁移 | ✅ 见 [DATABASE_DESIGN §5](DATABASE_DESIGN.md)（独立实例验证，幂等） |
 
 > 说明：集成测试需数据库（`TRAVEL_MYSQL_TEST=true`）；CI 的 `Backend checks` 会在临时 MySQL 中初始化数据库并运行同一套测试。
 > 仍需人工确认的只有**运行时界面/端到端**部分：登录导游工作台核对 `upcoming` 与 `scope=UPCOMING` 一致；
+> 在带团详情页点「开始行程」，确认团期变为 `TRAVELLING`、订单级联为在途、按钮切换为「标记行程已结束」；
 > 后台改团期状态后受影响用户在「消息」页可收到「团期状态更新」；把某订单团期设为 3 天内出发并置为已确认后，
 > 触发一次提醒任务，确认收到且重复触发不重复。
 
@@ -150,7 +151,7 @@ SELECT COALESCE(SUM(adult_count+child_count),0) FROM travel_order WHERE status N
 - 后端（新增）：`domain/service/DepartureReminderService.java`、`domain/entity/DepartureReminder.java`、`domain/mapper/DepartureReminderMapper.java`、`domain/dto/UpcomingReminderTarget.java`
 - 后端（修改）：`DepartureService`、`GuideController`、`HomeService`、`RouteService`、`AttractionService`、`AdminRouteService`、`DepartureMapper`、`TravelOrderMapper`、`MessageMapper`、`application.yml`
 - SQL：`sql/schema.sql`、`sql/migrations/011-add-departure-reminder.sql`、`sql/migrations/README.md`
-- 前端：`views/guide/GuideDashboardView.vue`
+- 前端：`views/guide/GuideDashboardView.vue`（文案与口径）、`views/guide/GuideTripsView.vue`（接通「开始行程」按钮，并按状态显示操作入口）
 - 契约：`docs/openapi.yaml`（guide `scope` 说明）
-- 测试：`DepartureReminderServiceTest`、`DepartureReminderIntegrationTest`、`GuideUpcomingContractIntegrationTest`、`DepartureAdminServiceTest`（扩充）、`GuideTripContractIntegrationTest`（扩充）、`DepartureStateConcurrencyIntegrationTest`（清理站内消息外键）
+- 测试：`DepartureReminderServiceTest`、`DepartureReminderIntegrationTest`、`GuideUpcomingContractIntegrationTest`、`DepartureAdminServiceTest`（扩充）、`GuideTripContractIntegrationTest`（扩充）、`DepartureStateConcurrencyIntegrationTest`（清理站内消息外键）、`views/guide/__tests__/GuideTripsView.spec.js`
 - 部署/文档：`deploy/nginx.https.conf`、`deploy/docker-compose.https.yml`、`docs/DEPLOYMENT.md`、`docs/DATABASE_DESIGN.md`、`docs/DATA_SOURCES.md`、`docs/MODULE_RESOURCES.md`、`docs/ACCEPTANCE_REPORT_MEMBER_C.md`

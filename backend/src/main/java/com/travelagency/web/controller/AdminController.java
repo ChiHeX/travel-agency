@@ -22,7 +22,6 @@ import com.travelagency.domain.dto.GuideView;
 import com.travelagency.domain.dto.GuideUpdateRequest;
 import com.travelagency.domain.dto.OperationLogView;
 import com.travelagency.domain.dto.OrderDetailResponse;
-import com.travelagency.domain.dto.OrderReviewExceptionRequest;
 import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.RefundDecisionRequest;
@@ -309,29 +308,13 @@ public class AdminController {
      * 确认已支付订单报名。
      *
      * <p>契约的 200 响应是 OrderEnvelope（data 为确认后的订单），此前返回 void 导致 data 为 null。</p>
+     *
+     * <p>操作日志由 {@link OrderService#confirm} 在业务事务内记录，不再在这里补写：写在 Controller
+     * 意味着业务事务已经提交，日志失败时无法回滚业务，会留下「报名已确认、却查不到操作记录」的账。</p>
      */
     @PostMapping("/orders/{orderNo}/confirm")
     public ApiResponse<OrderView> confirmOrder(@PathVariable String orderNo) {
-        OrderView order = orderService.confirm(orderNo, CurrentUser.required().userId());
-        log("订单", "CONFIRM", "ORDER", orderNo, "SUCCESS", "确认报名");
-        return ApiResponse.ok(order);
-    }
-
-    /**
-     * 标记「报名审核异常」并通知下单用户，对齐契约
-     * {@code POST /admin/orders/{orderNo}/review-exception}（PRD §29）。
-     *
-     * <p>对应 PRD §13「如出现异常，则由工作人员联系用户处理」：这里只发通知，
-     * <b>不改订单状态</b>（订单仍停在待确认，名额保持预留），工作人员线下联系完再决定
-     * 是确认报名还是取消/退款。因此响应返回的是"未变化的订单"，便于前端直接刷新详情。</p>
-     */
-    @PostMapping("/orders/{orderNo}/review-exception")
-    public ApiResponse<OrderView> flagOrderReviewException(
-            @PathVariable String orderNo,
-            @Valid @RequestBody OrderReviewExceptionRequest request) {
-        OrderView order = orderService.flagReviewException(orderNo, request.reason());
-        log("订单", "REVIEW_EXCEPTION", "ORDER", orderNo, "SUCCESS", "审核异常通知：" + request.reason());
-        return ApiResponse.ok(order);
+        return ApiResponse.ok(orderService.confirm(orderNo, CurrentUser.required().userId()));
     }
 
     @GetMapping("/refunds")
@@ -353,27 +336,27 @@ public class AdminController {
      * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。
      * requestBody 是可选的，但一旦提供仍须校验，否则超长 comment 会绕过
      * RefundDecisionRequest 上的 @Size 约束（同文件 reject 端点原本就带 @Valid）。</p>
+     *
+     * <p>操作日志（含「出款结果待确认」这一支）由 {@link OrderService#approveRefund} 在业务事务内记录。</p>
      */
     @PostMapping("/refunds/{id}/approve")
     public ApiResponse<RefundView> approveRefund(
             @PathVariable Long id, @Valid @RequestBody(required = false) RefundDecisionRequest request) {
         String comment = request == null ? null : request.comment();
-        RefundView refund = orderService.approveRefund(id, comment, CurrentUser.required().userId());
-        log("退款", "APPROVE", "REFUND", id, "SUCCESS", comment);
-        return ApiResponse.ok(refund);
+        return ApiResponse.ok(orderService.approveRefund(id, comment, CurrentUser.required().userId()));
     }
 
     /**
      * 拒绝退款申请。
      *
      * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。</p>
+     *
+     * <p>操作日志由 {@link OrderService#rejectRefund} 在业务事务内记录。</p>
      */
     @PostMapping("/refunds/{id}/reject")
     public ApiResponse<RefundView> rejectRefund(
             @PathVariable Long id, @Valid @RequestBody RefundDecisionRequest request) {
-        RefundView refund = orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId());
-        log("退款", "REJECT", "REFUND", id, "SUCCESS", request.comment());
-        return ApiResponse.ok(refund);
+        return ApiResponse.ok(orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId()));
     }
 
     @GetMapping("/reviews")
@@ -387,9 +370,7 @@ public class AdminController {
     @PatchMapping("/reviews/{id}/status")
     public ApiResponse<ReviewView> updateReviewStatus(
             @PathVariable Long id, @Valid @RequestBody ReviewStatusUpdateRequest request) {
-        ReviewView view = orderService.updateReviewStatus(id, request.status(), CurrentUser.required().userId());
-        log("评价", "STATUS", "REVIEW", id, "SUCCESS", "评价状态变更为 " + request.status());
-        return ApiResponse.ok(view);
+        return ApiResponse.ok(orderService.updateReviewStatus(id, request.status(), CurrentUser.required().userId()));
     }
 
     /**

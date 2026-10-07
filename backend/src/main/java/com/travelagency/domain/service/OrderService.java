@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.api.PageResponse;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
@@ -12,6 +13,7 @@ import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.enums.TravelerType;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.exception.OrderAuditAnomalyException;
 import com.travelagency.common.exception.RefundPendingConfirmationException;
 import com.travelagency.common.security.UserPrincipal;
 import com.travelagency.domain.dto.CreateOrderRequest;
@@ -88,6 +90,7 @@ public class OrderService {
     private final IdempotencyRecordMapper idempotencyRecordMapper;
     private final TravelerMapper travelerMapper;
     private final AlipayGatewayClient alipayGatewayClient;
+    private final OperationLogRecorder operationLog;
 
     /** 下单动作的幂等作用域，与 idempotency_record.scope 对应。 */
     private static final String SCOPE_CREATE_ORDER = "CREATE_ORDER";
@@ -104,6 +107,9 @@ public class OrderService {
      */
     private static final long PAYMENT_WINDOW_MINUTES = 30L;
 
+    /** PRD §29「订单审核异常」站内通知的类型标识，同时用作该通知的去重维度。 */
+    private static final String NOTIFY_TYPE_AUDIT_ANOMALY = "ORDER_AUDIT_ANOMALY";
+
     public OrderService(
             TravelOrderMapper orderMapper,
             DepartureMapper departureMapper,
@@ -117,7 +123,8 @@ public class OrderService {
             SysUserMapper sysUserMapper,
             IdempotencyRecordMapper idempotencyRecordMapper,
             TravelerMapper travelerMapper,
-            AlipayGatewayClient alipayGatewayClient) {
+            AlipayGatewayClient alipayGatewayClient,
+            OperationLogRecorder operationLog) {
         this.orderMapper = orderMapper;
         this.departureMapper = departureMapper;
         this.routeMapper = routeMapper;
@@ -131,6 +138,7 @@ public class OrderService {
         this.idempotencyRecordMapper = idempotencyRecordMapper;
         this.travelerMapper = travelerMapper;
         this.alipayGatewayClient = alipayGatewayClient;
+        this.operationLog = operationLog;
     }
 
     @Transactional
@@ -631,18 +639,51 @@ public class OrderService {
      * <p>契约 {@code POST /admin/orders/{orderNo}/confirm} 的 200 响应是 {@code OrderEnvelope}，
      * 即 data 为确认后的订单对象；此前实现返回 void，实际响应 data 为 null 且类型不符
      * （与 {@code cancel}、{@code approveRefund} 同类的遗漏）。</p>
+     *
+     * <p><b>并发安全（同一订单只允许确认一次）</b>：入口用
+     * {@link #findByNoForUpdate(String)} 取行锁，把同一订单上的并发确认串行化；后到的线程在锁释放后
+     * 读到的是已推进的状态，会在状态校验处被 409 拦下。行锁之外再加一道
+     * 「{@code WHERE status = PAID_WAIT_CONFIRM} 的条件 UPDATE」作为原子闸门：
+     * <b>只有拿到 1 行影响的那一次</b>才允许执行名额从 reserved 转入 confirmed、线路有效报名数 +1、
+     * 发送通知这些不可重复的副作用。此前是「普通读 + 无状态条件的 updateById」，
+     * 两个工作人员同时确认会让名额与统计各加一次、通知发两条。</p>
+     *
+     * <p><b>业务复核（PRD §11.1）</b>：确认前重新核对支付状态、出行人快照数量与实名信息完整性
+     * （见 {@link #inspectBooking(TravelOrder)}）。任一不通过即按 {@link OrderAuditAnomalyException}
+     * 回 {@code 409 ORDER_AUDIT_ANOMALY}，订单<b>不进入</b> {@code CONFIRMED}，
+     * 且<b>不修改库存与统计</b> —— 复核点刻意排在所有写入之前。
+     * 该异常上的 {@code noRollbackFor} 让事务提交，好让审计留痕与站内通知（PRD §29「订单审核异常」）
+     * 真正落库；不通过时不存在任何需要回滚的业务写入。</p>
      */
-    @Transactional
+    @Transactional(noRollbackFor = OrderAuditAnomalyException.class)
     public OrderView confirm(String orderNo, Long operatorId) {
-        TravelOrder order = findByNo(orderNo);
+        TravelOrder order = findByNoForUpdate(orderNo);
         if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以审核");
+        }
+        AuditAnomaly anomaly = inspectBooking(order);
+        if (anomaly != null) {
+            operationLog.record(operatorId, "订单", "AUDIT_ANOMALY", "ORDER", order.orderNo,
+                    OperationLogRecorder.FAILURE, "报名审核异常：" + anomaly.detail());
+            notifyAuditAnomalyOnce(order, anomaly);
+            throw new OrderAuditAnomalyException(anomaly.reasonCode(), anomaly.detail());
         }
         Departure departure = departureMapper.selectById(order.departureId);
         if (departure == null || !DepartureStatus.OPEN.equals(departure.status)) {
             throw new BusinessException(409, "ORDER_STATE_CONFLICT", "团期已关闭，无法确认报名");
         }
         int participantCount = participants(order);
+        // 原子闸门：只有把订单从 PAID_WAIT_CONFIRM 抢成 CONFIRMED 的那一次才继续做副作用。
+        // 放在名额迁移之前，是为了让"这张订单被确认"成为整个动作的入口条件；
+        // 后面任一步失败都会让本事务回滚，这道抢占随之撤销，不会留下半确认状态。
+        int claimed = orderMapper.update(null, new UpdateWrapper<TravelOrder>()
+                .eq("id", order.id)
+                .eq("status", OrderStatus.PAID_WAIT_CONFIRM)
+                .set("status", OrderStatus.CONFIRMED)
+                .set("confirmed_at", LocalDateTime.now()));
+        if (claimed != 1) {
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "订单已被其他工作人员确认");
+        }
         UpdateWrapper<Departure> confirm = new UpdateWrapper<>();
         confirm.eq("id", departure.id)
                 .eq("status", DepartureStatus.OPEN)
@@ -652,46 +693,104 @@ public class OrderService {
         if (departureMapper.update(null, confirm) != 1) {
             throw new BusinessException(409, "DEPARTURE_CAPACITY_INSUFFICIENT", "团期名额已不足，暂不能确认报名");
         }
+        // 到这里两个原子闸门都拿下了，再同步内存对象，并写下唯一的业务留痕。
         order.status = OrderStatus.CONFIRMED;
         order.confirmedAt = LocalDateTime.now();
-        orderMapper.updateById(order);
         routeMapper.update(null, new UpdateWrapper<TravelRoute>()
                 .eq("id", order.routeId)
                 .setSql("valid_booking_count = COALESCE(valid_booking_count, 0) + 1"));
+        operationLog.record(operatorId, "订单", "CONFIRM", "ORDER", order.orderNo,
+                OperationLogRecorder.SUCCESS, "确认报名（" + participantCount + " 人）");
         notify(order.userId, "报名已确认", "订单 " + order.orderNo + " 已通过旅行社审核。", "ORDER_CONFIRMED");
         // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）
         return loadOrderView(order);
     }
 
     /**
-     * 标记「报名审核异常」并通知下单用户（PRD §29 的通知场景之一），对齐契约
-     * {@code POST /admin/orders/{orderNo}/review-exception}。
+     * 确认报名前的业务复核（PRD §11.1：团期状态、剩余人数、游客实名信息完整性、订单信息）。
+     * 团期状态与剩余人数由调用方的条件 UPDATE 在同一事务内保证，这里负责与订单自身相关的三项。
      *
-     * <p><b>刻意不改变订单状态。</b> PRD §13 对审核异常的规定是"如出现异常，则由工作人员联系用户处理"，
-     * 订单状态机里也没有"审核不通过"这一档 —— 凭空造一个终态会把"线下联系后补齐资料再确认"
-     * 这条正常路径堵死（还要额外决定名额是否释放）。因此本动作只做一件事：
-     * 把"订单卡在哪里、需要用户配合什么"落成站内消息，工作人员处理完再走 confirm 或退款/取消。
-     * 订单仍停在 {@code PAID_WAIT_CONFIRM}，预留名额保持不变。</p>
-     *
-     * <p>只有处于审核阶段（{@code PAID_WAIT_CONFIRM}）的订单可以标记：已确认/已完成/已取消的订单
-     * 没有"审核异常"可言，对它们发这条消息只会让用户困惑，所以在这里返回 409。</p>
+     * @return 发现的第一处异常；全部通过时返回 {@code null}
      */
-    @Transactional
-    public OrderView flagReviewException(String orderNo, String reason) {
-        TravelOrder order = findByNo(orderNo);
-        if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
-            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以标记审核异常");
+    private AuditAnomaly inspectBooking(TravelOrder order) {
+        Payment payment = paymentMapper.selectOne(new QueryWrapper<Payment>().eq("order_id", order.id));
+        if (payment == null || !PaymentStatus.PAID.equals(payment.status)
+                || !PaymentStatus.PAID.equals(order.paymentStatus)) {
+            return new AuditAnomaly(OrderAuditAnomalyException.PAYMENT_NOT_SETTLED,
+                    "订单支付状态未到账（当前 paymentStatus=" + order.paymentStatus + "），需先确认支付结果");
         }
-        notify(order.userId, "报名审核需要处理",
-                "订单 " + order.orderNo + " 的报名审核需要处理：" + reason + "。工作人员会与您联系。",
-                "ORDER_REVIEW_EXCEPTION");
-        return loadOrderView(order);
+        List<OrderTraveler> snapshots = orderTravelerMapper.selectList(
+                new QueryWrapper<OrderTraveler>().eq("order_id", order.id));
+        int expected = participants(order);
+        if (snapshots.size() != expected) {
+            return new AuditAnomaly(OrderAuditAnomalyException.TRAVELER_SNAPSHOT_MISMATCH,
+                    "出行人快照数量（" + snapshots.size() + "）与订单登记人数（" + expected + "）不一致");
+        }
+        for (int index = 0; index < snapshots.size(); index++) {
+            String missing = missingIdentityField(snapshots.get(index));
+            if (missing != null) {
+                // 只回位置与缺失字段名：身份证号、姓名属 PRD §53.1/§53.2 明确要求脱敏的信息，
+                // 不进接口 message、不进日志、也不进站内通知正文。
+                return new AuditAnomaly(OrderAuditAnomalyException.TRAVELER_IDENTITY_INCOMPLETE,
+                        "第 " + (index + 1) + " 位出行人的实名信息不完整（缺少" + missing + "）");
+            }
+        }
+        return null;
+    }
+
+    /** 返回该快照缺失的必需实名字段名；齐全时返回 {@code null}。 */
+    private static String missingIdentityField(OrderTraveler snapshot) {
+        if (!notBlank(snapshot.name)) {
+            return "姓名";
+        }
+        if (!notBlank(snapshot.idType)) {
+            return "证件类型";
+        }
+        return notBlank(snapshot.idNo) ? null : "证件号码";
+    }
+
+    /**
+     * 发送「报名审核异常」站内通知，<b>同一订单 + 同一异常原因只发一次</b>。
+     *
+     * <p>去重键是「订单号 + 异常原因」构成的固定标题：工作人员对同一张问题订单反复点确认，
+     * 用户只会收到一条通知；而原因发生变化（例如证件补齐后又发现人数不符）时会各通知一次，
+     * 不会把新问题静默吞掉。用「查在再插」而不是唯一索引，是因为 {@code sys_message} 没有
+     * 这个维度的唯一键，且确认动作已被订单行锁串行化，不存在并发重复插入。</p>
+     */
+    private void notifyAuditAnomalyOnce(TravelOrder order, AuditAnomaly anomaly) {
+        String title = "订单 " + order.orderNo + " 报名审核异常：" + anomaly.label();
+        Long existing = messageMapper.selectCount(new QueryWrapper<Message>()
+                .eq("user_id", order.userId)
+                .eq("type", NOTIFY_TYPE_AUDIT_ANOMALY)
+                .eq("title", title));
+        if (existing != null && existing > 0) {
+            return;
+        }
+        notify(order.userId, title,
+                "订单 " + order.orderNo + " 未通过旅行社报名审核，原因：" + anomaly.detail()
+                        + "。订单仍保留在待确认状态，工作人员处理后可重新确认。",
+                NOTIFY_TYPE_AUDIT_ANOMALY);
+    }
+
+    /** 审核异常的分类与说明，作为接口 message、审计 detail 与通知正文的唯一来源。 */
+    private record AuditAnomaly(String reasonCode, String detail) {
+
+        /** 通知标题里的短标签，控制标题长度同时保持与人可读。 */
+        String label() {
+            return switch (reasonCode) {
+                case OrderAuditAnomalyException.PAYMENT_NOT_SETTLED -> "支付未到账";
+                case OrderAuditAnomalyException.TRAVELER_SNAPSHOT_MISMATCH -> "出行人信息不完整";
+                case OrderAuditAnomalyException.TRAVELER_IDENTITY_INCOMPLETE -> "实名信息缺失";
+                default -> "业务复核未通过";
+            };
+        }
     }
 
     @Transactional
     public RefundView applyRefund(String orderNo, Long userId, RefundRequest request) {
         return applyRefund(orderNo, userId, request, null);
     }
+
     /**
      * 申请退款，支持契约要求的 Idempotency-Key 请求头。
      *
@@ -779,9 +878,14 @@ public class OrderService {
      * 保证释放名额、改订单/支付单、回退线路计数这些<b>不可重复</b>的副作用
      * 永远只发生一次（首次审批的并发由入口抢占挡住，「待确认重试」没有可抢的状态迁移，
      * 由这道闸门兜底）。</p>
+     *
+     * <p><b>本方法不是事务入口</b>：事务边界（含「结果待确认时提交」所需的
+     * {@code noRollbackFor}）由公开入口 {@link #approveRefund} / {@link #rejectRefund} 持有。
+     * 这里刻意不标 {@code @Transactional} —— 本方法只被它们自调用，Spring 代理对自调用不生效，
+     * 标了也只是造成「它自带事务语义」的错觉；更糟的是有人绕过公开入口直接调用时会静默丢掉
+     * {@code noRollbackFor}，让待确认的退款单与刚写下的审核留痕一起被回滚。</p>
      */
-    @Transactional
-    public void processRefund(Long refundId, String action, String comment, Long reviewerId) {
+    void processRefund(Long refundId, String action, String comment, Long reviewerId) {
         if (!"APPROVE".equalsIgnoreCase(action) && !"REJECT".equalsIgnoreCase(action)) {
             throw new BusinessException(422, "VALIDATION_ERROR", "审核动作只能是 APPROVE 或 REJECT");
         }
@@ -853,6 +957,10 @@ public class OrderService {
                 // 所以把退款单落成持久的 PROCESSING（待确认）：approveRefund 上的 noRollbackFor
                 // 让本次事务提交，结果确认前「拒绝」与「恢复订单」都被入口守卫拦住。
                 // 继续确认的方式就是再调一次本方法（请求号恒定 ⇒ 不会重复出款）。
+                // 审计必须写在抛异常之前：noRollbackFor 只保证"这个异常不回滚"，留痕本身仍要显式落。
+                operationLog.record(reviewerId, "退款", "APPROVE_UNCONFIRMED", "REFUND", refundId,
+                        OperationLogRecorder.SUCCESS,
+                        "出款结果待确认，退款单保持 PROCESSING：" + payout.describe());
                 throw new RefundPendingConfirmationException(
                         "支付宝已受理退款但结果尚未确认，退款单保持「处理中」待确认，"
                                 + "结果确认前不能拒绝该申请：" + payout.describe());
@@ -893,6 +1001,10 @@ public class OrderService {
             Payment payment = paymentFor(order.id);
             payment.status = PaymentStatus.REFUNDED;
             paymentMapper.updateById(payment);
+            operationLog.record(reviewerId, "退款", "APPROVE", "REFUND", refundId,
+                    OperationLogRecorder.SUCCESS,
+                    "同意退款，出款成功（tradeNo=" + payout.tradeNo() + "）"
+                            + (comment == null || comment.isBlank() ? "" : "；审核意见：" + comment));
             notify(order.userId, "退款审核通过", "订单 " + order.orderNo + " 的退款已处理完成。", "REFUND_APPROVED");
         } else {
             // action 已在方法入口校验为 APPROVE / REJECT 之一，走到这里只能是 REJECT
@@ -900,6 +1012,8 @@ public class OrderService {
             refundMapper.updateById(refund);
             order.status = refund.originalOrderStatus;
             orderMapper.updateById(order);
+            operationLog.record(reviewerId, "退款", "REJECT", "REFUND", refundId,
+                    OperationLogRecorder.SUCCESS, "拒绝退款；审核意见：" + comment);
             notify(order.userId, "退款申请未通过", "订单 " + order.orderNo + " 的退款申请未通过。", "REFUND_REJECTED");
         }
     }
@@ -1100,6 +1214,8 @@ public class OrderService {
         review.status = status;
         reviewMapper.updateById(review);
         refreshRouteRating(review.routeId);
+        operationLog.record(operatorId, "评价", "STATUS", "REVIEW", reviewId,
+                OperationLogRecorder.SUCCESS, "评价状态变更为 " + status);
         TravelOrder order = orderMapper.selectById(review.orderId);
         return ReviewView.from(review, order == null ? null : order.orderNo, nicknameOf(review.userId));
     }
@@ -1320,6 +1436,10 @@ public class OrderService {
 
     private static int valueOrZero(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    private static boolean notBlank(String value) {
+        return value != null && !value.isBlank();
     }
 
     private static BigDecimal defaultAmount(BigDecimal amount) {

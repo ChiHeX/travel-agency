@@ -140,13 +140,14 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
 ## 站内消息与提醒
 
 站内消息统一落在 `sys_message`，由 `MessageController` 提供列表 / 未读数 / 已读接口。消息类型包括支付成功、
-报名确认、订单审核异常（`ORDER_REVIEW_EXCEPTION`）、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）
+报名确认、订单审核异常（`ORDER_AUDIT_ANOMALY`）、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）
 与即将出发提醒（`DEPARTURE_REMINDER`）。
 
-- **订单审核异常**：`POST /admin/orders/{orderNo}/review-exception` 让工作人员把"订单卡在哪里、需要用户配合什么"
-  告诉下单用户。PRD §13 规定审核异常"由工作人员联系用户处理"，订单状态机里也没有"审核不通过"这一档，
-  因此该动作**只写一条通知、不改变订单状态**（仍是 `PAID_WAIT_CONFIRM`，预留名额不动），
-  工作人员线下联系完再走 `confirm` 或取消/退款。仅待确认订单可标记，其余状态返回 409。
+- **订单审核异常**：工作人员确认报名时若业务复核不通过，`OrderService#confirm` 在**任何写入之前**
+  拦下并把原因通知下单用户（PRD §29）。该通知**不改变订单状态**（仍停在 `PAID_WAIT_CONFIRM`，预留名额不动），
+  用户补齐资料后可重新确认。消息按「订单号 + 异常原因」去重，同一问题不重复发送、原因变化则各通知一次；
+  正文与接口 `message` 只回「第 N 位出行人缺少哪个字段」，不含姓名与证件号。
+  完整设计见 [交易模块说明](TRADE_MODULE.md) §4 / §5。
 
 - **团期状态变化**：后台 `DepartureService#changeStatus` 与导游 `start` / `complete` 在状态**确实变化**后，
   用一条 `INSERT ... SELECT DISTINCT` 向该团期下有效订单（排除未支付 / 已取消 / 已退款）的用户投递消息；

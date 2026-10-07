@@ -1520,7 +1520,13 @@ paths:
       tags: [Admin Orders]
       operationId: confirmOrder
       summary: 确认已支付订单报名
-      description: 再次检查团期状态、容量和实名信息后执行状态变化。
+      description: >-
+        复核团期状态与容量、订单支付状态、出行人快照数量与实名字段完整性后推进状态，
+        并迁移名额、回填线路有效报名数、给用户发一条「报名已确认」通知。
+        复核不通过返回 409 ORDER_AUDIT_ANOMALY：订单留在 PAID_WAIT_CONFIRM，
+        不占用名额、不写统计，同时留下一条审计记录并向用户发送一条「报名审核异常」站内通知
+        （同一订单 + 同一异常原因只发一条，正文不含姓名与证件号）。
+        同一订单并发确认只有一次生效，其余请求返回 409 ORDER_STATE_CONFLICT。
       x-roles: [STAFF, ADMIN]
       responses:
         '200':
@@ -1528,36 +1534,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrderEnvelope' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/ValidationFailed' }
-
-  /admin/orders/{orderNo}/review-exception:
-    parameters:
-      - { $ref: '#/components/parameters/OrderNo' }
-    post:
-      tags: [Admin Orders]
-      operationId: flagOrderReviewException
-      summary: 标记报名审核异常并通知下单用户
-      description: >-
-        对应 PRD §13「如出现异常，则由工作人员联系用户处理」与 §29 的「订单审核异常」通知场景。
-        只向该订单的下单用户投递一条 `ORDER_REVIEW_EXCEPTION` 站内消息，
-        **不改变订单状态**（订单仍停在 `PAID_WAIT_CONFIRM`，预留名额保持不变）——
-        订单状态机里没有"审核不通过"这一档，工作人员线下联系用户补齐资料后再决定确认报名还是取消/退款。
-        仅 `PAID_WAIT_CONFIRM` 的订单可用，其余状态返回 409 `ORDER_STATE_CONFLICT`。
-      x-roles: [STAFF, ADMIN]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/OrderReviewExceptionRequest' }
-      responses:
-        '200':
-          description: 被标记的订单（状态未变化）
+        '409':
+          description: >-
+            订单不处于待确认状态或已被其他工作人员确认（ORDER_STATE_CONFLICT）、
+            团期不可用（ORDER_STATE_CONFLICT）、名额不足（DEPARTURE_CAPACITY_INSUFFICIENT）、
+            报名审核异常（ORDER_AUDIT_ANOMALY，具体原因见 message）
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OrderEnvelope' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/refunds:
@@ -4060,19 +4044,6 @@ components:
       required: [comment]
       properties:
         comment: { type: string, minLength: 1, maxLength: 500, example: 已核验订单和退款条件。 }
-    OrderReviewExceptionRequest:
-      type: object
-      additionalProperties: false
-      required: [reason]
-      description: >-
-        工作人员上报「报名审核异常」时填写的说明（PRD §13 / §29）。
-        内容会原样进入投递给下单用户的站内消息，因此不能为空。
-      properties:
-        reason:
-          type: string
-          minLength: 1
-          maxLength: 500
-          example: 出行人证件信息与订单不符，请补充并重新提交。 
     Refund:
       type: object
       additionalProperties: false

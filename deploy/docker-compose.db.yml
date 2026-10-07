@@ -1,20 +1,31 @@
+# 仅数据库（本地开发用）
+#
+# 只把 MySQL 跑起来供宿主机上的后端（mvn spring-boot:run / IDEA）连接。
+# 端口刻意绑定 127.0.0.1：仅本机可达，不监听对外接口。
+# 需要连数据库调试时用 deploy/docker-compose.yml 起的整套环境（数据库不发布端口，
+# 用 docker compose exec mysql mysql ... 进入）。
+
 services:
   mysql:
     image: mysql:9.7
     container_name: travel-agency-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
+      # 默认值是与 README、application.yml 一致的本地开发口令；需要用别的口令时
+      # 通过环境变量覆盖。只在数据卷首次初始化时生效，已有数据卷不会被改口令。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
       MYSQL_DATABASE: travel_agency
       MYSQL_USER: travel
-      MYSQL_PASSWORD: travel_password
+      MYSQL_PASSWORD: ${DB_PASSWORD:-travel_password}
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
       - travel_agency_mysql_data:/var/lib/mysql
       - ../sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
+      # 口令取自容器自身的 MYSQL_ROOT_PASSWORD，不写死在文件里；
+      # 必须是 CMD-SHELL，exec 形式不会展开 $$ 变量。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
       interval: 5s
       timeout: 5s
       retries: 20

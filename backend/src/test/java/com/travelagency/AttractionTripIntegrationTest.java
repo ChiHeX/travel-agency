@@ -61,12 +61,15 @@ class AttractionTripIntegrationTest {
         TravelRoute matching = route("关联线路", "PUBLISHED", selected.id);
         TravelRoute unrelated = route("其他线路", "PUBLISHED", other.id);
         TravelRoute draft = route("未发布线路", "DRAFT", selected.id);
-        Departure available = departure(matching.id, LocalDate.now().plusDays(5), "OPEN", 1);
-        Departure full = departure(matching.id, LocalDate.now().plusDays(8), "OPEN", 0);
-        departure(matching.id, LocalDate.now().plusDays(10), "CLOSED", 1);
-        departure(matching.id, LocalDate.now().minusDays(2), "OPEN", 1);
-        departure(unrelated.id, LocalDate.now().plusDays(5), "OPEN", 1);
-        departure(draft.id, LocalDate.now().plusDays(5), "OPEN", 1);
+        // 夹具日期取【库内当天】：生产过滤用的是 CURRENT_DATE()，用 LocalDate.now()
+        // 会在 JVM 与库会话时区不一致时错开一天，让"未来/已过期"的边界断言随机变红。
+        LocalDate today = departures.databaseToday();
+        Departure available = departure(matching.id, today.plusDays(5), "OPEN", 1);
+        Departure full = departure(matching.id, today.plusDays(8), "OPEN", 0);
+        departure(matching.id, today.plusDays(10), "CLOSED", 1);
+        departure(matching.id, today.minusDays(2), "OPEN", 1);
+        departure(unrelated.id, today.plusDays(5), "OPEN", 1);
+        departure(draft.id, today.plusDays(5), "OPEN", 1);
 
         MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
         String body = mvc.perform(get("/api/attractions/{id}", selected.id))

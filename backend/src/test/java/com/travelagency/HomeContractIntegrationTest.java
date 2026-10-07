@@ -69,8 +69,11 @@ class HomeContractIntegrationTest {
         route.deleted = 0;
         routes.insert(route);
 
-        Departure laterCheaperDeparture = departure(route.id, LocalDate.now().plusDays(2), new BigDecimal("100.00"));
-        Departure nextDeparture = departure(route.id, LocalDate.now().plusDays(1), new BigDecimal("200.00"));
+        // 夹具日期取【库内当天】：首页"近期团期"用 CURRENT_DATE() 过滤，
+        // 用 LocalDate.now() 会在 JVM 与库会话时区不一致时错开一天。
+        LocalDate today = departures.databaseToday();
+        Departure laterCheaperDeparture = departure(route.id, today.plusDays(2), new BigDecimal("100.00"));
+        Departure nextDeparture = departure(route.id, today.plusDays(1), new BigDecimal("200.00"));
         departures.insert(laterCheaperDeparture);
         departures.insert(nextDeparture);
 

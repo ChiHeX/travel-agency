@@ -27,7 +27,10 @@ import java.util.List;
  *       任务在 {@code [今天, 今天 + N 天]} 这个窗口内触发，窗口在库内用 {@code CURRENT_DATE()} 判定，
  *       因此 JVM 与数据库时区不一致时"当天"仍然一致；</li>
  *   <li><b>只通知符合出行条件的订单</b>：候选订单限定为 {@code CONFIRMED}（已确认报名）且团期
- *       未取消、未完成；取消（{@code CANCELLED}）与退款完成（{@code REFUNDED}）的订单天然不在其中；</li>
+ *       未取消、未完成；取消（{@code CANCELLED}）与退款完成（{@code REFUNDED}）的订单天然不在其中。
+ *       候选查询读的是事务快照，因此发送前还会再做一次<b>当前读复核并加锁</b>
+ *       （{@link TravelOrderMapper#lockEligibleReminderOrder}），避免"查出来之后才退款/取消"
+ *       的订单收到提醒；</li>
  *   <li><b>重复执行不重复发消息</b>：每条提醒先向 {@code departure_reminder} 抢占
  *       唯一键 (order_id, remind_type)，只有抢占成功的那一次才写入站内消息。任务被重复调度、
  *       或多实例并发执行时，后到者读到唯一键冲突直接跳过。</li>
@@ -95,11 +98,24 @@ public class DepartureReminderService {
         return deliverUpcoming();
     }
 
-    /** 提醒发送主流程：取候选订单 → 逐单抢占唯一键 → 写站内消息。 */
+    /**
+     * 提醒发送主流程：取候选订单 → 逐单复核并锁定 → 抢占唯一键 → 写站内消息。
+     *
+     * <p>候选查询读的是事务快照，只有"查出候选"这一个动作并不足以证明此刻仍该发送，
+     * 因此每一条候选在写入前都要经过 {@link TravelOrderMapper#lockEligibleReminderOrder}
+     * 的当前读复核（见 {@link #deliverUpcoming} 的说明）。</p>
+     */
     private int deliverUpcoming() {
         List<UpcomingReminderTarget> targets = orderMapper.selectUpcomingReminderTargets(upcomingDays);
         int sent = 0;
         for (UpcomingReminderTarget target : targets) {
+            // 复核 + 加锁：候选快照可能已经过期（这期间退款完成、团期被取消），
+            // 复核不通过就跳过，且不写"已发送"标记 —— 条件重新成立时下个周期仍可发送。
+            // 这一步同时把订单与团期行锁到本事务结束，后续抢占与写消息不会再被并发状态变更插队。
+            if (orderMapper.lockEligibleReminderOrder(target.orderId(), upcomingDays) == null) {
+                log.info("订单 {} 在发送前复核时已不符合出行条件，跳过即将出发提醒", target.orderNo());
+                continue;
+            }
             if (!claim(target.orderId())) {
                 continue;
             }

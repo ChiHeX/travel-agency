@@ -54,7 +54,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 成员 C 团期管理模块：{@link DepartureService#create} / {@link DepartureService#update} /
+ * 团期管理模块：{@link DepartureService#create} / {@link DepartureService#update} /
  * {@link DepartureService#changeStatus} / {@link DepartureService#page} 业务规则单元测试。
  *
  * <p>不启动 Spring、不连接数据库，全部依赖用 Mockito 替身，因此随普通 {@code mvn test} 执行。

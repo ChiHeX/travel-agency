@@ -29,7 +29,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 成员 C：即将出发提醒（PRD §29）单元测试，全部依赖用 Mockito 替身，随普通 {@code mvn test} 执行。
+ * 即将出发提醒（PRD §29）单元测试，全部依赖用 Mockito 替身，随普通 {@code mvn test} 执行。
  *
  * <p>钉住三条完成标准：提前天数作为查询窗口传入；每个订单只发一条消息（唯一键幂等）；
  * 关闭开关后定时任务不产生任何查询。</p>

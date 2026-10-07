@@ -71,4 +71,40 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
             ORDER BY d.start_date ASC, o.id ASC
             """)
     List<UpcomingReminderTarget> selectUpcomingReminderTargets(@Param("futureDays") int futureDays);
+
+    /**
+     * 出发提醒的**发送前复核**：锁定候选订单及其团期，并在同一语句里重新判定出行条件。
+     *
+     * <p>为什么必须有这一步：{@link #selectUpcomingReminderTargets} 是普通查询，读的是本事务的
+     * <b>一致性快照</b>。从"查出候选"到"真正写消息"之间存在窗口，期间退款可能刚刚完成、
+     * 团期可能刚被取消，而快照里的 {@code CONFIRMED} 不会变 —— 照着旧结果发送，
+     * 就会给一笔已经退款的订单推「即将出发」。唯一键只能防重复，防不了这件事。</p>
+     *
+     * <p>{@code FOR UPDATE} 是**当前读**：跳过快照直接读该行最新已提交版本并加排他锁。
+     * 于是"判定成立"与"抢占唯一键 + 写消息"处在同一把锁之下 ——
+     * 任何要把订单改成 {@code CANCELLED}/{@code REFUNDED}、或把团期改成
+     * {@code CANCELLED}/{@code FINISHED} 的事务，都必须等本事务结束，
+     * 复核通过之后不会再出现状态被改走却照样发送的窗口。</p>
+     *
+     * <p>返回 {@code null} 表示复核不通过（订单或团期已不符合出行条件），调用方直接跳过，
+     * 且不会留下任何"已发送"标记 —— 该订单若之后仍符合条件，下一个调度周期还能正常提醒。</p>
+     *
+     * <p><b>加锁顺序</b>：驱动条件是 {@code o.id = ?}，因此先锁 {@code travel_order} 再锁
+     * {@code departure}，与本项目"先改订单再改团期"的退款链路一致。
+     * {@code DepartureService#changeStatus} 是反方向（先锁团期、再级联订单），
+     * 极端并发下 InnoDB 可能判定死锁并回滚本事务：此时本次调度整批不发，下一个调度周期重试，
+     * 唯一键保证不会因此重复发送。</p>
+     */
+    @Select("""
+            SELECT o.id
+            FROM travel_order o
+            JOIN departure d ON d.id = o.departure_id
+            WHERE o.id = #{orderId}
+              AND o.status = 'CONFIRMED'
+              AND d.status NOT IN ('CANCELLED', 'FINISHED')
+              AND d.start_date BETWEEN CURRENT_DATE()
+                                   AND DATE_ADD(CURRENT_DATE(), INTERVAL #{futureDays} DAY)
+            FOR UPDATE
+            """)
+    Long lockEligibleReminderOrder(@Param("orderId") Long orderId, @Param("futureDays") int futureDays);
 }

@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 成员 C：即将出发提醒（C-01）数据库集成测试。
+ * 即将出发提醒（C-01）数据库集成测试。
  *
  * <p>验证：符合出行条件（已确认报名）的订单进入提醒窗口后收到一条站内消息；取消、未支付的订单
  * 不发送；定时任务重复执行不重复发消息（唯一键幂等）。需要数据库：

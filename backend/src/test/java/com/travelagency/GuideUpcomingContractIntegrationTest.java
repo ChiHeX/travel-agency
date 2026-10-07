@@ -37,7 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 成员 C：导游"即将出发"筛选一致性（C-03）与日期时区口径（C-05）契约回归测试。
+ * 导游"即将出发"筛选一致性（C-03）与日期时区口径（C-05）契约回归测试。
  *
  * <p>验证工作台 {@code upcoming} 与列表 {@code scope=UPCOMING} 采用同一定义：
  * 排除行程中、已完成、已取消，且出发日期不早于当天（当天算"未出发"，仍属于即将出发）。

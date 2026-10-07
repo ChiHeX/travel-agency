@@ -126,6 +126,7 @@ ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
 ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
 ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID
 ALIPAY_CALLBACK_SECRET
+DEPARTURE_REMINDER_ENABLED / DEPARTURE_REMINDER_DAYS / DEPARTURE_REMINDER_CRON
 ```
 
 JWT 签名密钥是后端启动必填项，本地可放在上述 Git 忽略的配置文件中，部署环境应通过 `JWT_SECRET` 注入。密钥必须至少有 32 个 UTF-8 字节；缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥。
@@ -200,3 +201,15 @@ npm run build
 ```
 
 项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。
+
+其它交付文档：部署（含 HTTPS）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，数据库设计见 [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)，数据来源与许可见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)，资源与导游模块说明见 [docs/MODULE_RESOURCES.md](docs/MODULE_RESOURCES.md)。
+
+## 站内消息与提醒
+
+PRD §29 的站内消息覆盖：支付成功、报名确认、退款审核结果、**即将出发提醒**、**团期状态变化**。
+
+- 即将出发提醒由定时任务 `DepartureReminderService` 发送：默认提前 `DEPARTURE_REMINDER_DAYS=3` 天，
+  每天 `DEPARTURE_REMINDER_CRON`（默认 `0 0 9 * * *`）执行；只提醒符合出行条件的订单（已确认报名、团期未取消未完成），
+  通过 `departure_reminder` 唯一键保证重复执行不重复发送。可用 `DEPARTURE_REMINDER_ENABLED=false` 关闭。
+- 团期状态变化（后台改状态、导游开始/结束行程）会向该团期下有效订单的用户投递站内消息，与状态写入同一事务。
+- 存量库升级前请先执行 `sql/migrations/011-add-departure-reminder.sql`（详见 [迁移说明](sql/migrations/README.md)）。

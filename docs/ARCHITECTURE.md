@@ -94,3 +94,22 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
   对订单和支付记录加行锁，以订单号保证幂等，复用 `OrderService.markPaid` 事务入账逻辑。
   支付渠道为 `LOCAL_SIMULATION`，交易号带 `LOCAL-` 前缀。支付宝发起支付、入账及取消订单也锁定订单行，
   防止模拟入账与取消/支付请求互相覆盖。模拟订单申请和审核退款均被拒绝，不调用支付宝退款网关。
+
+## 站内消息与提醒
+
+站内消息统一落在 `sys_message`，由 `MessageController` 提供列表 / 未读数 / 已读接口。消息类型包括支付成功、
+报名确认、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）与即将出发提醒（`DEPARTURE_REMINDER`）。
+
+- **团期状态变化**：后台 `DepartureService#changeStatus` 与导游 `start` / `complete` 在状态**确实变化**后，
+  用一条 `INSERT ... SELECT DISTINCT` 向该团期下有效订单（排除未支付 / 已取消 / 已退款）的用户投递消息；
+  消息与状态写入同一事务，回滚时一并回滚，同一变更不重复通知。
+- **即将出发提醒**：`DepartureReminderService` 由 `@Scheduled` 定时触发，在出发前配置天数内为符合出行条件的订单
+  各发一条消息；以 `departure_reminder(order_id, remind_type)` 唯一键保证任务重复执行、多实例并发都不重复发送。
+  窗口的「今天」与团期日期判断一律以库内日期（`CURRENT_DATE()`）为准，与"可报名/即将出发"口径一致。
+
+## 日期口径
+
+"今天"统一取自数据库（`TravelOrderMapper#databaseToday` / `DepartureMapper#databaseToday`，底层 `CURDATE()`），
+或在 SQL 里直接用 `CURRENT_DATE()`。JVM 与 MySQL 会话时区不一致时（CI/容器常见 UTC），`LocalDate.now()`
+会与库内日期错开一天，导致"可报名团期""即将出发"等判断在同一天内不一致，因此公开团期、首页近期团期、
+景点关联团期、导游筛选与工作台统计都不再使用 `LocalDate.now()`。

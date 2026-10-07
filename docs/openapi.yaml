@@ -1531,6 +1531,35 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
+  /admin/orders/{orderNo}/review-exception:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Admin Orders]
+      operationId: flagOrderReviewException
+      summary: 标记报名审核异常并通知下单用户
+      description: >-
+        对应 PRD §13「如出现异常，则由工作人员联系用户处理」与 §29 的「订单审核异常」通知场景。
+        只向该订单的下单用户投递一条 `ORDER_REVIEW_EXCEPTION` 站内消息，
+        **不改变订单状态**（订单仍停在 `PAID_WAIT_CONFIRM`，预留名额保持不变）——
+        订单状态机里没有"审核不通过"这一档，工作人员线下联系用户补齐资料后再决定确认报名还是取消/退款。
+        仅 `PAID_WAIT_CONFIRM` 的订单可用，其余状态返回 409 `ORDER_STATE_CONFLICT`。
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderReviewExceptionRequest' }
+      responses:
+        '200':
+          description: 被标记的订单（状态未变化）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
   /admin/refunds:
     get:
       tags: [Admin Orders]
@@ -2157,8 +2186,9 @@ paths:
         - name: scope
           in: query
           description: >-
-            筛选本人在各阶段的团期。UPCOMING=尚未出发（排除行程中、已完成、已取消，
-            且出发日期不早于当天，与工作台 upcoming 一致）；CURRENT=行程中；HISTORY=已完成。
+            筛选本人在各阶段的团期。UPCOMING=尚未出发（排除草稿、行程中、已完成、已取消，
+            且出发日期不早于当天，与工作台 upcoming 一致；其结果恰好等于可以「开始行程」的团期）；
+            CURRENT=行程中；HISTORY=已完成。
           schema: { type: string, enum: [UPCOMING, CURRENT, HISTORY] }
       responses:
         '200':
@@ -4030,6 +4060,19 @@ components:
       required: [comment]
       properties:
         comment: { type: string, minLength: 1, maxLength: 500, example: 已核验订单和退款条件。 }
+    OrderReviewExceptionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      description: >-
+        工作人员上报「报名审核异常」时填写的说明（PRD §13 / §29）。
+        内容会原样进入投递给下单用户的站内消息，因此不能为空。
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: 出行人证件信息与订单不符，请补充并重新提交。 
     Refund:
       type: object
       additionalProperties: false

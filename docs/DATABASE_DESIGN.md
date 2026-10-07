@@ -198,25 +198,40 @@ erDiagram
 
 该列由业务链路维护：工作人员确认报名时 `+1`，退款完成时 `-1`。
 但 `test-data.sql` 为演示效果直接预置了较大的数值（如 `106`），因此它与库中真实的
-`CONFIRMED / TRAVELLING / COMPLETED` 订单数之间存在一个**固定的偏差**。
+「有效报名」订单数之间存在一个**固定的偏差**。
 
 ⚠️ **这个偏差不会自动修正。** 后续的 `+1 / -1` 只是在这个预置基数上做增减：
 确认一单让它变成 107，退款一单让它变回 106，永远围绕预置基数浮动，而不是向真实订单数收敛。
-要让它重新等于真实订单数，只能显式重算：
+
+⚠️ **重算时口径必须与业务一致，否则会重复扣减。** 退款申请提交后、退款完成之前，
+名额与线路计数都还没有回退（退款完成才 `-1`），这些订单**仍属有效报名**。
+如果重算只统计 `CONFIRMED / TRAVELLING / COMPLETED`，就会把「已确认但正在退款」的订单提前排除，
+等退款真正完成时再减一次 —— 计数被扣两遍。
+
+因此重算条件必须与 `TravelRouteMapper#popularDestinations()`（「有效报名」的权威口径）完全一致：
 
 ```sql
 UPDATE travel_route r
 SET valid_booking_count = (
-    SELECT COUNT(*) FROM travel_order o
-    WHERE o.route_id = r.id AND o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED'));
+    SELECT COUNT(*)
+    FROM travel_order o
+    WHERE o.route_id = r.id
+      AND (o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED')
+           -- 退款处理中：名额与计数都还没回退，仍计入有效报名。
+           -- 必须用退款单上的 original_order_status 区分：PAID_WAIT_CONFIRM 的订单
+           -- 也能申请退款，但它从未 +1 过，不能算进来。
+           OR EXISTS (SELECT 1 FROM refund f
+                      WHERE f.order_id = o.id
+                        AND f.status IN ('APPLYING', 'PROCESSING')
+                        AND f.original_order_status IN ('CONFIRMED', 'TRAVELLING'))));
 ```
 
 演示时需知晓由此带来的口径差异：
 
 | 看板指标 | 数据来源 | 与真实订单的关系 |
 |---|---|---|
-| 热门线路 | `travel_route.valid_booking_count` | 预置基数 + 增量，可能明显高于真实订单数 |
-| 热门目的地 | 按真实订单的有效报名人数统计 | 与真实订单一致 |
+| 热门线路 | `travel_route.valid_booking_count`（有效报名**订单条数**） | 预置基数 + 增量，可能明显高于真实订单数 |
+| 热门目的地 | 同一「有效报名」集合的**游客人数**（`popularDestinations()`） | 与真实订单一致 |
 
 两者数量级不同属于演示数据的固有特征，不是功能缺陷；演示前可执行上面的重算语句对齐，
 或直接说明「热门线路」展示的是演示基数。真实环境不应预置该列。

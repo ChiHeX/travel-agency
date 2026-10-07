@@ -104,9 +104,10 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
 ### 导游「即将出发」的统一口径
 
 工作台 `GET /api/guide/dashboard` 的 `upcoming` 与列表 `GET /api/guide/departures?scope=UPCOMING` 共用
-`DepartureService.UPCOMING_EXCLUDED_STATUSES` + `isUpcoming()`：排除 `TRAVELLING / FINISHED / CANCELLED`，
+`DepartureService.UPCOMING_EXCLUDED_STATUSES` + `isUpcoming()`：排除 `DRAFT / TRAVELLING / FINISHED / CANCELLED`，
 且 `start_date >= 当天`。日期以库内日期为准（`CURRENT_DATE()` / `DepartureMapper#databaseToday()`），
-两端不会各自跑偏。工作台卡片的说明文案是「尚未出发的团期」，与该口径一致。
+两端不会各自跑偏。排除 `DRAFT` 是为了让"即将出发"与"能开始行程"取到同一个集合（见下表），
+不会给导游列出一个点进去必然 409 的草稿团期。工作台卡片的说明文案是「尚未出发的团期」，与该口径一致。
 
 ### 带团详情页的状态操作
 
@@ -139,7 +140,13 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
 ## 站内消息与提醒
 
 站内消息统一落在 `sys_message`，由 `MessageController` 提供列表 / 未读数 / 已读接口。消息类型包括支付成功、
-报名确认、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）与即将出发提醒（`DEPARTURE_REMINDER`）。
+报名确认、订单审核异常（`ORDER_REVIEW_EXCEPTION`）、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）
+与即将出发提醒（`DEPARTURE_REMINDER`）。
+
+- **订单审核异常**：`POST /admin/orders/{orderNo}/review-exception` 让工作人员把"订单卡在哪里、需要用户配合什么"
+  告诉下单用户。PRD §13 规定审核异常"由工作人员联系用户处理"，订单状态机里也没有"审核不通过"这一档，
+  因此该动作**只写一条通知、不改变订单状态**（仍是 `PAID_WAIT_CONFIRM`，预留名额不动），
+  工作人员线下联系完再走 `confirm` 或取消/退款。仅待确认订单可标记，其余状态返回 409。
 
 - **团期状态变化**：后台 `DepartureService#changeStatus` 与导游 `start` / `complete` 在状态**确实变化**后，
   用一条 `INSERT ... SELECT DISTINCT` 向该团期下有效订单（排除未支付 / 已取消 / 已退款）的用户投递消息；

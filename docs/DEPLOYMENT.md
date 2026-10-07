@@ -62,9 +62,39 @@ deploy/
 
 ## 4. 部署步骤
 
-### 4.1 准备证书
+> **顺序很重要：先配置环境变量，再启动任何编排。**
+> 数据库账号与口令只在**数据卷首次初始化**时生效。如果先不带变量启动一次，
+> 要么因为缺 `JWT_SECRET` 直接启动失败，要么数据库已经用仓库里的演示口令建好了
+> —— 之后随机生成的新口令连不上这个已有库，只能进库改口令再回来改环境变量。
 
-**方式一：已有证书。**
+### 4.1 设置环境变量
+
+```bash
+export PUBLIC_ORIGIN="https://travel.example.com"          # 对外域名（必填）
+export JWT_SECRET="$(openssl rand -base64 48)"             # ≥32 字节；切勿提交
+export MYSQL_ROOT_PASSWORD="$(openssl rand -base64 24)"    # 数据库 root 口令（必填）
+export DB_PASSWORD="$(openssl rand -base64 24)"            # 数据库应用账号 travel 的口令（必填）
+# 仅在启用真实支付宝沙箱时设置，且值不要写进仓库：
+# export ALIPAY_ENABLED=true
+# export ALIPAY_APP_ID=...
+# export ALIPAY_APP_PRIVATE_KEY=...
+# export ALIPAY_PUBLIC_KEY=...
+# export ALIPAY_NOTIFY_URL="https://travel.example.com/api/payments/alipay/notify"
+```
+
+- `PUBLIC_ORIGIN` 会作为 `CORS_ALLOWED_ORIGINS` 注入后端；`ALIPAY_NOTIFY_URL` 必须与 `PUBLIC_ORIGIN` 同域。
+- `DB_PASSWORD` 同时用于 `mysql`（`MYSQL_PASSWORD`，即 `travel` 账号）与 `backend`（`DB_PASSWORD`），两者必须一致。
+- HTTPS 叠加配置对 `JWT_SECRET` / `MYSQL_ROOT_PASSWORD` / `DB_PASSWORD` / `PUBLIC_ORIGIN` 是**必填**，
+  缺失会直接报错退出而不是退回演示口令；纯 HTTP 编排里 `JWT_SECRET` 同样是必填。
+- **已有数据卷不会被改口令**：`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` 只在数据卷首次初始化时生效。
+  对已经跑过的库，请把 `DB_PASSWORD` 设为**库内 `travel` 账号当前的密码**，
+  否则 `backend` 会连不上；确实要换口令时先在库内改（`ALTER USER 'travel'@'%' IDENTIFIED BY '...'`）再改环境变量。
+- 这些变量只对**当前 shell 会话**有效。用 `systemd`/面板部署时，请把它们写进服务的环境文件，
+  并确认服务重启后仍然存在 —— 否则下次 `up` 会因为缺变量直接失败（这是刻意的 fail-closed）。
+
+### 4.2 准备证书
+
+**方式一：已有证书。** 先创建目录再复制（`deploy/certs` 不在仓库里，不建目录会复制失败）：
 
 ```bash
 mkdir -p deploy/certs
@@ -72,19 +102,21 @@ cp /path/to/fullchain.pem deploy/certs/
 cp /path/to/privkey.pem   deploy/certs/
 ```
 
-**方式二：用 Let's Encrypt（certbot）签发。** 推荐 `--webroot`，因为 80 端口由 `frontend` 容器占用，
+**方式二：用 Let's Encrypt（certbot）签发。** 推荐 `--webroot`：80 端口由 `frontend` 容器占用，
 webroot 不需要停服。`nginx.conf` 已经配置了 `/.well-known/acme-challenge/`，
 compose 也把宿主机的 `deploy/certbot-webroot` 挂到了容器内的 `/var/www/certbot`：
 
 ```bash
-# 1) 先把纯 HTTP 编排跑起来（80 端口与 ACME 目录就绪；首次启动同时初始化数据库）
+# 1) 用纯 HTTP 编排把 80 端口与 ACME 目录跑起来
+#    此时 §4.1 的环境变量必须已经配置好：数据库会在这一步用你设定的口令初始化
 mkdir -p deploy/certbot-webroot
 docker compose -f deploy/docker-compose.yml up -d
 
 # 2) 在宿主机签发（certbot 写 deploy/certbot-webroot，由容器原样提供）
 sudo certbot certonly --webroot -w "$PWD/deploy/certbot-webroot" -d travel.example.com
 
-# 3) 把签发结果【复制】到 deploy/certs/ —— 不要用软链接，原因见下
+# 3) 先建目录，再把签发结果【复制】进去 —— 不要用软链接，原因见下
+mkdir -p deploy/certs
 sudo install -m 644 /etc/letsencrypt/live/travel.example.com/fullchain.pem deploy/certs/fullchain.pem
 sudo install -m 600 /etc/letsencrypt/live/travel.example.com/privkey.pem   deploy/certs/privkey.pem
 ```
@@ -95,7 +127,7 @@ sudo install -m 600 /etc/letsencrypt/live/travel.example.com/privkey.pem   deplo
 docker compose -f deploy/docker-compose.yml stop frontend
 sudo certbot certonly --standalone -d travel.example.com
 docker compose -f deploy/docker-compose.yml start frontend
-# 之后同样把 fullchain.pem / privkey.pem 复制到 deploy/certs/
+# 之后同样先 mkdir -p deploy/certs，再复制 fullchain.pem / privkey.pem 进去
 ```
 
 > ⚠️ **必须复制，不能软链接。** 容器只挂载了 `deploy/certs`，
@@ -113,27 +145,6 @@ sudo certbot renew --webroot -w "$PWD/deploy/certbot-webroot" \
 ```
 
 证书与私钥属于敏感信息，**不得提交到仓库**（`.gitignore` 已忽略 `deploy/certs/` 与 `deploy/certbot-webroot/`）。
-
-### 4.2 设置环境变量
-
-```bash
-export PUBLIC_ORIGIN="https://travel.example.com"          # 对外域名（必填）
-export JWT_SECRET="$(openssl rand -base64 48)"             # ≥32 字节；切勿提交
-export MYSQL_ROOT_PASSWORD="$(openssl rand -base64 24)"    # 数据库 root 口令（必填）
-export DB_PASSWORD="$(openssl rand -base64 24)"            # 数据库应用账号 travel 的口令（必填）
-# 仅在启用真实支付宝沙箱时设置，且值不要写进仓库：
-# export ALIPAY_ENABLED=true
-# export ALIPAY_APP_ID=...
-# export ALIPAY_APP_PRIVATE_KEY=...
-# export ALIPAY_PUBLIC_KEY=...
-# export ALIPAY_NOTIFY_URL="https://travel.example.com/api/payments/alipay/notify"
-```
-
-- `PUBLIC_ORIGIN` 会作为 `CORS_ALLOWED_ORIGINS` 注入后端；`ALIPAY_NOTIFY_URL` 必须与 `PUBLIC_ORIGIN` 同域。
-- `DB_PASSWORD` 同时用于 `mysql`（`MYSQL_PASSWORD`，即 `travel` 账号）与 `backend`（`DB_PASSWORD`），两者必须一致。
-- **已有数据卷不会被改口令**：`MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` 只在数据卷首次初始化时生效。
-  对已经跑过的库，请把 `DB_PASSWORD` 设为**库内 `travel` 账号当前的密码**，
-  否则 `backend` 会连不上；确实要换口令时先在库内改（`ALTER USER 'travel'@'%' IDENTIFIED BY '...'`）再改环境变量。
 
 ### 4.3 启动
 

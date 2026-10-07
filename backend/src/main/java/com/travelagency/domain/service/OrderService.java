@@ -663,11 +663,35 @@ public class OrderService {
         return loadOrderView(order);
     }
 
+    /**
+     * 标记「报名审核异常」并通知下单用户（PRD §29 的通知场景之一），对齐契约
+     * {@code POST /admin/orders/{orderNo}/review-exception}。
+     *
+     * <p><b>刻意不改变订单状态。</b> PRD §13 对审核异常的规定是"如出现异常，则由工作人员联系用户处理"，
+     * 订单状态机里也没有"审核不通过"这一档 —— 凭空造一个终态会把"线下联系后补齐资料再确认"
+     * 这条正常路径堵死（还要额外决定名额是否释放）。因此本动作只做一件事：
+     * 把"订单卡在哪里、需要用户配合什么"落成站内消息，工作人员处理完再走 confirm 或退款/取消。
+     * 订单仍停在 {@code PAID_WAIT_CONFIRM}，预留名额保持不变。</p>
+     *
+     * <p>只有处于审核阶段（{@code PAID_WAIT_CONFIRM}）的订单可以标记：已确认/已完成/已取消的订单
+     * 没有"审核异常"可言，对它们发这条消息只会让用户困惑，所以在这里返回 409。</p>
+     */
+    @Transactional
+    public OrderView flagReviewException(String orderNo, String reason) {
+        TravelOrder order = findByNo(orderNo);
+        if (!OrderStatus.PAID_WAIT_CONFIRM.equals(order.status)) {
+            throw new BusinessException(409, "ORDER_STATE_CONFLICT", "只有待确认订单可以标记审核异常");
+        }
+        notify(order.userId, "报名审核需要处理",
+                "订单 " + order.orderNo + " 的报名审核需要处理：" + reason + "。工作人员会与您联系。",
+                "ORDER_REVIEW_EXCEPTION");
+        return loadOrderView(order);
+    }
+
     @Transactional
     public RefundView applyRefund(String orderNo, Long userId, RefundRequest request) {
         return applyRefund(orderNo, userId, request, null);
     }
-
     /**
      * 申请退款，支持契约要求的 Idempotency-Key 请求头。
      *

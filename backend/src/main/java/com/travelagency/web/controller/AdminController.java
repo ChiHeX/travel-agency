@@ -22,6 +22,7 @@ import com.travelagency.domain.dto.GuideView;
 import com.travelagency.domain.dto.GuideUpdateRequest;
 import com.travelagency.domain.dto.OperationLogView;
 import com.travelagency.domain.dto.OrderDetailResponse;
+import com.travelagency.domain.dto.OrderReviewExceptionRequest;
 import com.travelagency.domain.dto.OrderSummaryView;
 import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.dto.RefundDecisionRequest;
@@ -313,6 +314,23 @@ public class AdminController {
     public ApiResponse<OrderView> confirmOrder(@PathVariable String orderNo) {
         OrderView order = orderService.confirm(orderNo, CurrentUser.required().userId());
         log("订单", "CONFIRM", "ORDER", orderNo, "SUCCESS", "确认报名");
+        return ApiResponse.ok(order);
+    }
+
+    /**
+     * 标记「报名审核异常」并通知下单用户，对齐契约
+     * {@code POST /admin/orders/{orderNo}/review-exception}（PRD §29）。
+     *
+     * <p>对应 PRD §13「如出现异常，则由工作人员联系用户处理」：这里只发通知，
+     * <b>不改订单状态</b>（订单仍停在待确认，名额保持预留），工作人员线下联系完再决定
+     * 是确认报名还是取消/退款。因此响应返回的是"未变化的订单"，便于前端直接刷新详情。</p>
+     */
+    @PostMapping("/orders/{orderNo}/review-exception")
+    public ApiResponse<OrderView> flagOrderReviewException(
+            @PathVariable String orderNo,
+            @Valid @RequestBody OrderReviewExceptionRequest request) {
+        OrderView order = orderService.flagReviewException(orderNo, request.reason());
+        log("订单", "REVIEW_EXCEPTION", "ORDER", orderNo, "SUCCESS", "审核异常通知：" + request.reason());
         return ApiResponse.ok(order);
     }
 

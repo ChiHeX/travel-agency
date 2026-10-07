@@ -7,6 +7,7 @@ import com.travelagency.common.alipay.AlipayGatewayClient;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Review;
@@ -15,6 +16,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.ReviewMapper;
@@ -150,6 +152,7 @@ class TradingFlowContractIntegrationTest {
     @Autowired PaymentMapper payments;
     @Autowired RefundMapper refunds;
     @Autowired ReviewMapper reviews;
+    @Autowired MessageMapper messages;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
 
@@ -505,6 +508,78 @@ class TradingFlowContractIntegrationTest {
                 .andExpect(jsonPath("$.code").value("ORDER_STATE_CONFLICT"));
         assertEquals(1, routes.selectById(routeId).validBookingCount.intValue(),
                 "只有成功确认的那一单计入有效报名数，失败的确认不得回填");
+    }
+
+    @Test
+    @DisplayName("审核异常通知：只给下单用户发消息，订单仍停在待确认且名额不动")
+    void reviewExceptionNotifiesBuyerWithoutChangingOrderState() throws Exception {
+        String orderNo = book(orderBody(1, 0), newKey(), 201);
+        settlePayment(orderNo);
+        int reservedBefore = reserved();
+        int confirmedBefore = confirmed();
+        int validBookingBefore = routes.selectById(routeId).validBookingCount;
+
+        // 普通用户拿不到后台权限
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/review-exception")
+                        .header("Authorization", buyerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"出行人证件信息与订单不符，请补充\"}"))
+                .andExpect(status().isForbidden());
+
+        // 成功路径：待确认订单可以标记审核异常，响应仍是 OrderEnvelope 且状态未变
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/review-exception")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"出行人证件信息与订单不符，请补充\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PAID_WAIT_CONFIRM"));
+
+        TravelOrder afterFlag = orderOf(orderNo);
+        assertEquals("PAID_WAIT_CONFIRM", afterFlag.status, "审核异常不是状态迁移，订单必须停在待确认");
+        assertEquals(reservedBefore, reserved(), "预留名额不得变化");
+        assertEquals(confirmedBefore, confirmed(), "确认名额不得变化");
+        assertEquals(validBookingBefore, routes.selectById(routeId).validBookingCount,
+                "有效报名数不得变化（审核异常不计入也不回退）");
+
+        assertEquals(1, messages.selectCount(new QueryWrapper<Message>()
+                .eq("user_id", afterFlag.userId).eq("type", "ORDER_REVIEW_EXCEPTION")).intValue(),
+                "下单用户应收到一条审核异常通知");
+        Message message = messages.selectOne(new QueryWrapper<Message>()
+                .eq("user_id", afterFlag.userId).eq("type", "ORDER_REVIEW_EXCEPTION"));
+        assertTrue(message.content.contains("出行人证件信息与订单不符，请补充"),
+                "工作人员填写的说明必须带给用户，实际：" + message.content);
+
+        // 缺 reason 或空 reason 一律 422，不能发出一条没有原因的消息
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/review-exception")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnprocessableEntity());
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/review-exception")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"  \"}"))
+                .andExpect(status().isUnprocessableEntity());
+        assertEquals(1, messages.selectCount(new QueryWrapper<Message>()
+                .eq("user_id", afterFlag.userId).eq("type", "ORDER_REVIEW_EXCEPTION")).intValue(),
+                "被校验拒绝的请求不得留下消息");
+
+        // 已确认的订单没有"审核异常"可言
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/confirm").header("Authorization", adminToken))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/admin/orders/" + orderNo + "/review-exception")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"事后才想标记\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ORDER_STATE_CONFLICT"));
+
+        // 不存在的订单号
+        mvc.perform(post("/api/admin/orders/TA-NOT-EXIST/review-exception")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"任意说明\"}"))
+                .andExpect(status().isNotFound());
     }
 
     // ------------------------------------------------------------------

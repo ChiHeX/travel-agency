@@ -198,4 +198,56 @@ class OrderServiceConfirmTest {
         assertEquals(OrderStatus.PAID_WAIT_CONFIRM, o.status);
         verify(orderMapper, never()).updateById(any(TravelOrder.class));
     }
+
+    // ------------------------------------------------------------------
+    // 报名审核异常通知（PRD §13 / §29）
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("审核异常：只发通知，不动订单状态、不动名额，返回契约 OrderEnvelope")
+    void flagReviewExceptionNotifiesWithoutChangingState() {
+        TravelOrder o = order(59L, OrderStatus.PAID_WAIT_CONFIRM);
+        when(orderMapper.selectOne(any())).thenReturn(o);
+        when(departureMapper.selectById(7L)).thenReturn(departure(DepartureStatus.OPEN));
+        when(routeMapper.selectById(100L)).thenReturn(route());
+
+        OrderView view = orderService.flagReviewException(o.orderNo, "出行人证件信息与订单不符，请补充");
+
+        assertEquals(OrderStatus.PAID_WAIT_CONFIRM, view.status(), "审核异常不是状态迁移，订单必须停在待确认");
+        assertEquals(o.orderNo, view.orderNo());
+
+        org.mockito.ArgumentCaptor<Message> captor =
+                org.mockito.ArgumentCaptor.forClass(Message.class);
+        verify(messageMapper).insert(captor.capture());
+        Message message = captor.getValue();
+        assertEquals(o.userId, message.userId, "消息必须投递给下单用户");
+        assertEquals("ORDER_REVIEW_EXCEPTION", message.type);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                message.content.contains("出行人证件信息与订单不符，请补充"),
+                "工作人员填写的说明必须原样带给用户，实际：" + message.content);
+        assertEquals(0, message.readFlag, "新消息未读");
+
+        // 名额与线路计数都不受影响：既不释放预留，也不计入有效报名。
+        verify(departureMapper, never()).update(any(), any());
+        verify(routeMapper, never()).update(any(), any());
+        verify(orderMapper, never()).updateById(any(TravelOrder.class));
+    }
+
+    @Test
+    @DisplayName("审核异常：已确认/已取消等非待确认订单返回 409，且不发消息")
+    void flagReviewExceptionRejectsOrdersOutsideReview() {
+        for (String status : new String[]{OrderStatus.CONFIRMED, OrderStatus.CANCELLED,
+                OrderStatus.WAIT_PAY, OrderStatus.COMPLETED}) {
+            TravelOrder o = order(60L, status);
+            when(orderMapper.selectOne(any())).thenReturn(o);
+
+            BusinessException ex = assertThrows(BusinessException.class,
+                    () -> orderService.flagReviewException(o.orderNo, "资料不全"),
+                    status + " 不应允许标记审核异常");
+
+            assertEquals(409, ex.getStatus());
+            assertEquals("ORDER_STATE_CONFLICT", ex.getCode());
+        }
+        verify(messageMapper, never()).insert(any(Message.class));
+    }
 }

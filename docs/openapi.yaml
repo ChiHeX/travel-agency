@@ -1520,7 +1520,13 @@ paths:
       tags: [Admin Orders]
       operationId: confirmOrder
       summary: 确认已支付订单报名
-      description: 再次检查团期状态、容量和实名信息后执行状态变化。
+      description: >-
+        复核团期状态与容量、订单支付状态、出行人快照数量与实名字段完整性后推进状态，
+        并迁移名额、回填线路有效报名数、给用户发一条「报名已确认」通知。
+        复核不通过返回 409 ORDER_AUDIT_ANOMALY：订单留在 PAID_WAIT_CONFIRM，
+        不占用名额、不写统计，同时留下一条审计记录并向用户发送一条「报名审核异常」站内通知
+        （同一订单 + 同一异常原因只发一条，正文不含姓名与证件号）。
+        同一订单并发确认只有一次生效，其余请求返回 409 ORDER_STATE_CONFLICT。
       x-roles: [STAFF, ADMIN]
       responses:
         '200':
@@ -1528,7 +1534,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrderEnvelope' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            订单不处于待确认状态或已被其他工作人员确认（ORDER_STATE_CONFLICT）、
+            团期不可用（ORDER_STATE_CONFLICT）、名额不足（DEPARTURE_CAPACITY_INSUFFICIENT）、
+            报名审核异常（ORDER_AUDIT_ANOMALY，具体原因见 message）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/refunds:

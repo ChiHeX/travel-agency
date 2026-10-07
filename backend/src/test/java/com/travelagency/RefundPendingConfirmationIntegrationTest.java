@@ -25,7 +25,9 @@ import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.entity.Message;
+import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.OrderTraveler;
+import com.travelagency.domain.mapper.OperationLogMapper;
 import com.travelagency.domain.service.OrderService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -112,6 +114,7 @@ class RefundPendingConfirmationIntegrationTest {
     @Autowired PaymentMapper payments;
     @Autowired RefundMapper refunds;
     @Autowired MessageMapper messages;
+    @Autowired OperationLogMapper operationLogs;
 
     private Long routeId;
     private Long departureId;
@@ -221,7 +224,12 @@ class RefundPendingConfirmationIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // 按外键依赖倒序清理：订单子表 → 订单 → 站内信 → 团期 → 线路 → 导游 → 用户
+        // 按外键依赖倒序清理：操作日志 → 订单子表 → 订单 → 站内信 → 团期 → 线路 → 导游 → 用户。
+        // operation_log.operator_id 有指向 sys_user 的外键，而本类的审核动作会在业务事务内写留痕，
+        // 不先删日志就删不掉审核人账号。
+        if (userId != null) {
+            operationLogs.delete(new QueryWrapper<OperationLog>().eq("operator_id", userId));
+        }
         if (orderId != null) {
             orderTravelers.delete(new QueryWrapper<OrderTraveler>().eq("order_id", orderId));
             payments.delete(new QueryWrapper<Payment>().eq("order_id", orderId));
@@ -268,6 +276,9 @@ class RefundPendingConfirmationIntegrationTest {
         assertEquals(RefundStatus.PROCESSING, persisted.status);
         assertEquals(userId, persisted.reviewedBy, "审核留痕必须一起提交");
         assertNotNull(persisted.reviewedAt);
+        // 审计留痕同样必须"随事务提交"：它写在抛异常之前，靠的是同一个 noRollbackFor。
+        // 若这里读到 0 条，说明留痕被回滚了，事后将无法追溯"谁发起过这次出款"。
+        assertEquals(1, auditCount("APPROVE_UNCONFIRMED"), "「结果待确认」的审计留痕必须落库");
 
         // 未确认时「不可回退的对外事实」一处都不能发生：订单、支付单、名额全都不动。
         assertEquals(OrderStatus.CONFIRMED, orders.selectById(orderId).status);
@@ -300,6 +311,8 @@ class RefundPendingConfirmationIntegrationTest {
         assertEquals(PaymentStatus.REFUNDED, orders.selectById(orderId).paymentStatus);
         assertEquals(PaymentStatus.REFUNDED, paymentOf(orderId).status);
         assertEquals(0, confirmedPeople());
+        // 收敛成功后要再有一条"审核通过"的留痕，与上面那条"待确认"分开，两者都不能少
+        assertEquals(1, auditCount("APPROVE"), "确认成功后的审核留痕必须落库");
 
         // ---------- ⑤ 收敛后的单子再审批必须被拒，名额不会被重复释放 ----------
         BusinessException alreadyDone = assertThrows(BusinessException.class,
@@ -336,6 +349,12 @@ class RefundPendingConfirmationIntegrationTest {
     private int confirmedPeople() {
         Departure departure = departures.selectById(departureId);
         return departure.confirmedPeople == null ? 0 : departure.confirmedPeople;
+    }
+
+    /** 本测试审核人写下的、指定操作类型的审计留痕条数。 */
+    private int auditCount(String operationType) {
+        return operationLogs.selectCount(new QueryWrapper<OperationLog>()
+                .eq("operator_id", userId).eq("operation_type", operationType)).intValue();
     }
 
     private Payment paymentOf(Long id) {

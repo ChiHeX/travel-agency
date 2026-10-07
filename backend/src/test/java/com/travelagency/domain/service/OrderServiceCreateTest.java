@@ -1,6 +1,7 @@
 package com.travelagency.domain.service;
 
 import com.travelagency.common.alipay.AlipayGatewayClient;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
@@ -88,6 +89,8 @@ class OrderServiceCreateTest {
     /** 支付宝沙箱适配器：仅在生成收银台地址时用到，测试中给默认 mock（未配置 → 回退占位地址）。 */
     @Mock
     private AlipayGatewayClient alipayGatewayClient;
+    @Mock
+    private OperationLogRecorder operationLog;
 
     private OrderService orderService;
 
@@ -95,7 +98,7 @@ class OrderServiceCreateTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+                idempotencyRecordMapper, travelerMapper, alipayGatewayClient, operationLog);
         // 下单前会先和「库内当天日期」比较（已出发的团期不能报名），这里固定成真实当天；
         // 本类用到的团期都在未来（2027-03），因此不会触发该守卫。
         when(orderMapper.databaseToday()).thenReturn(LocalDate.now());

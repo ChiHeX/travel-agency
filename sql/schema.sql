@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS sys_message (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_message_user_read (user_id, read_flag),
+    KEY idx_message_user_type_title (user_id, type, title),
     CONSTRAINT fk_message_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

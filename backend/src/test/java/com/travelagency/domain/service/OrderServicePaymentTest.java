@@ -1,6 +1,7 @@
 package com.travelagency.domain.service;
 
 import com.travelagency.common.alipay.AlipayGatewayClient;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.exception.BusinessException;
@@ -93,6 +94,8 @@ class OrderServicePaymentTest {
     /** 支付宝沙箱适配器：仅在生成收银台地址时用到，测试中给默认 mock（未配置 → 回退占位地址）。 */
     @Mock
     private AlipayGatewayClient alipayGatewayClient;
+    @Mock
+    private OperationLogRecorder operationLog;
 
     private OrderService orderService;
 
@@ -100,7 +103,7 @@ class OrderServicePaymentTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+                idempotencyRecordMapper, travelerMapper, alipayGatewayClient, operationLog);
     }
 
     private static TravelOrder order(long id, String status, String paymentStatus) {

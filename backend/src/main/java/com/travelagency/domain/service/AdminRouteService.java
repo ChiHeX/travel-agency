@@ -474,7 +474,7 @@ public class AdminRouteService {
             return Map.of();
         }
         List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
-                .in("route_id", routeIds).eq("status", "OPEN").ge("start_date", LocalDate.now())
+                .in("route_id", routeIds).eq("status", "OPEN").apply("start_date >= CURRENT_DATE()")
                 .orderByAsc("start_date"));
         Map<Long, Departure> result = new LinkedHashMap<>();
         departures.forEach(departure -> result.putIfAbsent(departure.routeId, departure));

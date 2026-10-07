@@ -4,12 +4,20 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.entity.Departure;
+import com.travelagency.domain.entity.DepartureReminder;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.Message;
+import com.travelagency.domain.entity.OperationLog;
+import com.travelagency.domain.entity.OrderTraveler;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
+import com.travelagency.domain.mapper.DepartureReminderMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.MessageMapper;
+import com.travelagency.domain.mapper.OperationLogMapper;
+import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
@@ -67,6 +75,10 @@ class DepartureStateConcurrencyIntegrationTest {
     @Autowired GuideMapper guides;
     @Autowired SysUserMapper users;
     @Autowired TravelOrderMapper orders;
+    @Autowired MessageMapper messages;
+    @Autowired DepartureReminderMapper reminders;
+    @Autowired OrderTravelerMapper orderTravelers;
+    @Autowired OperationLogMapper operationLogs;
 
     private Long routeId;
     private Long guideId;
@@ -110,19 +122,61 @@ class DepartureStateConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // 按外键依赖倒序清理：订单 → 团期 → 线路 → 导游 → 用户。
-        if (departureId != null) {
-            orders.delete(new QueryWrapper<TravelOrder>().eq("departure_id", departureId));
-            departures.deleteById(departureId);
+        cleanUp();
+    }
+
+    /**
+     * 按外键依赖倒序清理夹具，且**按标记删除而不是只按内存里的 id**。
+     *
+     * <p>为什么必须按标记：测试进程被中断（超时、Ctrl-C、CI 取消）时 {@code @AfterEach} 根本不会执行，
+     * 上一次留下的行只能靠下一次运行顺手收掉。只按 id 删除的清理做不到这点 ——
+     * 残留账号会一直躺在库里，让后台工作台的 {@code userCount} 之类的统计悄悄漂移
+     * （已实际观察到过 {@code dep_race_*} 残留）。</p>
+     *
+     * <p><b>两个坑必须避开</b>：</p>
+     * <ol>
+     *   <li>MySQL 不允许 {@code DELETE FROM t ... WHERE ... IN (SELECT ... FROM t ...)}（错误 1093），
+     *       所以 {@code sys_user} 与 {@code travel_order} 这两张表只用自己的列做条件，
+     *       不要写自引用子查询；跨表子查询（如 {@code departure ← travel_route}）是允许的。</li>
+     *   <li>清理失败必须<b>报出来</b>。把异常吞掉会让"清理其实一条都没删"看起来像成功
+     *       —— 这正是最初那几个残留账号的来源。因此这里逐个步骤尝试，最后把第一个失败重新抛出。</li>
+     * </ol>
+     */
+    private void cleanUp() {
+        String raceUsers = "SELECT id FROM sys_user WHERE username LIKE 'dep\\_race\\_%'";
+        String raceRoutes = "SELECT id FROM travel_route WHERE name = '并发回归线路'";
+        List<Runnable> steps = List.of(
+                () -> messages.delete(new QueryWrapper<Message>().inSql("user_id", raceUsers)),
+                () -> reminders.delete(new QueryWrapper<DepartureReminder>()
+                        .apply("order_id IN (SELECT id FROM travel_order WHERE order_no LIKE 'RACE-%')")),
+                () -> orderTravelers.delete(new QueryWrapper<OrderTraveler>()
+                        .apply("order_id IN (SELECT id FROM travel_order WHERE order_no LIKE 'RACE-%')")),
+                // 自引用子查询会被 MySQL 拒绝（1093），这两张表直接用自身列做条件。
+                () -> orders.delete(new QueryWrapper<TravelOrder>().apply("order_no LIKE 'RACE-%'")),
+                () -> departures.delete(new QueryWrapper<Departure>().inSql("route_id", raceRoutes)),
+                () -> routes.delete(new QueryWrapper<TravelRoute>().eq("name", "并发回归线路")),
+                () -> guides.delete(new QueryWrapper<Guide>().inSql("user_id", raceUsers)),
+                // 万一以后有用例走到会写操作日志的路径（如 changeStatus），这里也要先清掉，
+                // 否则 fk_operation_log_operator 会挡住下面的用户删除。
+                () -> operationLogs.delete(new QueryWrapper<OperationLog>().inSql("operator_id", raceUsers)),
+                () -> users.delete(new QueryWrapper<SysUser>().apply("username LIKE 'dep\\_race\\_%'")));
+        runAllButReportFailures(steps);
+    }
+
+    /** 逐个执行清理步骤；有失败则全部尝试完后把第一个抛出来，不让清理问题被静默吞掉。 */
+    private static void runAllButReportFailures(List<Runnable> steps) {
+        List<RuntimeException> failures = new ArrayList<>();
+        for (Runnable step : steps) {
+            try {
+                step.run();
+            } catch (RuntimeException failure) {
+                failures.add(failure);
+            }
         }
-        if (routeId != null) {
-            routes.deleteById(routeId);
-        }
-        if (guideId != null) {
-            guides.deleteById(guideId);
-        }
-        if (userId != null) {
-            users.deleteById(userId);
+        if (!failures.isEmpty()) {
+            RuntimeException first = failures.get(0);
+            failures.stream().skip(1).forEach(first::addSuppressed);
+            throw first;
         }
     }
 
@@ -242,8 +296,9 @@ class DepartureStateConcurrencyIntegrationTest {
     private Long departure(String status) {
         Departure departure = new Departure();
         departure.routeId = routeId;
-        departure.startDate = LocalDate.now().plusDays(20);
-        departure.endDate = LocalDate.now().plusDays(22);
+        // 与生产判断同源：团期"是否已出发 / 是否在售"一律按库内日期比较。
+        departure.startDate = departures.databaseToday().plusDays(20);
+        departure.endDate = departure.startDate.plusDays(2);
         departure.adultPrice = new BigDecimal("2999.00");
         departure.childPrice = new BigDecimal("1999.00");
         departure.maxPeople = 20;

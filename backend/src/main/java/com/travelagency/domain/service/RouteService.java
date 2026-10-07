@@ -19,7 +19,6 @@ import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -229,7 +228,7 @@ public class RouteService {
     /** 公开详情只展示仍可报名的团期，避免用户看到已过期或已关闭的团期。 */
     private List<DepartureView> publicDepartures(TravelRoute route) {
         List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
-                .eq("route_id", route.id).eq("status", "OPEN").ge("start_date", LocalDate.now())
+                .eq("route_id", route.id).eq("status", "OPEN").apply("start_date >= CURRENT_DATE()")
                 .orderByAsc("start_date"));
         Map<Long, String> guideNames = guideNameMap(departures.stream().map(d -> d.guideId).toList());
         return departures.stream()
@@ -293,7 +292,7 @@ public class RouteService {
             return Map.of();
         }
         List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
-                .in("route_id", routeIds).eq("status", "OPEN").ge("start_date", LocalDate.now())
+                .in("route_id", routeIds).eq("status", "OPEN").apply("start_date >= CURRENT_DATE()")
                 .orderByAsc("start_date"));
         Map<Long, Departure> result = new LinkedHashMap<>();
         departures.forEach(departure -> result.putIfAbsent(departure.routeId, departure));

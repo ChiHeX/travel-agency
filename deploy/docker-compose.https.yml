@@ -1,0 +1,50 @@
+# HTTPS 叠加配置（演示/生产部署用）
+#
+# 用法（在仓库根目录执行）：
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.https.yml up -d --build
+#
+# 前置条件：
+#   1. 已把 TLS 证书**复制**到 deploy/certs/（fullchain.pem + privkey.pem），且证书覆盖对外域名；
+#      证书与私钥不要提交到仓库，也不要用指向宿主机 /etc/letsencrypt 的软链接 ——
+#      容器里只挂载了 deploy/certs，软链接的目标在容器内不存在（见 docs/DEPLOYMENT.md §4.1）。
+#   2. 已设置对外域名：PUBLIC_ORIGIN=https://<你的域名>（用于 CORS 与支付宝回调地址）。
+#   3. 已显式设置 JWT_SECRET 与数据库口令：下面用 `:?` 强制要求，缺失即报错退出，
+#      不会静默退回仓库里的演示口令。
+#   4. 支付宝相关密钥通过环境变量注入，禁止写进本文件。
+#
+# 本文件只做叠加：不覆盖基础 compose 的数据库与数据卷，不删除、不重置任何数据
+# （down 默认不删卷；不要使用 down -v）。
+#
+# 对外端口只有 frontend 的 80 与 443：基础编排里的 mysql 本就不发布端口，
+# 本文件也不补任何数据库端口 —— 数据库只存在于 compose 网络内部。
+
+services:
+  mysql:
+    environment:
+      # `:?` 表示未设置就直接失败，避免公网部署继续沿用仓库里的演示口令。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?对外部署必须设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?对外部署必须设置 DB_PASSWORD（数据库应用账号口令）}
+
+  backend:
+    environment:
+      # 前端与接口同源访问，此项用于放行浏览器直连后端的跨域场景。
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?请设置 PUBLIC_ORIGIN，例如 https://travel.example.com}
+      # 必须与 mysql 的 MYSQL_PASSWORD 取值一致，否则 backend 连不上库。
+      DB_PASSWORD: ${DB_PASSWORD:?对外部署必须设置 DB_PASSWORD（数据库应用账号口令）}
+      # 支付宝异步回调必须是公网可访问的 https 地址，且与发起支付时的配置一致。
+      ALIPAY_ENABLED: ${ALIPAY_ENABLED:-false}
+      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL:-}
+      ALIPAY_APP_ID: ${ALIPAY_APP_ID:-}
+      ALIPAY_APP_PRIVATE_KEY: ${ALIPAY_APP_PRIVATE_KEY:-}
+      ALIPAY_PUBLIC_KEY: ${ALIPAY_PUBLIC_KEY:-}
+      ALIPAY_SELLER_ID: ${ALIPAY_SELLER_ID:-}
+
+  frontend:
+    ports:
+      # 基础 compose 已有 "80:80"；Compose 会拼接序列，这里只补 443，避免重复声明 80。
+      - "443:443"
+    volumes:
+      # 挂载证书（只读）与 HTTPS 配置，覆盖镜像内默认的纯 HTTP 配置。
+      - ./certs:/etc/nginx/certs:ro
+      - ./nginx.https.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot-webroot:/var/www/certbot:ro

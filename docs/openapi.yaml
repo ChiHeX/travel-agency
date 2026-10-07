@@ -2169,6 +2169,10 @@ paths:
         - { $ref: '#/components/parameters/Size' }
         - name: scope
           in: query
+          description: >-
+            筛选本人在各阶段的团期。UPCOMING=尚未出发（排除草稿、行程中、已完成、已取消，
+            且出发日期不早于当天，与工作台 upcoming 一致；其结果恰好等于可以「开始行程」的团期）；
+            CURRENT=行程中；HISTORY=已完成。
           schema: { type: string, enum: [UPCOMING, CURRENT, HISTORY] }
       responses:
         '200':

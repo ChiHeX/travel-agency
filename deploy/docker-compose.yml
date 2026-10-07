@@ -4,17 +4,24 @@ services:
     container_name: travel-agency-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
+      # 数据库口令一律由环境变量注入。默认值只是本地开发用的演示口令，
+      # 对外部署必须显式设置（HTTPS 叠加配置用 `:?` 强制要求，缺失即启动失败）。
+      # 注意：这两个变量只在【数据卷首次初始化】时生效，已有数据卷不会被改口令；
+      # 已有库请把 DB_PASSWORD 设成库内该账号当前的密码（见 docs/DEPLOYMENT.md §4.2）。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
       MYSQL_DATABASE: travel_agency
       MYSQL_USER: travel
-      MYSQL_PASSWORD: travel_password
-    ports:
-      - "3306:3306"
+      MYSQL_PASSWORD: ${DB_PASSWORD:-travel_password}
+    # 刻意不发布 3306：backend 通过 compose 网络用服务名 mysql:3306 访问，
+    # 数据库不需要出现在宿主机上，更不该出现在公网上。
+    # 本地开发若要从宿主机连库，用 deploy/docker-compose.db.yml —— 它只绑定 127.0.0.1。
     volumes:
       - travel_agency_mysql_data:/var/lib/mysql
       - ../sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
+      # 口令取自容器自身的 MYSQL_ROOT_PASSWORD，不写死在文件里。
+      # 必须是 CMD-SHELL：exec 形式（CMD）不会展开 $$ 变量。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -27,9 +34,9 @@ services:
     environment:
       DB_URL: jdbc:mysql://mysql:3306/travel_agency?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
       DB_USERNAME: travel
-      DB_PASSWORD: travel_password
+      DB_PASSWORD: ${DB_PASSWORD:-travel_password}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
-      CORS_ALLOWED_ORIGINS: http://localhost
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost}
     depends_on:
       mysql:
         condition: service_healthy
@@ -42,6 +49,11 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    volumes:
+      # ACME 挑战目录：certbot 在宿主机写入 deploy/certbot-webroot，nginx 只读提供
+      # （nginx.conf 与 nginx.https.conf 都配了 /.well-known/acme-challenge/）。
+      # 首次签发证书要用；不签发时挂一个空目录没有任何副作用。
+      - ./certbot-webroot:/var/www/certbot:ro
     depends_on:
       - backend
 

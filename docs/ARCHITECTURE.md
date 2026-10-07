@@ -80,6 +80,48 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
 | 内容 | `GET /api/articles`、`GET /api/attractions`、`/api/consultations` | 公开浏览；咨询需登录 |
 | 地点指南 | `GET /api/place-guides/**`、`/api/admin/place-guides/**` | 公开浏览已发布指南；STAFF / ADMIN 编排与发布 |
 
+## 资源与导游模块
+
+各子模块的职责划分。前端页面只做展示与编排，业务判定一律以后端为准。
+
+| 子模块 | 后端 | 前端 |
+|---|---|---|
+| 线路与每日行程 | `AdminRouteService` / `AdminRouteController`，公开 `RouteService` | 线路管理、行程编排页 |
+| 景点 | `AttractionService` / `AdminAttractionController`，公开 `AttractionController` | 景点管理、景点详情 |
+| 酒店 | `HotelService` / `AdminHotelController`，公开 `HotelController` | 酒店资料管理、酒店详情 |
+| 地点指南 | `PlaceGuideService` / `AdminPlaceGuideController` | 指南编辑、地图联动 |
+| 团期 | `DepartureService` / `AdminDepartureController` | 团期管理 |
+| 导游工作台 | `GuideController` + `DepartureService` | 工作台、带团详情、游客名单 |
+
+由后端保证的规则：
+
+- **线路 / 行程**：线路状态 `DRAFT / PUBLISHED / OFFLINE`；每日行程按 `route_id + day_number` 唯一，行程项按 `sort_no` 排序；住宿安排四种类型 `HOTEL / STANDARD / NONE / PENDING`，只有 `HOTEL` 关联酒店、`STANDARD` 必须填写住宿标准（数据库 `ck_day_accommodation` 约束 + 服务层 `AccommodationConsistent` 校验）。
+- **景点**：坐标必须成对（`CoordinatePairComplete`），历史「半截坐标」由 `009` 迁移统一清成 `NULL`，避免用户端地图静默丢弃。
+- **酒店**：资料带 `version` 乐观锁，两位工作人员先后保存时后保存方收到版本冲突而不是静默覆盖；图片只登记外链，按 `sort_order` 展示。
+- **团期**：新建即 `DRAFT`，需上架成 `OPEN` 才能售卖；`FINISHED` / `CANCELLED` 是终态不可回退；名额只由下单 / 支付 / 退款 / 确认链路维护；同一导游不能带时间重叠的两个团期；后台改期、改挂线路与乐观锁都以条件 `UPDATE` + 影响行数判定。
+- **导游**：只能查看和操作本人负责的团期（不存在 404、非本人 403）；游客名单只返回本人团期下有效订单的出行人，证件号脱敏。
+
+### 导游「即将出发」的统一口径
+
+工作台 `GET /api/guide/dashboard` 的 `upcoming` 与列表 `GET /api/guide/departures?scope=UPCOMING` 共用
+`DepartureService.UPCOMING_EXCLUDED_STATUSES` + `isUpcoming()`：排除 `DRAFT / TRAVELLING / FINISHED / CANCELLED`，
+且 `start_date >= 当天`。日期以库内日期为准（`CURRENT_DATE()` / `DepartureMapper#databaseToday()`），
+两端不会各自跑偏。排除 `DRAFT` 是为了让"即将出发"与"能开始行程"取到同一个集合（见下表），
+不会给导游列出一个点进去必然 409 的草稿团期。工作台卡片的说明文案是「尚未出发的团期」，与该口径一致。
+
+### 带团详情页的状态操作
+
+按钮由团期当前状态唯一决定，与后端状态机对齐，不放后端必然返回 409 的入口：
+
+| 团期状态 | 按钮 | 接口 |
+|---|---|---|
+| `OPEN` / `FULL` / `CLOSED` | 开始行程 | `POST /api/guide/departures/{departureId}/start` |
+| `TRAVELLING` | 标记行程已结束 | `POST /api/guide/departures/{departureId}/complete` |
+| `DRAFT` / `FINISHED` / `CANCELLED` | 不显示 | — |
+
+前端调用统一走 `src/api/modules.js` 的 `guideApi`（`dashboard` / `departures` / `detail` / `passengers` / `start` / `complete`）。
+两个按钮都带 `pending` 防重复点击，失败时提示服务端错误信息并重新拉取，保证页面展示的是服务端真实状态。
+
 ## 数据合规约束
 
 - 证件号在响应中默认脱敏；导游接口只提供最小必要联系方式和紧急联系人。
@@ -94,3 +136,32 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
   对订单和支付记录加行锁，以订单号保证幂等，复用 `OrderService.markPaid` 事务入账逻辑。
   支付渠道为 `LOCAL_SIMULATION`，交易号带 `LOCAL-` 前缀。支付宝发起支付、入账及取消订单也锁定订单行，
   防止模拟入账与取消/支付请求互相覆盖。模拟订单申请和审核退款均被拒绝，不调用支付宝退款网关。
+
+## 站内消息与提醒
+
+站内消息统一落在 `sys_message`，由 `MessageController` 提供列表 / 未读数 / 已读接口。消息类型包括支付成功、
+报名确认、订单审核异常（`ORDER_AUDIT_ANOMALY`）、退款审核结果、团期状态变化（`DEPARTURE_STATUS`）
+与即将出发提醒（`DEPARTURE_REMINDER`）。
+
+- **订单审核异常**：工作人员确认报名时若业务复核不通过，`OrderService#confirm` 在**任何写入之前**
+  拦下并把原因通知下单用户（PRD §29）。该通知**不改变订单状态**（仍停在 `PAID_WAIT_CONFIRM`，预留名额不动），
+  用户补齐资料后可重新确认。消息按「订单号 + 异常原因」去重，同一问题不重复发送、原因变化则各通知一次；
+  正文与接口 `message` 只回「第 N 位出行人缺少哪个字段」，不含姓名与证件号。
+  完整设计见 [交易模块说明](TRADE_MODULE.md) §4 / §5。
+
+- **团期状态变化**：后台 `DepartureService#changeStatus` 与导游 `start` / `complete` 在状态**确实变化**后，
+  用一条 `INSERT ... SELECT DISTINCT` 向该团期下有效订单（排除未支付 / 已取消 / 已退款）的用户投递消息；
+  消息与状态写入同一事务，回滚时一并回滚，同一变更不重复通知。
+- **即将出发提醒**：`DepartureReminderService` 由 `@Scheduled` 定时触发，在出发前配置天数内为符合出行条件的订单
+  各发一条消息；以 `departure_reminder(order_id, remind_type)` 唯一键保证任务重复执行、多实例并发都不重复发送。
+  窗口的「今天」与团期日期判断一律以库内日期（`CURRENT_DATE()`）为准，与"可报名/即将出发"口径一致。
+  候选查询读的是事务快照，因此每条候选在写入前还会用 `TravelOrderMapper#lockEligibleReminderOrder`
+  做一次**当前读复核并加行锁**：查询之后才退款完成或团期被取消的订单会被跳过，不会收到提醒，
+  也不会留下"已发送"标记（条件重新成立时下个调度周期仍可发送）。
+
+## 日期口径
+
+"今天"统一取自数据库（`TravelOrderMapper#databaseToday` / `DepartureMapper#databaseToday`，底层 `CURDATE()`），
+或在 SQL 里直接用 `CURRENT_DATE()`。JVM 与 MySQL 会话时区不一致时（CI/容器常见 UTC），`LocalDate.now()`
+会与库内日期错开一天，导致"可报名团期""即将出发"等判断在同一天内不一致，因此公开团期、首页近期团期、
+景点关联团期、导游筛选与工作台统计都不再使用 `LocalDate.now()`。

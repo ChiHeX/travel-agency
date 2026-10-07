@@ -9,6 +9,7 @@ import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
+import com.travelagency.domain.service.DepartureService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -68,6 +69,7 @@ class GuideUpcomingContractIntegrationTest {
     private Long cancelledFutureId;
     private Long finishedFutureId;
     private Long travellingFutureId;
+    private Long draftFutureId;
 
     @BeforeEach
     void setUp() {
@@ -89,12 +91,18 @@ class GuideUpcomingContractIntegrationTest {
         guideId = guide.id;
         token = "Bearer " + tokens.createToken(guide.userId, "guide_up_" + guide.id, Set.of("GUIDE"));
 
-        openFutureId = departure("OPEN", LocalDate.now().plusDays(10)).id;
-        openTodayId = departure("OPEN", LocalDate.now()).id;
-        openPastId = departure("OPEN", LocalDate.now().minusDays(2)).id;
-        cancelledFutureId = departure("CANCELLED", LocalDate.now().plusDays(5)).id;
-        finishedFutureId = departure("FINISHED", LocalDate.now().plusDays(5)).id;
-        travellingFutureId = departure("TRAVELLING", LocalDate.now().plusDays(5)).id;
+        // 夹具日期一律取【库内当天】：生产判断用的是 CURRENT_DATE()，
+        // 用 LocalDate.now() 时只要 JVM 与库会话时区不同，跨午夜前后就会错开一天，
+        // "当天出发仍算即将出发"这类边界断言会凭空变红。
+        LocalDate today = departures.databaseToday();
+        openFutureId = departure("OPEN", today.plusDays(10)).id;
+        openTodayId = departure("OPEN", today).id;
+        openPastId = departure("OPEN", today.minusDays(2)).id;
+        cancelledFutureId = departure("CANCELLED", today.plusDays(5)).id;
+        finishedFutureId = departure("FINISHED", today.plusDays(5)).id;
+        travellingFutureId = departure("TRAVELLING", today.plusDays(5)).id;
+        // 草稿团期还没上架，导游点进去「开始行程」必然 409，因此不该出现在"即将出发"里。
+        draftFutureId = departure("DRAFT", today.plusDays(5)).id;
     }
 
     @Test
@@ -112,6 +120,24 @@ class GuideUpcomingContractIntegrationTest {
         assertFalse(ids.contains(String.valueOf(cancelledFutureId)), "已取消团期不应出现");
         assertFalse(ids.contains(String.valueOf(finishedFutureId)), "已完成团期不应出现");
         assertFalse(ids.contains(String.valueOf(travellingFutureId)), "行程中团期不应出现");
+        assertFalse(ids.contains(String.valueOf(draftFutureId)),
+                "草稿团期不应出现（它与「开始行程」允许的状态集合必须一致，否则点进去只有 409）");
+    }
+
+    /** 「即将出发」列出的团期，状态必须都是「可以开始行程」的，否则按钮与列表会互相打脸。 */
+    @Test
+    void upcomingListMatchesStartableStatuses() throws Exception {
+        var response = mvc.perform(get("/api/guide/departures").header("Authorization", token)
+                        .param("scope", "UPCOMING").param("size", "50"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse();
+
+        var items = json.readTree(response.getContentAsString()).get("data").get("items");
+        assertTrue(items.size() > 0, "前置条件：夹具里应有即将出发的团期");
+        for (var item : items) {
+            assertTrue(DepartureService.STARTABLE_STATUSES.contains(item.get("status").asText()),
+                    "即将出发里的团期都应可以开始行程，实际状态：" + item.get("status").asText());
+        }
     }
 
     @Test

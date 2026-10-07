@@ -79,7 +79,7 @@ public class GuideController {
                 .filter(departure -> DepartureStatus.TRAVELLING.equals(departure.status())).toList();
         List<DepartureView> history = departures.stream()
                 .filter(departure -> DepartureStatus.FINISHED.equals(departure.status())).toList();
-        // upcoming 与列表 scope=UPCOMING 共用同一份定义：排除行程中、已完成、已取消，
+        // upcoming 与列表 scope=UPCOMING 共用同一份定义：排除草稿、行程中、已完成、已取消，
         // 且出发日期不早于当天。此前工作台只排除状态、没有日期限制，会把过期未出发的团期也列进来。
         List<DepartureView> upcoming = departures.stream()
                 .filter(departure -> DepartureService.isUpcoming(departure.status(), departure.startDate(), today))
@@ -91,7 +91,7 @@ public class GuideController {
      * 查询当前导游负责的团期，对齐契约 GET /guide/departures（DeparturePageEnvelope）。
      *
      * <p>scope 为契约可选参数：CURRENT / HISTORY 按团期状态过滤；UPCOMING 采用与工作台一致的定义 ——
-     * 排除行程中、已完成、已取消，且出发日期不早于当天（此前只限制日期，会把取消、完成、
+     * 排除草稿、行程中、已完成、已取消，且出发日期不早于当天（此前只限制日期，会把取消、完成、
      * 行程中的团期一并混入）。</p>
      */
     @GetMapping("/departures")

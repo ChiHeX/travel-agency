@@ -126,6 +126,30 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 - **事务边界**：`processRefund` 是 `approveRefund` / `rejectRefund` 的共用实现，**不是事务入口**
   （自调用，Spring 代理不生效，因此它不标 `@Transactional`）。`noRollbackFor` 挂在两个公开入口上。
 
+### 6.1 留痕的边界：哪些交易动作**不**进 `operation_log`
+
+`operation_log` 是**后台写操作**日志（`GET /admin/logs`，契约 `x-roles: [ADMIN]`），
+不是"所有状态变化"的流水。判据是**动作的执行者是不是后台员工**：
+
+| 动作 | 执行者 | 进 `operation_log` | 靠什么追溯 |
+|---|---|---|---|
+| 确认报名 / 退款审核 | 后台员工 | ✅ | 上表 |
+| 用户取消订单 | 用户本人 | ❌ | `travel_order.status` + `cancelled_at` |
+| 支付回调入账 | 支付宝（第三方） | ❌ | `payment.third_party_trade_no` + `paid_at` |
+| 用户提交退款申请 | 用户本人 | ❌ | `refund` 行本身 + `travel_order.status` |
+
+两条不写的理由并不相同：
+
+- **取消订单**：`operator_id` 的外键指向 `sys_user`，填用户 id 技术上可行，但这份日志是**后台视图**，
+  混进用户自助动作会把"员工做过什么"淹掉；而这次变更的可追溯性已由订单自己的
+  `status` / `cancelled_at` 完整承担。
+- **支付回调**：**没有合法操作人** —— 支付宝不是 `sys_user`，而 `operator_id` 是 `NOT NULL` 且带外键。
+  硬填订单所属用户会伪造出一条"该用户执行了后台操作"的假记录，比不记更糟。
+
+> ⚠️ **已知缺口**：回调**因金额不符被拒**（`409 PAYMENT_AMOUNT_MISMATCH`）目前没有任何留痕 ——
+> 属于"外部事件被拒绝却查不到"。补它需要先定操作人取值（新增系统账号？），并且要在抛异常处加
+> `noRollbackFor` 才能让留痕在回滚中存活。见 §10。
+
 ### 6.2 时间戳必须由数据库维护
 
 `updatedAt` 在契约里是**必返字段**（订单、团期、酒店、线路、文章、出行人…），前端拿它当"最后更新时间"，
@@ -278,6 +302,9 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
   不能宣称支付链路已完成验收。** 需要的输入与方案见下。
 - ⬜ **退款对账的定时收敛未做**：`PROCESSING`（待确认）目前依赖人工筛出后用同一请求号重试，
   没有定时任务自动向支付宝查询收敛。金额不大时够用，但缺少兜底。
+- ⬜ **回调金额不符被拒时没有留痕**（见 §6.1）：`409 PAYMENT_AMOUNT_MISMATCH` 是一个
+  "外部事件被拒绝"却查不到的缺口。补它要先定操作人取值（回调没有对应的 `sys_user`，
+  可能要新增一个系统账号），并且要在抛异常处加 `noRollbackFor`，才能让留痕在事务回滚中存活。
 - ⬜ **前端联调未回执**：订单详情、退款审核、评价管理三个页面尚未由前端反馈联调结果；
   契约字段与 `openapi.yaml` 一致，但页面行为未验收。
 - ⬜ **共享 dev 库的 `005` 索引仍未生效**（`travel_order` 缺 `idx_order_created_at`），

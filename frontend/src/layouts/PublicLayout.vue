@@ -1,5 +1,5 @@
 <script setup>
-import { computed, provide, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { accountApi } from '@/api/modules'
@@ -21,31 +21,51 @@ const mapPlaces = ref([])
 const mapFocus = ref(null)
 provide('setMapPlaces', (places) => { mapPlaces.value = places })
 provide('setMapFocus', (place) => { mapFocus.value = place })
-const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
+const layoutShell = ref(null)
+const mobileNavigation = ref(null)
+const viewportHeight = ref(window.innerHeight)
+const navigationHeight = ref(52)
+const sheetRatio = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 1 : .55)
+const maxSheetHeight = computed(() => Math.max(0, viewportHeight.value - navigationHeight.value))
+const minSheetHeight = computed(() => Math.min(64, maxSheetHeight.value))
+const sheetHeight = computed(() => Math.min(maxSheetHeight.value, Math.max(minSheetHeight.value, viewportHeight.value * sheetRatio.value)))
 let dragStart = null
-let sheetDragged = false
+let sizeObserver
+
+function measureViewport() {
+  viewportHeight.value = layoutShell.value.clientHeight
+  navigationHeight.value = mobileNavigation.value.getBoundingClientRect().height
+}
+
+function setSheetHeight(height) {
+  if (!viewportHeight.value) return
+  sheetRatio.value = Math.min(maxSheetHeight.value, Math.max(minSheetHeight.value, height)) / viewportHeight.value
+}
 
 function startSheetDrag(event) {
-  sheetDragged = false
-  dragStart = event.clientY
+  if (!event.isPrimary || event.button !== 0 || dragStart) return
+  measureViewport()
+  dragStart = { pointerId: event.pointerId, y: event.clientY, height: sheetHeight.value }
   event.currentTarget.setPointerCapture(event.pointerId)
 }
+function moveSheetDrag(event) {
+  if (!dragStart || event.pointerId !== dragStart.pointerId) return
+  setSheetHeight(dragStart.height + dragStart.y - event.clientY)
+}
 function endSheetDrag(event) {
-  if (dragStart == null) return
-  const delta = event.clientY - dragStart
+  if (!dragStart || event.pointerId !== dragStart.pointerId) return
+  moveSheetDrag(event)
   dragStart = null
-  if (Math.abs(delta) < 30) return
-  sheetDragged = true
-  const levels = ['collapsed', 'half', 'full']
-  sheetSize.value = levels[Math.max(0, Math.min(2, levels.indexOf(sheetSize.value) + (delta < 0 ? 1 : -1)))]
+  if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
 }
-function toggleSheet() {
-  if (sheetDragged) {
-    sheetDragged = false
-    return
-  }
-  sheetSize.value = sheetSize.value === 'full' ? 'half' : 'full'
-}
+
+onMounted(() => {
+  measureViewport()
+  sizeObserver = new ResizeObserver(measureViewport)
+  sizeObserver.observe(layoutShell.value)
+  sizeObserver.observe(mobileNavigation.value)
+})
+onBeforeUnmount(() => sizeObserver?.disconnect())
 
 // Sidebar expanded state: true = 180px with text, false = 56px with icon only
 const isSidebarExpanded = ref(true)
@@ -82,7 +102,8 @@ provide('refreshUnread', refreshUnread)
 watch(() => auth.isLoggedIn, refreshUnread, { immediate: true })
 watch(() => route.path, () => {
   isDrawerOpen.value = route.name !== 'home'
-  sheetSize.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
+  dragStart = null
+  sheetRatio.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 1 : .55
   refreshUnread()
 })
 
@@ -125,14 +146,14 @@ function logout() {
 
 <template>
   <div
+    ref="layoutShell"
     class="app-layout-shell"
     :class="{
       'sidebar-collapsed': !isSidebarExpanded,
       'drawer-closed': !isDrawerOpen && isMapActiveView
     }"
   >
-    <nav class="mobile-navigation" aria-label="主导航">
-      <RouterLink to="/" @click="goHome">行迹</RouterLink>
+    <nav ref="mobileNavigation" class="mobile-navigation" aria-label="主导航">
       <button @click="handleTabClick('search')">搜索</button>
       <button @click="handleTabClick('routes')">线路</button>
       <button @click="handleTabClick('guides')">指南</button>
@@ -146,7 +167,7 @@ function logout() {
       :focused-place="mapFocus"
       :drawer-open="isDrawerOpen"
       :sidebar-expanded="isSidebarExpanded"
-      :sheet-size="sheetSize"
+      :sheet-height="sheetHeight"
     />
 
     <!-- ==========================================================================
@@ -266,11 +287,9 @@ function logout() {
          ========================================================================== -->
     <div
       class="drawer-track-wrapper"
+      :style="{ '--sheet-height': `${sheetHeight}px` }"
       :class="{
         'full-page-mode': !isMapActiveView,
-        'sheet-half': sheetSize === 'half',
-        'sheet-full': sheetSize === 'full',
-        'sheet-peek': sheetSize === 'collapsed',
         'drawer-collapsed': !isDrawerOpen && isMapActiveView
       }"
     >
@@ -281,8 +300,15 @@ function logout() {
         }"
       >
         <div v-if="isMapActiveView" class="sheet-handle">
-          <button type="button" :aria-expanded="sheetSize !== 'collapsed'" aria-label="切换抽屉高度" @pointerdown="startSheetDrag" @pointerup="endSheetDrag" @pointercancel="dragStart = null" @click="toggleSheet"><span></span></button>
-          <div class="sheet-size-actions"><button @click="sheetSize = 'collapsed'">收起</button><button @click="sheetSize = 'half'">半屏</button><button @click="sheetSize = 'full'">展开</button></div>
+          <div
+            class="sheet-resize-handle" role="slider" tabindex="0" aria-label="调整弹出栏高度"
+            aria-orientation="vertical" :aria-valuemin="Math.round(minSheetHeight)" :aria-valuemax="Math.round(maxSheetHeight)"
+            :aria-valuenow="Math.round(sheetHeight)" :aria-valuetext="`高度 ${Math.round(sheetHeight)} 像素`"
+            @pointerdown="startSheetDrag" @pointermove="moveSheetDrag" @pointerup="endSheetDrag"
+            @pointercancel="dragStart = null" @lostpointercapture="dragStart = null"
+            @keydown.up.prevent="setSheetHeight(sheetHeight + 24)" @keydown.down.prevent="setSheetHeight(sheetHeight - 24)"
+            @keydown.home.prevent="setSheetHeight(minSheetHeight)" @keydown.end.prevent="setSheetHeight(maxSheetHeight)"
+          ><span></span></div>
         </div>
         <AccountNav v-if="route.path.startsWith('/account/')" />
         <div class="route-view-body"><RouterView :key="route.path" /></div>
@@ -670,12 +696,10 @@ function logout() {
     position: absolute;
     bottom: 0;
     width: 100%;
-    height: 55%;
+    height: var(--sheet-height);
     border-radius: 20px 20px 0 0;
-    transition: height .25s ease;
+    transition: none;
   }
-  .drawer-track-wrapper.sheet-full { height: calc(100% - 52px - env(safe-area-inset-top)); }
-  .drawer-track-wrapper.sheet-peek { height: 96px; }
   .drawer-track-wrapper.drawer-collapsed { height: 0; }
   .drawer-track-wrapper.full-page-mode { position: relative; flex: 1; min-height: 0; width: 100%; height: auto; border-radius: 0; }
   .drawer-container {
@@ -684,10 +708,9 @@ function logout() {
     box-shadow: none;
   }
   .sheet-handle { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; touch-action: none; padding: 5px 12px; border-bottom: 1px solid var(--border-divider); }
-  .sheet-handle > button { width: 80px; min-height: 20px; display: grid; place-items: center; border: 0; background: none; }
+  .sheet-resize-handle { width: 100%; min-height: 28px; display: grid; place-items: center; touch-action: none; user-select: none; cursor: ns-resize; border-radius: 8px; }
+  .sheet-resize-handle:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: -2px; }
   .sheet-handle span { width: 36px; height: 4px; background: #b8b8bd; border-radius: 4px; }
-  .sheet-size-actions { display: flex; gap: 20px; }
-  .sheet-size-actions button { padding: 4px 12px; border: 0; background: none; color: var(--theme-blue); font-size: 11px; }
   .route-view-body { overflow: auto; }
 }
 </style>

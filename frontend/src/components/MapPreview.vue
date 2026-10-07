@@ -10,7 +10,7 @@ const props = defineProps({
   focusedPlace: { type: Object, default: null },
   drawerOpen: { type: Boolean, default: false },
   sidebarExpanded: { type: Boolean, default: true },
-  sheetSize: { type: String, default: 'half' }
+  sheetHeight: { type: Number, default: 0 }
 })
 const mapElement = ref(null)
 const mapProvider = ref(import.meta.env.VITE_MAP_PROVIDER === 'osm' ? 'osm' : 'tianditu')
@@ -145,7 +145,7 @@ function renderMap() {
   mapInstance.fitBounds(L.latLngBounds(data.map((point) => point.position)), {
     paddingTopLeft: [leftPadding, 24],
     paddingBottomRight: [24, isMobile && props.drawerOpen
-      ? (props.sheetSize === 'collapsed' ? 120 : Math.round(window.innerHeight * 0.58))
+      ? Math.min(props.sheetHeight + 24, Math.max(24, window.innerHeight - 160))
       : 24],
     maxZoom: 12
   })
@@ -180,7 +180,7 @@ function focusPlace() {
     const isMobile = window.innerWidth <= 900
     const leftOffset = isMobile || !props.drawerOpen ? 0 : (props.sidebarExpanded ? 305 : 243)
     const bottomOffset = isMobile && props.drawerOpen
-      ? (props.sheetSize === 'collapsed' ? 55 : Math.round(window.innerHeight * .275))
+      ? props.sheetHeight / 2
       : 0
     const center = mapInstance.project([latitude, longitude], zoom)
       .subtract(L.point(leftOffset, -bottomOffset))
@@ -206,7 +206,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="map-preview-card" :class="{ 'drawer-open': drawerOpen, ['sheet-' + sheetSize]: drawerOpen }">
+  <div class="map-preview-card" :class="{ 'drawer-open': drawerOpen }" :style="{ '--map-sheet-height': `${sheetHeight}px` }">
     <div ref="mapElement" class="map-canvas"></div>
     <button class="map-reset" type="button" aria-label="重置地图视角" title="重置地图视角" @click="resetView">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
@@ -332,8 +332,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .map-preview-card { top: 52px; }
-  .map-preview-card.drawer-open.sheet-half { --map-bottom-offset: calc(55vh + 14px); }
-  .map-preview-card.drawer-open.sheet-collapsed { --map-bottom-offset: 110px; }
+  .map-preview-card.drawer-open { --map-bottom-offset: calc(var(--map-sheet-height) + 14px); }
   .map-preview-card :deep(.leaflet-bottom) { bottom: var(--map-bottom-offset); }
 }
 </style>

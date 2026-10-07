@@ -459,6 +459,59 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
   **未记录前端、后端、测试成员的分别确认**，不得据此声称三方已分别确认；如需成员级确认，
   请在合并前补记。
 
+### 12.4 报名审核复核与交易审计口径（本次变更，成员 B）
+
+- **背景**：
+  - `POST /admin/orders/{orderNo}/confirm` 此前只检查订单状态、团期状态与容量，**没有重新核对**
+    订单支付状态与出行人快照 —— 支付未到账、或快照条数与订单登记人数不符、或实名信息缺失的订单，
+    只要状态是 `PAID_WAIT_CONFIRM` 就能进入 `CONFIRMED` 并占用名额、回填线路统计（PRD §11.1）。
+  - 该端点原先是无条件读订单再更新：两个工作人员同时确认同一张订单时，两边都会读到
+    `PAID_WAIT_CONFIRM`，于是已确认人数与有效报名数各加两次、用户收到两条通知。
+  - 确认、退款审核的 `operation_log` 留痕原先写在 Controller 里，**排在 Service 事务结束之后**：
+    业务已提交但留痕写入失败的窗口里，会出现"改了数据却没有操作记录"。
+- **契约声明变化（仅描述，无结构与状态码集合变化）**：`POST /admin/orders/{orderNo}/confirm`
+  的 `409` 从共用 `Conflict` 示例改为显式列出该端点会返回的结果码 ——
+  `ORDER_STATE_CONFLICT`（订单状态不符 / 团期不可用 / 已被他人确认）、
+  `DEPARTURE_CAPACITY_INSUFFICIENT`（名额不足）、
+  `ORDER_AUDIT_ANOMALY`（**新增的错误条件**，报名业务复核未通过）。
+  响应 schema 仍为 `ErrorEnvelope`，`409` 本来就在冻结的状态码表内，未新增状态码。
+- **复核规则（未通过即 `409 ORDER_AUDIT_ANOMALY`）**：
+  1. 订单 `paymentStatus` 与关联支付单 `status` 都必须是 `PAID`，否则 `PAYMENT_NOT_SETTLED`；
+  2. 出行人快照条数必须等于 `adult_count + child_count`，否则 `TRAVELER_SNAPSHOT_MISMATCH`；
+  3. 每条快照的姓名、证件类型、证件号码都必须非空，否则 `TRAVELER_IDENTITY_INCOMPLETE`。
+  具体原因在响应的 `message` 里说明；`code` 恒为 `ORDER_AUDIT_ANOMALY`。
+- **复核失败时的状态与副作用**：订单**留在** `PAID_WAIT_CONFIRM`，不改名额、不改线路有效报名数、
+  不发"报名已确认"通知；只做两件事 —— 写一条审计留痕（`module=订单`、
+  `operationType=AUDIT_ANOMALY`、`result=FAILURE`）与发一条站内通知
+  （`type=ORDER_AUDIT_ANOMALY`）。这正是 PRD §29 要求的"报名审核异常"站内通知。
+- **通知去重与脱敏**：
+  - 同一订单 + **同一异常原因**只通知一次（标题为「订单 {orderNo} 报名审核异常：{原因短标签}」，
+    按 `user_id + type + title` 精确匹配判重）；原因发生变化时会再通知一次，不把新问题静默吞掉。
+  - 接口 `message` 与通知正文只包含"第 N 位出行人缺少哪个字段"，**不含姓名与证件号**
+    （§10 与 PRD §53.1/§53.2 的脱敏要求）。
+- **并发语义（可验收）**：同一订单的并发确认只有**一次**生效 —— 状态迁移走
+  `WHERE id=? AND status='PAID_WAIT_CONFIRM'` 的条件更新，未抢到该行的请求返回
+  `409 ORDER_STATE_CONFLICT`，且**不执行**名额迁移、统计回填与通知。实测数据见 12.4 末尾。
+- **审计口径**：确认报名、退款审核通过、退款审核拒绝、**出款结果待确认**、评价可见状态变更
+  的留痕全部改在 Service 的业务事务内写入（Controller 不再各自记录）。
+  `OperationLog.result` 的枚举**未变**，仍是 `SUCCESS` / `FAILURE`：
+  "出款结果待确认"用 `operationType=APPROVE_UNCONFIRMED` 区分而**不标成 FAILURE** ——
+  标 FAILURE 会被读成"退款被拒、订单已恢复"，而这一刻钱可能已经退出去。
+  被并发闸门挡下、未真正推进状态的请求不写留痕（它没有产生任何操作）。
+- **数据库**：新增迁移 `sql/migrations/011-add-message-audit-dedup-index.sql`，
+  为 `sys_message` 加 `idx_message_user_type_title (user_id, type, title)` 支撑上面的判重查询。
+  **只加普通索引，不加唯一键**（不同异常原因必须能各存一条）。未执行只影响该查询效率，
+  不影响正确性；`sql/schema.sql` 已同步。**无列变更。**
+- **兼容影响**：无字段增删改、无枚举变化。新增的是**错误条件**，按稳定 `code` 分支的调用方
+  无需改动；只按 `409` 笼统处理"审核失败"的调用方可继续工作，但建议按 `code` 区分
+  `ORDER_AUDIT_ANOMALY`（应提示"该订单资料有问题，请核对出行人信息"而不是"请重试"）。
+  审核异常回 `409` 而非 `401`，不受前端"任何 401 即登出"的拦截器影响。
+- **实测**：真实 MySQL 并发确认 8 线程 / 同一订单 —— 成功 1 次、被拒 7 次，
+  团期 `reservedPeople=0`、`confirmedPeople=2`，线路 `valid_booking_count` 恰好 +1，
+  审计留痕恰好 1 条（用例见 `DepartureCapacityConcurrencyIntegrationTest`）。
+- **确认状态**：由成员 B 在交易模块收口中发起。前端（成员 E）联调尚未回执，
+  **不得声称前端已确认**；页面需按 `code` 区分上述两类 409。
+
 ## 13. 模块契约工作流
 
 每个模块都按以下顺序推进，不能等后端写完后再反推接口：

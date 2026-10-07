@@ -164,7 +164,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 
 ## 8. 测试用例
 
-交易模块共 **12 个测试类 / 141 条用例**，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
+交易模块共 **13 个测试类 / 142 条用例**，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
 
 | 测试类 | 覆盖 |
 |---|---|
@@ -175,6 +175,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 | `OrderServiceReviewTest` | 评价唯一性、未完成不能评价、越权、线路评分重算、**后台改可见状态 + 审计留痕** |
 | `DepartureCapacityConcurrencyIntegrationTest` | 名额守恒压测（30 抢 10）、单车超容量、**并发确认只生效一次**、并发退款审核、**审核异常"业务回滚 + 留痕通知提交"** |
 | `RefundPendingConfirmationIntegrationTest` | 「出款结果未确认」的事务语义：新连接读到持久 `PROCESSING`、拒绝被拦、同请求号重试收敛、**待确认与通过的审计留痕都已提交** |
+| `OrderAuditRollbackIntegrationTest` | **审计写入失败 ⇒ 业务修改一起回滚**：用 `operation_log.operator_id` 的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计、确认留痕、确认通知全部随事务回滚（含合法操作人的对照组） |
 | `TradingFlowContractIntegrationTest` | 端到端契约：报名→支付→回调→确认→出团→完成→评价，以及取消/退款全链路 |
 | `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
 | `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
@@ -192,10 +193,37 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
   名额只从 `reserved` 迁到 `confirmed` 一次（2 人），线路有效报名数只 `+1`，审计留痕恰好 1 条。
 - 30 个并发下单抢 10 个名额：成功数恰好等于容量，占用不超上限，无超额订单与支付单。
 
+### 8.2 审计失败时的事务原子性（真实 MySQL）
+
+`OrderService.confirm` 的写入顺序是「订单状态迁移 → 团期名额迁移 → 线路统计回填 → **写审计**」，
+所以"审计与业务在同一个事务"这件事，只有在审计写失败时才能验证。让审计写失败用的是库自己的
+约束（`operation_log.operator_id` 的外键 `fk_operation_log_operator`），不建触发器、不改表结构、
+也不 mock 掉 Recorder，因此走的仍是真实事务与真实连接。
+
+```text
+[对照] 合法操作人  -> CONFIRMED, confirmed_at 已写, confirmLogs=1
+[实验] 不存在的操作人 -> 抛 DataIntegrityViolationException（fk_operation_log_operator）
+                       订单 PAID_WAIT_CONFIRM, confirmed_at=NULL,
+                       团期 reserved/confirmed 均回到调用前, validBookingCount 回到调用前,
+                       confirmLogs=0, 确认通知=0
+```
+
+**反向对照（证明这条用例真的守得住这个性质）**：把那条确认留痕包进 `try/catch` 吞掉失败 ——
+等价于回到 PR 之前的形状（那时审计写在 Controller 里、业务事务已经提交），
+该用例立刻变红：
+
+```text
+Expected org.springframework.dao.DataIntegrityViolationException to be thrown, but nothing was thrown.
+```
+
+同一变异下全量 **571 条中只红这一条**（`succeeded=570 failed=1`），说明断言精准指向这条性质，
+不是大面积误伤。还原后全量恢复 **571/571**。
+
 ## 9. 回归结果与前置条件
 
-**最新全量回归**：后端 **570 条用例，570 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。本次改动新增 9 条用例（`561 → 570`）。
+**最新全量回归**：后端 **571 条用例，571 通过、0 失败、0 跳过**
+（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。本次改动新增 10 条用例（`561 → 571`；
+末一条 `OrderAuditRollbackIntegrationTest` 是应评审意见补的"审计写失败 ⇒ 业务回滚"数据库测试）。
 
 > ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报

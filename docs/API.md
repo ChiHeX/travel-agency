@@ -498,6 +498,9 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
   "出款结果待确认"用 `operationType=APPROVE_UNCONFIRMED` 区分而**不标成 FAILURE** ——
   标 FAILURE 会被读成"退款被拒、订单已恢复"，而这一刻钱可能已经退出去。
   被并发闸门挡下、未真正推进状态的请求不写留痕（它没有产生任何操作）。
+  **"同事务"是可验收的**：审计写入失败时业务修改一并回滚，不会出现"接口报错、数据已经改掉"。
+  该性质由 `OrderAuditRollbackIntegrationTest` 用真实库验证（`operation_log.operator_id`
+  的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计与通知全部回滚）。
 - **数据库**：新增迁移 `sql/migrations/012-add-message-audit-dedup-index.sql`，
   为 `sys_message` 加 `idx_message_user_type_title (user_id, type, title)` 支撑上面的判重查询。
   **只加普通索引，不加唯一键**：去重是业务判据而不是库约束 —— 判重查询跑在

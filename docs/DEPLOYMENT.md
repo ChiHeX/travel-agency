@@ -134,15 +134,46 @@ docker compose -f deploy/docker-compose.yml start frontend
 > 指向宿主机 `/etc/letsencrypt/live/...` 的软链接在容器内是断链，
 > nginx 会以 `cannot load certificate ... No such file or directory` 启动失败。
 
-**续期**：`deploy/certs/` 里是副本，certbot 续期只更新 `/etc/letsencrypt`，需要重新复制并让 nginx 生效：
+**续期**：`deploy/certs/` 里是副本，certbot 续期只更新 `/etc/letsencrypt`，需要重新复制并让 nginx 重新读取：
 
 ```bash
 sudo certbot renew --webroot -w "$PWD/deploy/certbot-webroot" \
   --deploy-hook "install -m 644 \$RENEWED_LINEAGE/fullchain.pem $PWD/deploy/certs/fullchain.pem && \
                  install -m 600 \$RENEWED_LINEAGE/privkey.pem   $PWD/deploy/certs/privkey.pem && \
-                 docker compose -f $PWD/deploy/docker-compose.yml -f $PWD/deploy/docker-compose.https.yml \
-                   exec -T frontend nginx -s reload"
+                 docker exec travel-agency-frontend nginx -s reload"
 ```
+
+> ⚠️ **重载必须用 `docker exec`，不要用 `docker compose exec`。**
+> `sudo certbot` 默认会清掉普通 shell 里 `export` 的环境变量（`env_reset`），而这个项目的
+> HTTPS 叠加配置对 `JWT_SECRET` / `MYSQL_ROOT_PASSWORD` / `DB_PASSWORD` / `PUBLIC_ORIGIN` 是 `:?` 必填
+> —— 变量一丢，`docker compose` 在**解析配置阶段**就直接报错退出，钩子整条命令失败，
+> 证书虽然续了但 nginx 仍在用旧证书，而且这个失败只体现在 certbot 的日志里，很容易被忽略。
+> `docker exec` 只按容器名操作，不解析 compose 文件、不需要任何变量。
+> 容器名由 `deploy/docker-compose.yml` 的 `container_name: travel-agency-frontend` 固定，
+> HTTPS 叠加配置没有覆盖它。
+
+**不想用钩子时，手动续期三步**（等价于钩子做的事）：
+
+```bash
+sudo certbot renew --webroot -w "$PWD/deploy/certbot-webroot"
+sudo install -m 644 /etc/letsencrypt/live/travel.example.com/fullchain.pem "$PWD/deploy/certs/fullchain.pem"
+sudo install -m 600 /etc/letsencrypt/live/travel.example.com/privkey.pem   "$PWD/deploy/certs/privkey.pem"
+docker exec travel-agency-frontend nginx -s reload
+```
+
+**验证 nginx 确实吃到了新证书**（看 `notAfter` 是否已经往后延）：
+
+```bash
+echo | openssl s_client -connect travel.example.com:443 -servername travel.example.com 2>/dev/null \
+  | openssl x509 -noout -dates
+```
+
+> 补充三点：
+> - 上面这些命令请在**仓库根目录**执行：钩子里的 `$PWD`（以及 `-w` 的 webroot 路径）
+>   会在写入时展开成当时的绝对路径，换个目录执行就会指向错误的位置。
+> - `--deploy-hook` 会被 certbot **写进续期配置文件**，之后由系统定时器触发的自动续期也会执行它；
+>   因此钩子里的路径必须是稳定的绝对路径，**不要把仓库挪到别处**，否则续期时钩子会指向不存在的路径。
+> - 钩子本身可以先手动验一次，不影响证书：`docker exec travel-agency-frontend nginx -t && docker exec travel-agency-frontend nginx -s reload`。
 
 证书与私钥属于敏感信息，**不得提交到仓库**（`.gitignore` 已忽略 `deploy/certs/` 与 `deploy/certbot-webroot/`）。
 
@@ -176,6 +207,7 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.https.yml l
 | 地图底图 | 打开一条线路详情，切换「地图源」 | 天地图/OSM 瓦片正常加载；控制台无混合内容（Mixed Content）报错 |
 | 支付宝回调 | `curl -X POST https://travel.example.com/api/payments/alipay/notify` | 可达并返回业务响应（未带签名的请求会被拒绝，属预期） |
 | 证书链 | `openssl s_client -connect travel.example.com:443 -servername travel.example.com </dev/null` | 返回完整证书链 |
+| 证书续期生效 | 按 §4.2 续期后 `openssl s_client ... \| openssl x509 -noout -dates` | `notAfter` 已延后；若仍是旧日期，说明 deploy-hook 失败、nginx 没重载 |
 | ACME 挑战可达（续期前） | `curl -I http://travel.example.com/.well-known/acme-challenge/ping` | `404`（落在 ACME 目录，而不是返回 SPA 的 `200 index.html`） |
 
 > 未配置 `VITE_TIANDITU_KEY` 时前端会提示切换到 OSM，这是预期行为；HTTPS 下 OSM 同样走 HTTPS。
@@ -207,6 +239,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
 | nginx 启动失败提示 `cannot load certificate` | 证书路径/文件名不对，或未挂载 `deploy/certs`；若用的是软链接，改为复制真实文件 |
 | certbot `--webroot` 校验失败（`Invalid response ... 200`） | 80 端口没跑 `frontend` 容器，或 `deploy/certbot-webroot` 没挂上；确认 `http://<域名>/.well-known/acme-challenge/<token>` 返回的是文件内容而不是 index.html |
 | certbot `--standalone` 报 `Address already in use` | 80 被 `frontend` 容器占用，先 `stop frontend`（见 §4.1） |
+| 续期成功但网站仍是旧证书 | `sudo certbot renew` 的 deploy-hook 失败了（最常见原因：钩子里用了 `docker compose exec`，而 `sudo` 丢掉了 compose 需要的环境变量）。按 §4.2 改用 `docker exec travel-agency-frontend nginx -s reload` 重载 |
 | 页面可开但接口 502 | `backend` 未就绪或崩溃，查 `logs backend`；确认 `JWT_SECRET` 已设置（缺失会启动即失败） |
 | backend 日志报 `Access denied for user 'travel'` | `DB_PASSWORD` 与库内 `travel` 账号的口令不一致；已有数据卷不会被环境变量改口令（见 §4.2） |
 | 浏览器报 Mixed Content | 地图 Key 或回调地址使用了 `http://`，改为 `https://` |

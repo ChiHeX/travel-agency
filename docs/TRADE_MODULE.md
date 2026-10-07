@@ -100,9 +100,11 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
   确认动作已被订单行锁串行化，不存在并发重复插入。
 - **脱敏**：接口 `message` 与通知正文只回"第 N 位出行人缺少哪个字段"，**不含姓名与证件号**
   （对齐 `API.md` §10 与 PRD §53.1/§53.2）。这一条有专门用例断言。
-- **索引**：判重查询由迁移 `011-add-message-audit-dedup-index.sql` 加
-  `idx_message_user_type_title (user_id, type, title)` 支撑。**只加普通索引，不加唯一键** ——
-  不同异常原因必须能各存一条。
+- **索引**：判重查询由迁移 `012-add-message-audit-dedup-index.sql` 加
+  `idx_message_user_type_title (user_id, type, title)` 支撑。**只加普通索引，不加唯一键**：
+  去重是业务判据而不是库约束 —— 这条判重查询跑在 `confirm` 的订单行锁之内（确认动作已被
+  串行化），不需要唯一键当并发闸门；而唯一键必须包含 `title`，标题里已带订单号与原因短标签，
+  不同订单、不同原因的标题本就不同，加了也不会互相冲突。普通索引在这里只解决查询效率。
 
 ## 6. 审计一致性（B-04）
 
@@ -199,7 +201,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
 > `Unknown column`，**39 条与交易无关的用例（酒店 / 线路 / 导游）会一起变红**，
 > 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
-> （补 010 之后同一套代码从 39 红变为 0 红）。`011` 只影响判重查询效率，不执行也能通过。
+> （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
 >
 > 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 34 / payment 34 / refund 8 /
 > departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /

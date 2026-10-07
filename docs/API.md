@@ -498,10 +498,13 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
   "出款结果待确认"用 `operationType=APPROVE_UNCONFIRMED` 区分而**不标成 FAILURE** ——
   标 FAILURE 会被读成"退款被拒、订单已恢复"，而这一刻钱可能已经退出去。
   被并发闸门挡下、未真正推进状态的请求不写留痕（它没有产生任何操作）。
-- **数据库**：新增迁移 `sql/migrations/011-add-message-audit-dedup-index.sql`，
+- **数据库**：新增迁移 `sql/migrations/012-add-message-audit-dedup-index.sql`，
   为 `sys_message` 加 `idx_message_user_type_title (user_id, type, title)` 支撑上面的判重查询。
-  **只加普通索引，不加唯一键**（不同异常原因必须能各存一条）。未执行只影响该查询效率，
-  不影响正确性；`sql/schema.sql` 已同步。**无列变更。**
+  **只加普通索引，不加唯一键**：去重是业务判据而不是库约束 —— 判重查询跑在
+  `WHERE id=? AND status='PAID_WAIT_CONFIRM'` 那次条件更新所在的同一事务、同一把订单行锁之内，
+  同一订单不会并发进入复核，不需要唯一键当并发闸门；唯一键也必须包含 `title`，
+  而 `title` 是「订单 {orderNo} 报名审核异常：{原因短标签}」，不同订单、不同原因的标题本就不同。
+  未执行只影响该查询效率，不影响正确性；`sql/schema.sql` 已同步。**无列变更。**
 - **兼容影响**：无字段增删改、无枚举变化。新增的是**错误条件**，按稳定 `code` 分支的调用方
   无需改动；只按 `409` 笼统处理"审核失败"的调用方可继续工作，但建议按 `code` 区分
   `ORDER_AUDIT_ANOMALY`（应提示"该订单资料有问题，请核对出行人信息"而不是"请重试"）。

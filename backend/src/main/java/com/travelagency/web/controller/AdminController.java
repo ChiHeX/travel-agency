@@ -203,13 +203,16 @@ public class AdminController {
         return series;
     }
 
-    /** 热门线路：与 {@code HomeService} 的排行同口径 —— 已上架且有成交，按成交量取前 8 条。 */
+    /**
+     * 热门线路：与 {@code HomeService} 的排行同口径 —— 已上架且有成交，按「有效报名订单条数」实时统计
+     * 取前 8 条（PRD §27）。
+     *
+     * <p>不再按 {@code travel_route.valid_booking_count} 这一物化计数列排序：该列可能被预置或被绕过业务
+     * 链路的写入污染，用它排行会与真实订单不符。现在与「热门目的地」共用同一套「有效报名」定义，只是
+     * 度量从游客人数换成订单条数，计数与排行都直接来自 {@code travel_order} 聚合。</p>
+     */
     private List<RouteSummaryView> popularRoutes() {
-        return routeService.pagePublic(1, 8, null, null, null, null, null, null, null, false,
-                        "validBookingCount,desc", null)
-                .items().stream()
-                .filter(route -> route.validBookingCount() != null && route.validBookingCount() > 0)
-                .toList();
+        return routeService.popularRoutes(8, null);
     }
 
     // 线路与行程管理端点已迁移到 AdminRouteController，团期管理端点已迁移到

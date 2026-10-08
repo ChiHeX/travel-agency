@@ -20,25 +20,31 @@ import java.util.stream.Collectors;
 public class HomeService {
     private final TravelRouteMapper routes;
     private final DepartureMapper departures;
+    private final RouteService routeService;
 
-    public HomeService(TravelRouteMapper routes, DepartureMapper departures) {
+    public HomeService(TravelRouteMapper routes, DepartureMapper departures, RouteService routeService) {
         this.routes = routes;
         this.departures = departures;
+        this.routeService = routeService;
     }
 
     public HomeView get() {
-        var popular = routes.selectList(published().gt("valid_booking_count", 0)
-                .orderByDesc("valid_booking_count").orderByAsc("id").last("LIMIT 8"));
+        // 热门线路复用后台工作台同一套实时口径（按有效报名订单条数，PRD §27），
+        // 不再读 travel_route.valid_booking_count —— 那一列可能被预置或被绕过业务链路写入，
+        // 用它排行会与真实订单不符。minAdultPrice / nextDepartureDate 由摘要一并返回。
+        var popular = routeService.popularRoutes(8, null).stream()
+                .map(HomeView.Route::from)
+                .toList();
         var recommended = routes.selectList(published().orderByDesc("rating_avg", "rating_count", "created_at")
                 .orderByAsc("id").last("LIMIT 8"));
         var upcoming = routes.selectUpcomingRoutes(RouteStatus.PUBLISHED, DepartureStatus.OPEN);
-        var routeIds = List.of(popular, recommended, upcoming).stream()
+        var routeIds = List.of(recommended, upcoming).stream()
                 .flatMap(List::stream)
                 .map(route -> route.id)
                 .distinct()
                 .toList();
         Map<Long, List<Departure>> departuresByRoute = availableDepartures(routeIds);
-        return new HomeView(routes.popularDestinations(), views(popular, departuresByRoute),
+        return new HomeView(routes.popularDestinations(), popular,
                 views(recommended, departuresByRoute), views(upcoming, departuresByRoute));
     }
 

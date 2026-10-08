@@ -382,6 +382,73 @@ class AdminDashboardContractIntegrationTest {
         assertEquals(overbooked.id.toString(), rows.get(4).get("departureId").asString());
     }
 
+    /**
+     * 热门线路按「有效报名订单条数」实时统计（PRD §27），不受 {@code travel_route.valid_booking_count}
+     * 物化计数列的预置值影响。
+     *
+     * <p>造两条线路，让物化计数与真实订单数<b>相反</b>：A 只有 2 张有效订单但计数列预置为 0，
+     * B 只有 1 张有效订单但计数列预置为 999。按真实订单数 A 在前、按物化计数 B 在前 —— 断言 A 排在
+     * B 前面、且各自展示的 {@code validBookingCount} 等于真实订单条数，才能证明排行与计数都来自
+     * 订单聚合，而不是那一列。</p>
+     *
+     * <p>同时钉住「有效报名」的边界：待支付、待确认与已取消不计入；退款申请中但由已确认发起的仍计入。</p>
+     */
+    @Test
+    @DisplayName("popularRoutes 按有效报名订单条数实时统计，不受物化计数列预置值影响")
+    void popularRoutesCountValidOrdersNotMaterializedColumn() throws Exception {
+        // 把库里已有订单作废、已有线路下架，让排行只反映本用例的数据（事务内执行，用例结束回滚）。
+        orderMapper.update(null, new UpdateWrapper<TravelOrder>().set("status", OrderStatus.CANCELLED));
+        routeMapper.update(null, new UpdateWrapper<TravelRoute>().set("deleted", 1));
+        SysUser buyer = buyer();
+
+        TravelRoute twoOrders = route("Dashboard hot two-orders route",
+                "Dashboard hot destination A", RouteStatus.PUBLISHED);
+        TravelRoute oneOrder = route("Dashboard hot one-order route",
+                "Dashboard hot destination B", RouteStatus.PUBLISHED);
+        // 物化计数列故意与真实订单数相反：若排行读这一列，顺序会翻转。
+        routeMapper.update(null, new UpdateWrapper<TravelRoute>()
+                .eq("id", twoOrders.id).set("valid_booking_count", 0));
+        routeMapper.update(null, new UpdateWrapper<TravelRoute>()
+                .eq("id", oneOrder.id).set("valid_booking_count", 999));
+
+        LocalDate today = orderMapper.databaseToday();
+        Departure depA = departure(twoOrders.id, today.plusDays(10), DepartureStatus.OPEN);
+        Departure depB = departure(oneOrder.id, today.plusDays(11), DepartureStatus.OPEN);
+        departureMapper.insert(depA);
+        departureMapper.insert(depB);
+
+        // A：2 张有效订单（1 张已确认 + 1 张「由已确认发起、正在申请退款」）+ 3 张不计入的。
+        order(twoOrders.id, depA.id, buyer.id, OrderStatus.CONFIRMED, 1, 0);
+        TravelOrder refundingConfirmed = order(twoOrders.id, depA.id, buyer.id,
+                OrderStatus.REFUND_APPLYING, 1, 0);
+        refund(refundingConfirmed.id, buyer.id, OrderStatus.CONFIRMED);
+        order(twoOrders.id, depA.id, buyer.id, OrderStatus.WAIT_PAY, 5, 5);
+        order(twoOrders.id, depA.id, buyer.id, OrderStatus.PAID_WAIT_CONFIRM, 5, 5);
+        order(twoOrders.id, depA.id, buyer.id, OrderStatus.CANCELLED, 5, 5);
+        // B：1 张有效订单。
+        order(oneOrder.id, depB.id, buyer.id, OrderStatus.COMPLETED, 1, 0);
+
+        JsonNode routes = dashboard("/api/admin/dashboard").get("popularRoutes");
+        int twoOrdersIndex = indexOfRoute(routes, "Dashboard hot two-orders route");
+        int oneOrderIndex = indexOfRoute(routes, "Dashboard hot one-order route");
+
+        assertEquals(2, routes.get(twoOrdersIndex).get("validBookingCount").asInt(),
+                "计数应为真实有效报名订单条数，而不是物化计数列的 0");
+        assertEquals(1, routes.get(oneOrderIndex).get("validBookingCount").asInt(),
+                "计数应为真实有效报名订单条数，而不是物化计数列的 999");
+        assertTrue(twoOrdersIndex < oneOrderIndex,
+                "应按有效报名订单条数排行：2 单的线路排在 1 单的前面，实际顺序为 " + routes);
+    }
+
+    private static int indexOfRoute(JsonNode routes, String name) {
+        for (int i = 0; i < routes.size(); i++) {
+            if (name.equals(routes.get(i).get("name").asString())) {
+                return i;
+            }
+        }
+        throw new AssertionError("popularRoutes 里没有线路「" + name + "」：" + routes);
+    }
+
     /** 造一条已上架线路，只填契约/表结构要求非空的列。 */
     private TravelRoute publishedRoute(String name, String destination) {
         return route(name, destination, RouteStatus.PUBLISHED);

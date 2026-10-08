@@ -17,5 +17,16 @@ public record HomeView(List<Destination> popularDestinations, List<Route> popula
                     route.description, route.coverUrl, price, nextDate, route.ratingAvg, route.ratingCount,
                     route.validBookingCount, route.status);
         }
+
+        /**
+         * 由公开线路摘要（{@link RouteSummaryView}）转换。热门线路直接复用
+         * {@code RouteService#popularRoutes} 的实时统计结果，避免首页再走一遍物化计数列。
+         */
+        public static Route from(RouteSummaryView route) {
+            return new Route(route.id(), route.name(), route.departureCity(), route.destination(),
+                    route.durationDays(), route.description(), route.coverUrl(), route.minAdultPrice(),
+                    route.nextDepartureDate(), route.ratingAvg(), route.ratingCount(),
+                    route.validBookingCount(), route.status());
+        }
     }
 }

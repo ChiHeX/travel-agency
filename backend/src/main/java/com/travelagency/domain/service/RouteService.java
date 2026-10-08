@@ -6,6 +6,7 @@ import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.DepartureView;
+import com.travelagency.domain.dto.RouteBookingCount;
 import com.travelagency.domain.dto.RouteDetailView;
 import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.dto.RouteView;
@@ -19,6 +20,7 @@ import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -169,6 +171,44 @@ public class RouteService {
                 new Page<>(Math.max(current, 1), Math.min(Math.max(size, 1), MAX_PAGE_SIZE)),
                 userId, RouteStatus.PUBLISHED);
         return toSummaryPage(favorites, userId);
+    }
+
+    /**
+     * 热门线路：按「有效报名订单条数」实时排行（PRD §27），供首页与后台工作台共用。
+     *
+     * <p>排行与计数都直接来自 {@code travel_order} 聚合（{@link TravelRouteMapper#popularRouteCounts}），
+     * 不读 {@code travel_route.valid_booking_count} 这一物化计数列 —— 该列可能被预置或被绕过业务链路的
+     * 写入污染，用它排行会与真实订单不符。返回的 {@link RouteSummaryView#validBookingCount()} 也据此
+     * 用真实订单条数覆盖，保证展示数值与排行口径一致。</p>
+     *
+     * <p>结果顺序即数据库返回的排行顺序（按订单条数降序、同数按 id 升序）；只包含有有效报名的线路。</p>
+     *
+     * @param currentUserId 当前登录用户，未登录传 null（仅影响 favorite 字段）
+     */
+    public List<RouteSummaryView> popularRoutes(int limit, Long currentUserId) {
+        List<RouteBookingCount> ranked = routeMapper.popularRouteCounts(limit);
+        if (ranked.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Integer> counts = new LinkedHashMap<>();
+        ranked.forEach(row -> counts.put(row.routeId(), row.bookingCount()));
+        List<Long> routeIds = new ArrayList<>(counts.keySet());
+        // selectByIds 不保证顺序，按排行顺序回填；未命中的（理论上不会，已过滤 PUBLISHED/未删除）跳过。
+        Map<Long, TravelRoute> routesById = routeMapper.selectByIds(routeIds).stream()
+                .collect(Collectors.toMap(route -> route.id, route -> route, (a, b) -> a));
+        Map<Long, BigDecimal> minPrices = minAdultPriceMap(routeIds);
+        Map<Long, Departure> nextDepartures = nextOpenDepartureMap(routeIds);
+        Set<Long> favorites = favoriteRouteIds(currentUserId, routeIds);
+        List<RouteSummaryView> items = new ArrayList<>(routeIds.size());
+        for (Long routeId : routeIds) {
+            TravelRoute route = routesById.get(routeId);
+            if (route == null) {
+                continue;
+            }
+            route.validBookingCount = counts.get(routeId);
+            items.add(summaryOf(route, minPrices, nextDepartures, favorites.contains(routeId)));
+        }
+        return items;
     }
 
     /**

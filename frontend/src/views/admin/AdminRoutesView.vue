@@ -152,7 +152,7 @@ onMounted(load)
               <th>最近出发</th>
               <th>可报名余位</th>
               <th>综合评分</th>
-              <th>有效报名人次</th>
+              <th>有效报名订单数</th>
               <th>销售状态</th>
               <th style="text-align: right;">操作</th>
             </tr>
@@ -177,7 +177,7 @@ onMounted(load)
                 </span>
                 <span v-else class="muted-text">暂无评价</span>
               </td>
-              <td>{{ row.validBookingCount == null ? '—' : `${row.validBookingCount} 人` }}</td>
+              <td>{{ row.validBookingCount == null ? '—' : `${row.validBookingCount} 单` }}</td>
               <td>
                 <span class="tag" :class="statusClasses[row.status] || ''">
                   {{ statusNames[row.status] || row.status }}

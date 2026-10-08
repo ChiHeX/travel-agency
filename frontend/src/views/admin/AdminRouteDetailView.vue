@@ -421,7 +421,7 @@ onMounted(load)
           <div><dt>最近出发</dt><dd>{{ routeInfo.nextDepartureDate || '暂无可售团期' }}</dd></div>
           <div><dt>可报名余位</dt><dd>{{ routeInfo.availableSeats == null ? '—' : `${routeInfo.availableSeats} 人` }}</dd></div>
           <div><dt>综合评分</dt><dd>{{ routeInfo.ratingCount ? `${routeInfo.ratingAvg}（${routeInfo.ratingCount} 条）` : '暂无评价' }}</dd></div>
-          <div><dt>有效报名人次</dt><dd>{{ routeInfo.validBookingCount }} 人</dd></div>
+          <div><dt>有效报名订单数</dt><dd>{{ routeInfo.validBookingCount }} 单</dd></div>
         </dl>
         <div class="text-blocks">
           <div><strong>线路简介</strong><p>{{ routeInfo.description || '未填写' }}</p></div>

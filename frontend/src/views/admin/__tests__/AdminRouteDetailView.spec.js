@@ -585,3 +585,22 @@ it('酒店改为待确认时保留住宿信息并清除酒店关联', async () =
   expect(updateItineraryDay.mock.calls[0][1]).toMatchObject({ accommodationType: 'PENDING', hotelId: null,
     roomType: '双床房', breakfastIncluded: true })
 })
+
+/**
+ * 线路侧的 {@code validBookingCount} 是「有效报名订单条数」（不是游客人数）——
+ * 契约里同名的人数字段是 {@code popularDestinations[].validBookingCount}。
+ * 基本资料这里此前写作「有效报名人次 … 人」，与工作台的「有效报名 X 单」和字段真实含义都不一致。
+ */
+it('有效报名订单数按「单」展示，不再标成「人次 / 人」', async () => {
+  fetchRoute.mockResolvedValue({
+    ...mockRouteDetail(),
+    route: { id: '21', name: '云南 6 日', status: 'DRAFT', durationDays: 6, validBookingCount: 132 }
+  })
+  const wrapper = mountView()
+  await flushPromises()
+
+  const grid = wrapper.find('.info-grid')
+  expect(grid.text()).toContain('有效报名订单数')
+  expect(grid.text()).toContain('132 单')
+  expect(grid.text()).not.toContain('人次')
+})

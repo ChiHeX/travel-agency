@@ -38,8 +38,8 @@ async function read(item) {
   try {
     const saved = await accountApi.readMessage(item.id)
     messages.value = messages.value.map(message => message.id === item.id ? { ...message, ...saved } : message)
-    await refreshUnread()
-    if (unreadOnly.value || loading.value) await load()
+    // Start a new list request immediately so pre-read responses are obsolete.
+    await Promise.all([load(), refreshUnread()])
   } catch (cause) { error.value = cause.message || '标记失败' }
   finally { pending.value = false }
 }
@@ -49,8 +49,7 @@ async function readAll() {
   pending.value = true
   try {
     await accountApi.readAllMessages()
-    await refreshUnread()
-    await load()
+    await Promise.all([load(), refreshUnread()])
     ElMessage.success('已全部标为已读')
   } catch (cause) { error.value = cause.message || '标记失败' }
   finally { pending.value = false }

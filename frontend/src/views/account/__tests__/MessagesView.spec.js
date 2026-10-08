@@ -13,8 +13,12 @@ vi.mock('element-plus', () => ({ ElMessage: { success: vi.fn() } }))
 const message = { id: '1', title: '报名确认', content: '你的报名已确认', read: false, createdAt: '2026-10-04' }
 beforeEach(() => {
   vi.resetAllMocks()
-  api.messages.mockResolvedValue({ items: [{ ...message }, { ...message, id: '2', read: true }], total: 2 })
-  api.readMessage.mockResolvedValue({ ...message, read: true })
+  let read = false
+  api.messages.mockImplementation(async () => ({ items: [{ ...message, read }, { ...message, id: '2', read: true }], total: 2 }))
+  api.readMessage.mockImplementation(async () => {
+    read = true
+    return { ...message, read: true }
+  })
 })
 async function open() {
   const wrapper = mount(MessagesView, { global: {
@@ -52,6 +56,7 @@ it.each([
   api.messages.mockResolvedValue({ items: [{ ...message, type, title, content: `${title}测试正文` }], total: 1 })
   const wrapper = await open()
   expect(wrapper.text()).toContain(`${title}测试正文`)
+  api.messages.mockResolvedValue({ items: [{ ...message, type, title, read: true }], total: 1 })
   await wrapper.get('.message-card-item').trigger('click')
   await flushPromises()
   expect(refreshUnread).toHaveBeenCalledOnce()
@@ -93,8 +98,9 @@ it('ignores repeated clicks while marking the message read', async () => {
   expect(api.readMessage).toHaveBeenCalledTimes(1)
   expect(card.classes()).toContain('unread')
   resolve({ ...message, read: true })
+  api.messages.mockResolvedValue({ items: [{ ...message, read: true }], total: 1 })
   await flushPromises()
-  expect(card.classes()).not.toContain('unread')
+  expect(wrapper.get('.message-card-item').classes()).not.toContain('unread')
 })
 
 it('keeps a failed read unread and lets the user retry after reloading', async () => {
@@ -121,4 +127,43 @@ it('reloads the unread-only list after reading a message', async () => {
   await flushPromises()
   expect(api.messages).toHaveBeenLastCalledWith({ page: 1, size: 10, unreadOnly: true })
   expect(wrapper.find('.message-card-item').exists()).toBe(false)
+})
+
+it.each(['single', 'all'])('invalidates pre-read lists before the unread count refresh finishes (%s)', async (action) => {
+  const wrapper = await open()
+  let resolveRead
+  let resolveOldList
+  let resolveNewList
+  let resolveUnread
+  const reading = new Promise(resolve => { resolveRead = resolve })
+  if (action === 'single') api.readMessage.mockReturnValueOnce(reading)
+  else api.readAllMessages.mockReturnValueOnce(reading)
+  refreshUnread.mockReturnValueOnce(new Promise(resolve => { resolveUnread = resolve }))
+  api.messages
+    .mockReturnValueOnce(new Promise(resolve => { resolveOldList = resolve }))
+    .mockResolvedValueOnce({ items: [{ ...message }], total: 1 })
+    .mockReturnValueOnce(new Promise(resolve => { resolveNewList = resolve }))
+
+  if (action === 'single') await wrapper.get('.message-card-item.unread').trigger('click')
+  else await wrapper.get('button.secondary-button').trigger('click')
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  await wrapper.get('input[type="checkbox"]').setValue(false)
+  await flushPromises()
+  resolveRead({ ...message, read: true })
+  await flushPromises()
+  expect(api.messages).toHaveBeenCalledTimes(4)
+  expect(api.messages).toHaveBeenLastCalledWith({ page: 1, size: 10, unreadOnly: false })
+
+  resolveOldList({ items: [{ ...message, title: '旧未读消息' }], total: 99 })
+  await flushPromises()
+  expect(wrapper.find('.messages-list').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('旧未读消息')
+
+  resolveNewList({ items: [{ ...message, read: true }], total: 1 })
+  await flushPromises()
+  expect(wrapper.get('.message-card-item').classes()).not.toContain('unread')
+  resolveUnread()
+  await flushPromises()
+  expect(wrapper.get('.message-card-item').classes()).not.toContain('unread')
+  wrapper.unmount()
 })

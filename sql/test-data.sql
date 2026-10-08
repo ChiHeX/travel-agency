@@ -255,38 +255,40 @@ FROM (
 JOIN hotel h ON h.name = source_data.hotel_name
 WHERE NOT EXISTS (SELECT 1 FROM hotel_image i WHERE i.hotel_id = h.id AND i.url = source_data.url);
 
-INSERT INTO travel_route (name, departure_city, destination, duration_days, description, cover_url, included, excluded, booking_notice, status, rating_avg, rating_count, valid_booking_count, created_by)
+-- valid_booking_count 不在此预置：它由业务链路维护（确认报名 +1 / 退款完成 -1），
+-- 演示库应让它等于真实「有效报名」订单数 —— 等下面的订单、退款插入完成后统一重算（见文件后面的重算语句）。
+INSERT INTO travel_route (name, departure_city, destination, duration_days, description, cover_url, included, excluded, booking_notice, status, rating_avg, rating_count, created_by)
 SELECT source_data.name, source_data.departure_city, source_data.destination, source_data.duration_days,
        source_data.description, source_data.cover_url, source_data.included, source_data.excluded,
        source_data.booking_notice, 'PUBLISHED', source_data.rating_avg, source_data.rating_count,
-       source_data.valid_booking_count, staff_user.id
+       staff_user.id
 FROM (
     SELECT '杭州西湖人文 3 日跟团游' AS name, '上海' AS departure_city, '杭州' AS destination, 3 AS duration_days,
            '课程测试线路：覆盖短线、低价团期与杭州关键词检索。' AS description,
            'https://images.unsplash.com/photo-1548919973-5cef591cdbc9?auto=format&fit=crop&w=1200&q=80' AS cover_url,
            '往返交通、2晚住宿、行程所列餐食及首道门票' AS included, '个人消费、单房差及自费项目' AS excluded,
-           '本线路为课程测试资料，请于出发前确认参团人信息。' AS booking_notice, 4.60 AS rating_avg, 18 AS rating_count, 42 AS valid_booking_count UNION ALL
+           '本线路为课程测试资料，请于出发前确认参团人信息。' AS booking_notice, 4.60 AS rating_avg, 18 AS rating_count UNION ALL
     SELECT '北京中轴线文化 4 日跟团游', '上海', '北京', 4, '课程测试线路：覆盖城市文化主题与中等价位筛选。',
            'https://images.unsplash.com/photo-1508804185872-d7badad00f7d?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.75, 36, 81 UNION ALL
+           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.75, 36 UNION ALL
     SELECT '成都熊猫与都江堰 4 日跟团游', '上海', '成都', 4, '课程测试线路：覆盖美食、城市与自然景点组合。',
            'https://images.unsplash.com/photo-1526495124232-a04e1849168c?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.82, 52, 106 UNION ALL
+           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.82, 52 UNION ALL
     SELECT '张家界奇峰秘境 4 日跟团游', '武汉', '张家界', 4, '课程测试线路：覆盖山地景观、不同出发城市与长周期团期。',
            'https://images.unsplash.com/photo-1528360983277-13d401cdc186?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.68, 27, 57 UNION ALL
+           '往返交通、3晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.68, 27 UNION ALL
     SELECT '厦门鼓浪屿慢游 3 日跟团游', '广州', '厦门', 3, '课程测试线路：覆盖海滨目的地、低价与满团状态展示。',
            'https://images.unsplash.com/photo-1548919973-5cef591cdbc9?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、2晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.50, 15, 39 UNION ALL
+           '往返交通、2晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.50, 15 UNION ALL
     SELECT '北疆喀纳斯全景 6 日跟团游', '北京', '乌鲁木齐·阿勒泰', 6, '课程测试线路：覆盖高价、长线与新疆关键词检索。',
            'https://images.unsplash.com/photo-1464817739973-0128fe77aaa1?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、5晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.90, 44, 73 UNION ALL
+           '往返交通、5晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.90, 44 UNION ALL
     SELECT '广州岭南风味 3 日跟团游', '深圳', '广州', 3, '课程测试线路：覆盖周边短线、城市地图和不同价格区间。',
            'https://images.unsplash.com/photo-1508804185872-d7badad00f7d?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、2晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.45, 12, 28 UNION ALL
+           '往返交通、2晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.45, 12 UNION ALL
     SELECT '晋中古城与石窟 5 日跟团游', '北京', '平遥·大同', 5, '课程测试线路：覆盖历史古建主题、关闭团期和分页测试。',
            'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&w=1200&q=80',
-           '往返交通、4晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.58, 21, 49
+           '往返交通、4晚住宿、行程所列餐食及首道门票', '个人消费、单房差及自费项目', '本线路为课程测试资料，请于出发前确认参团人信息。', 4.58, 21
 ) AS source_data
 LEFT JOIN sys_user staff_user ON staff_user.username = 'demo_staff'
 WHERE NOT EXISTS (SELECT 1 FROM travel_route r WHERE r.name = source_data.name AND r.deleted = 0);
@@ -476,6 +478,26 @@ INSERT INTO refund (order_id, user_id, amount, reason, original_order_status, st
 SELECT o.id, o.user_id, o.total_amount, '课程测试用退款申请。', 'CONFIRMED', 'APPLYING'
 FROM travel_order o WHERE o.order_no = 'TEST-ORDER-REFUND-APPLYING'
   AND NOT EXISTS (SELECT 1 FROM refund rf WHERE rf.order_id = o.id);
+
+-- 重算 travel_route.valid_booking_count，使其等于真实「有效报名」订单条数。
+-- 该列由业务链路维护（确认报名 +1 / 退款完成 -1），演示库不得预置虚高基数，
+-- 否则它会长期偏离真实订单；这里在订单与退款插入完成后按权威口径重算一次。
+-- 口径与 TravelRouteMapper#popularRouteCounts / #popularDestinations 完全一致：
+-- 已确认（含出行中/已完成），或退款申请中但由已确认发起的订单（退款完成前名额与计数都未回退；
+-- PAID_WAIT_CONFIRM 发起的退款从未 +1，靠 refund.original_order_status 区分）。
+-- 真实环境不应预置该列（见 docs/DATABASE_DESIGN.md §6.1）。
+UPDATE travel_route r
+SET r.valid_booking_count = (
+    SELECT COUNT(*)
+    FROM travel_order o
+    WHERE o.route_id = r.id
+      AND (o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED')
+           OR EXISTS (SELECT 1 FROM refund f
+                      WHERE f.order_id = o.id
+                        AND f.status IN ('APPLYING', 'PROCESSING')
+                        AND f.original_order_status IN ('CONFIRMED', 'TRAVELLING')))
+)
+WHERE r.deleted = 0;
 
 INSERT INTO review (order_id, user_id, route_id, rating, content, status)
 SELECT o.id, o.user_id, o.route_id, 5, '课程测试评价：用于验证线路详情页的评价展示与排序。', 'VISIBLE'

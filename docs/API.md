@@ -518,6 +518,27 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
 - **确认状态**：由成员 B 在交易模块收口中发起。前端（成员 E）联调尚未回执，
   **不得声称前端已确认**；页面需按 `code` 区分上述两类 409。
 
+### 12.5 热门线路改为按有效报名订单实时统计（本次变更）
+
+- **背景**：PRD §27 要求「热门线路按有效报名订单统计」、§32 要求 Dashboard「数据全部从数据库实时或
+  统计查询产生」，但实现里「热门线路」是按 `travel_route.valid_booking_count` 这一物化计数列排序的，
+  而该列在演示库中被预置了远高于真实订单的基数（如 `106`），于是排行与真实订单不符，且不会自动收敛。
+- **实现变更（非结构变更）**：
+  - 新增 `TravelRouteMapper#popularRouteCounts(limit)`：直接聚合 `travel_order`，按线路统计「有效报名」
+    **订单条数** 并实时排行取前 N 条；
+  - `RouteService#popularRoutes(limit, currentUserId)` 统一封装，供 `GET /home` 与
+    `GET /admin/dashboard` 共用；返回的 `RouteSummary.validBookingCount` 用真实订单条数覆盖，
+    保证展示数值与排行口径一致；
+  - 「有效报名」集合与热门目的地（`popularDestinations()`）完全一致，只是度量从人数换成订单条数。
+- **兼容影响**：
+  - 字段、类型、必填性均未变；`popularRoutes[].validBookingCount` 的含义明确为「有效报名订单条数」
+    （注意与 `popularDestinations[].validBookingCount` 的「游客人数」区分，二者同名不同度量）；
+  - 数值与排序会随真实订单变化（不再固定），数量可能比此前小；
+  - 无数据库结构变更、无需迁移脚本。`sql/test-data.sql` 不再预置 `travel_route.valid_booking_count`，
+    改为在订单插入后按权威口径重算，演示数据与真实订单一致。
+- **确认状态**：随 PRD §27/§32 收口提出，已随对应 PR 评审。**未记录前端、后端、测试成员的分别确认**，
+  不得据此声称三方已分别确认；如需成员级确认，请在合并前补记。
+
 ## 13. 模块契约工作流
 
 每个模块都按以下顺序推进，不能等后端写完后再反推接口：

@@ -236,7 +236,9 @@ SET valid_booking_count = (
 WHERE r.deleted = 0;
 ```
 
-存量库若发现该列与真实订单不符，可执行上面的语句按权威口径一次性对齐；正常情况下无需人工干预。
+存量库若发现该列与真实订单不符，执行 `sql/migrations/013-align-valid-booking-count.sql` 按同一口径
+一次性对齐（纯数据更新、幂等，不改结构、不改订单）；全新库由 `test-data.sql` 自行重算，无需执行。
+执行方式见[迁移说明](../sql/migrations/README.md)。
 
 ### 6.2 名额计数只由业务链路维护
 

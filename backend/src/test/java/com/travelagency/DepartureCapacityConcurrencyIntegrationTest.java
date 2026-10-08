@@ -454,6 +454,9 @@ class DepartureCapacityConcurrencyIntegrationTest {
         OperationLog log = latestAnomalyLog();
         assertEquals("FAILURE", log.result, "审核异常必须以 FAILURE 留痕");
         assertTrue(log.detail.contains("实名"), "留痕应说明异常原因： " + log.detail);
+        // 同一异常重复复核不能再次投递相同提醒。
+        assertThrows(OrderAuditAnomalyException.class,
+                () -> orderService.confirm(order.orderNo(), staffUserId));
         List<Message> notifications = messages.selectList(new QueryWrapper<Message>()
                 .eq("user_id", userId).eq("type", "ORDER_AUDIT_ANOMALY"));
         assertEquals(1, notifications.size(), "必须留下一条审核异常通知（noRollbackFor 使其不被回滚）");

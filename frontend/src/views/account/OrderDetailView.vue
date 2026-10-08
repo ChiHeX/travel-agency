@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { orderApi } from '@/api/modules'
 import CancelOrderButton from '@/components/CancelOrderButton.vue'
+import RouteItinerary from '@/components/RouteItinerary.vue'
 import {
   createIdempotencyKey,
   genderLabels,
@@ -25,11 +26,33 @@ const refundSubmitting = ref(false)
 const reviewSubmitting = ref(false)
 const cancelling = ref(false)
 const actionError = ref('')
+const itinerary = ref([])
+const itineraryOpen = ref(false)
+const itineraryLoading = ref(false)
+const itineraryError = ref('')
 const refund = reactive({ reason: '' })
 const review = reactive({ rating: 5, content: '' })
 let refundKey = createIdempotencyKey()
 
 const labels = orderStatusLabels
+const displayOrderStatus = computed(() => detail.value?.order?.status === 'REFUND_APPLYING' &&
+  detail.value?.refunds?.some(item => item.status === 'PROCESSING')
+  ? refundStatusLabels.PROCESSING : labels[detail.value?.order?.status] || detail.value?.order?.status)
+const canViewItinerary = computed(() => ['CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.value?.order?.status))
+
+async function viewItinerary() {
+  if (itineraryLoading.value) return
+  itineraryOpen.value = true
+  itineraryLoading.value = true
+  itineraryError.value = ''
+  try {
+    itinerary.value = await orderApi.itinerary(currentRoute.params.orderNo)
+  } catch (error) {
+    itineraryError.value = error.message || '每日行程加载失败，请重试'
+  } finally {
+    itineraryLoading.value = false
+  }
+}
 
 const statusTags = {
   WAIT_PAY: 'warning',
@@ -147,7 +170,7 @@ onMounted(load)
             </div>
 
             <span class="tag status-pill-lg" :class="statusTags[detail.order.status]">
-              {{ labels[detail.order.status] || detail.order.status }}
+              {{ displayOrderStatus }}
             </span>
           </div>
 
@@ -171,6 +194,17 @@ onMounted(load)
               <strong class="price-val">¥{{ detail.order.totalAmount }}</strong>
             </div>
           </div>
+        </div>
+
+        <div v-if="canViewItinerary" class="detail-card">
+          <div class="card-head">
+            <h3>每日行程</h3>
+            <button type="button" class="secondary-button" :disabled="itineraryLoading" @click="viewItinerary">{{ itineraryLoading ? '加载中…' : itineraryOpen ? '刷新行程' : '查看行程' }}</button>
+          </div>
+          <p class="sub-label">查看当前每日游览、餐食、交通与住宿安排，线路下架后仍可查看。安排以旅行社最新确认为准，此处不是下单时快照。</p>
+          <el-skeleton v-if="itineraryLoading" :rows="4" animated />
+          <p v-else-if="itineraryError" class="form-error" role="alert">{{ itineraryError }}</p>
+          <RouteItinerary v-else-if="itineraryOpen" :days="itinerary" />
         </div>
 
         <!-- Progress Timeline Card -->

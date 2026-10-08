@@ -91,10 +91,13 @@ const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF
 const guideViews = ['guides', 'latest-guides', 'city-guides', 'guide-publishers', 'publisher-guides', 'guide-detail']
 const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', 'hotel-detail', ...guideViews].includes(route.name))
 
+let unreadRequest = 0
 async function refreshUnread() {
+  const requestId = ++unreadRequest
   if (auth.isLoggedIn) {
     try {
-      unreadCount.value = (await accountApi.unreadCount())?.count || 0
+      const result = await accountApi.unreadCount()
+      if (requestId === unreadRequest && auth.isLoggedIn) unreadCount.value = result?.count || 0
     } catch (_) {}
   } else unreadCount.value = 0
 }

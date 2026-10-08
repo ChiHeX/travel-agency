@@ -9,6 +9,8 @@ import com.travelagency.domain.entity.RouteItineraryDay;
 import com.travelagency.domain.entity.RouteItineraryItem;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.entity.TravelOrder;
+import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.AttractionMapper;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.HotelMapper;
@@ -81,6 +83,7 @@ class RouteAdminContractIntegrationTest {
     @Autowired SysUserMapper users;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
+    @Autowired TravelOrderMapper orders;
 
     private MockMvc mvc;
     private String staffToken;
@@ -574,6 +577,53 @@ class RouteAdminContractIntegrationTest {
         departure.guideId = null;
         departure.version = 0;
         departures.insert(departure);
+    }
+
+    @Test
+    void orderOwnerCanReadOfflineRouteItineraryButOthersCannot() throws Exception {
+        String routeId = createRoute("订单行程测试", 1);
+        createDay(routeId, 1, "每日游览安排");
+        TravelRoute route = routes.selectById(Long.valueOf(routeId));
+        route.status = "OFFLINE";
+        routes.updateById(route);
+        insertDepartureWithoutGuide(routeId);
+        Departure departure = departures.selectOne(new QueryWrapper<Departure>().eq("route_id", routeId));
+        SysUser owner = account();
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "ITINERARY-" + suffix();
+        order.userId = owner.id;
+        order.routeId = route.id;
+        order.departureId = departure.id;
+        order.contactName = "测试联系人";
+        order.contactPhone = "13800000000";
+        order.adultCount = 1;
+        order.childCount = 0;
+        order.adultUnitPrice = new BigDecimal("100.00");
+        order.childUnitPrice = BigDecimal.ZERO;
+        order.totalAmount = order.adultUnitPrice;
+        order.status = "CONFIRMED";
+        order.paymentStatus = "PAID";
+        orders.insert(order);
+        String path = "/api/orders/" + order.orderNo + "/itinerary";
+        mvc.perform(get("/api/routes/" + routeId)).andExpect(status().isNotFound());
+        for (String state : List.of("CONFIRMED", "TRAVELLING", "COMPLETED")) {
+            order.status = state;
+            orders.updateById(order);
+            mvc.perform(get(path).header("Authorization", bearer(owner, "USER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].id").isString())
+                    .andExpect(jsonPath("$.data[0].title").value("每日游览安排"))
+                    .andExpect(jsonPath("$.data[0].items").isArray());
+        }
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(get(path).header("Authorization", userToken)).andExpect(status().isForbidden());
+        mvc.perform(get(path).header("Authorization", staffToken)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/orders/MISSING/itinerary").header("Authorization", bearer(owner, "USER")))
+                .andExpect(status().isNotFound());
+        order.status = "REFUNDED";
+        orders.updateById(order);
+        mvc.perform(get(path).header("Authorization", bearer(owner, "USER")))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_STATE_CONFLICT"));
     }
 
     private SysUser account() {

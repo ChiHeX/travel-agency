@@ -236,8 +236,10 @@ SET valid_booking_count = (
 WHERE r.deleted = 0;
 ```
 
-存量库若发现该列与真实订单不符，执行 `sql/migrations/013-align-valid-booking-count.sql` 按同一口径
-一次性对齐（纯数据更新、幂等，不改结构、不改订单）；全新库由 `test-data.sql` 自行重算，无需执行。
+存量演示库**升级到本次变更时应执行一次** `sql/migrations/013-align-valid-booking-count.sql`，按同一口径
+一次性对齐（纯数据更新、幂等，不改结构、不改订单）：虽然热门排行已不读该列，但后台线路列表与线路详情的
+「有效报名订单数」、公开线路列表的「报名人数」排序（PRD §15.4，来源见 PRD §27「系统有效订单」）读的就是它，
+不对齐会继续显示预置值。最新初始化的库由 `test-data.sql` 在订单导入后自行重算，无需执行。
 执行方式见[迁移说明](../sql/migrations/README.md)。
 
 ### 6.2 名额计数只由业务链路维护

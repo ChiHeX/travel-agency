@@ -149,7 +149,10 @@ paths:
           schema: { type: boolean }
         - name: sort
           in: query
-          description: 允许 minAdultPrice、validBookingCount、ratingAvg
+          description: >-
+            允许 minAdultPrice、validBookingCount、ratingAvg。validBookingCount,desc 就是 PRD §15.4 的
+            「报名人数」排序，其来源按 PRD §27 是「系统有效订单」：线路的 validBookingCount 是
+            **有效报名订单条数**（不是游客人数）。
           schema:
             type: string
             enum: ['minAdultPrice,asc', 'minAdultPrice,desc', 'validBookingCount,desc', 'ratingAvg,desc']
@@ -2718,7 +2721,15 @@ components:
         availableSeats: { type: [integer, 'null'], minimum: 0, example: 18 }
         ratingAvg: { type: string, pattern: '^[0-5]\.[0-9]{2}$', example: '4.80' }
         ratingCount: { type: integer, minimum: 0, example: 26 }
-        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        validBookingCount:
+          type: integer
+          minimum: 0
+          description: >-
+            该线路「有效报名」的**订单条数**：已确认（含出行中 / 已完成），或退款申请中但由已确认发起的
+            订单（退款完成才回退）。热门线路（GET /home、GET /admin/dashboard 的 popularRoutes）即按此
+            值实时聚合 travel_order 排行。注意与 DestinationStatistic.validBookingCount（**游客人数**）
+            同名不同度量，展示时单位应为「单」而不是「人」。
+          example: 132
         status: { $ref: '#/components/schemas/RouteStatus' }
         favorite: { type: boolean, example: false }
     Route:

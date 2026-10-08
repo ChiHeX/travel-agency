@@ -13,6 +13,8 @@ import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewRequest;
 import com.travelagency.domain.dto.ReviewView;
 import com.travelagency.domain.service.OrderService;
+import com.travelagency.domain.service.OrderItineraryService;
+import com.travelagency.domain.dto.ItineraryDayView;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.ResponseEntity;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/orders")
@@ -41,9 +44,11 @@ public class OrderController {
     private static final String IDEMPOTENCY_KEY_CONSTRAINT = "Idempotency-Key 长度必须在 8 到 128 个字符之间";
 
     private final OrderService orderService;
+    private final OrderItineraryService itineraryService;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, OrderItineraryService itineraryService) {
         this.orderService = orderService;
+        this.itineraryService = itineraryService;
     }
 
     /**
@@ -66,6 +71,11 @@ public class OrderController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String status) {
         return ApiResponse.ok(orderService.listMine(CurrentUser.required().userId(), status, page, size));
+    }
+
+    @GetMapping("/{orderNo}/itinerary")
+    public ApiResponse<List<ItineraryDayView>> itinerary(@PathVariable String orderNo) {
+        return ApiResponse.ok(itineraryService.itinerary(orderNo, CurrentUser.required().userId()));
     }
 
     @GetMapping("/{orderNo}")

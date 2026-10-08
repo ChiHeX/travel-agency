@@ -559,6 +559,14 @@ OpenAPI 路径、模型、权限和错误
 模拟支付订单申请或审核退款返回 409 `LOCAL_PAYMENT_REFUND_UNSUPPORTED`，不会调用支付宝出款。
 前后端、契约及测试随本功能同步修改。
 
+### 13.2 订单所有者的行程访问
+
+新增 `GET /orders/{orderNo}/itinerary`，只允许订单所有者访问 `CONFIRMED / TRAVELLING / COMPLETED`
+订单关联线路的当前每日行程，线路下架后仍可查看。返回现有 `ItineraryDay` 数组，不新增快照，也不修改
+公开线路/酒店详情的可见性；不返回酒店内部联系方式。非所有者返回 403，订单不存在返回 404，
+订单尚未确认或已取消/退款返回 409 `ORDER_STATE_CONFLICT`。本次由用户明确授权新增；
+未取得 B/C 的独立确认，不应声称已完成三方联调。无数据库变更，不影响订单价格和出行人快照。
+
 ## 14. 实现与验收要求
 
 后端实现每个接口时必须逐项核对 OpenAPI 中的 `operationId`、路径、方法、请求模型、成功状态码、响应模型、权限、幂等要求和错误响应。Controller 使用独立 DTO / VO，不得直接暴露 Entity；Java `Long` 主键必须按字符串输出，金额必须由 `BigDecimal` 计算并按十进制字符串输出。

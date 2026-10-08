@@ -13,17 +13,22 @@ const unreadOnly = ref(false)
 const pending = ref(false)
 const refreshUnread = inject('refreshUnread', () => {})
 
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   error.value = ''
   try {
     const data = await accountApi.messages({ page: page.value, size: 10, unreadOnly: unreadOnly.value })
+    if (requestId !== latestRequest) return
     messages.value = data.items
     total.value = data.total
   } catch (cause) {
+    if (requestId !== latestRequest) return
     error.value = cause.message || '消息加载失败'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 
@@ -31,9 +36,10 @@ async function read(item) {
   if (item.read || pending.value) return
   pending.value = true
   try {
-    Object.assign(item, await accountApi.readMessage(item.id))
+    const saved = await accountApi.readMessage(item.id)
+    messages.value = messages.value.map(message => message.id === item.id ? { ...message, ...saved } : message)
     await refreshUnread()
-    if (unreadOnly.value) await load()
+    if (unreadOnly.value || loading.value) await load()
   } catch (cause) { error.value = cause.message || '标记失败' }
   finally { pending.value = false }
 }
@@ -65,7 +71,7 @@ onMounted(load)
       </header>
 
       <div class="message-toolbar">
-        <el-checkbox v-model="unreadOnly" :disabled="loading" @change="changePage(1)">只看未读</el-checkbox>
+        <el-checkbox v-model="unreadOnly" @change="changePage(1)">只看未读</el-checkbox>
         <button class="secondary-button" :disabled="pending || loading" @click="readAll">{{ pending ? '处理中…' : '全部已读' }}</button>
       </div>
 

@@ -44,6 +44,36 @@ it('clicking message content marks only that message read and refreshes the unre
   expect(api.readMessage).toHaveBeenCalledTimes(1)
 })
 
+it.each([
+  ['ORDER_AUDIT_ANOMALY', '报名审核异常'],
+  ['DEPARTURE_REMINDER', '即将出发提醒'],
+  ['DEPARTURE_STATUS', '团期状态变化']
+])('displays and marks %s notifications read', async (type, title) => {
+  api.messages.mockResolvedValue({ items: [{ ...message, type, title, content: `${title}测试正文` }], total: 1 })
+  const wrapper = await open()
+  expect(wrapper.text()).toContain(`${title}测试正文`)
+  await wrapper.get('.message-card-item').trigger('click')
+  await flushPromises()
+  expect(refreshUnread).toHaveBeenCalledOnce()
+  expect(wrapper.get('.message-card-item').classes()).not.toContain('unread')
+  wrapper.unmount()
+})
+
+it('does not let an older unread filter response replace the latest list', async () => {
+  const wrapper = await open()
+  let resolve
+  api.messages.mockReturnValueOnce(new Promise(r => { resolve = r }))
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  api.messages.mockResolvedValueOnce({ items: [{ ...message, title: '最新消息' }], total: 1 })
+  await wrapper.get('input[type="checkbox"]').setValue(false)
+  await flushPromises()
+  resolve({ items: [{ ...message, title: '旧消息' }], total: 1 })
+  await flushPromises()
+  expect(wrapper.text()).toContain('最新消息')
+  expect(wrapper.text()).not.toContain('旧消息')
+  wrapper.unmount()
+})
+
 it.each(['Enter', ' '])('supports marking a focused message read with %s', async key => {
   const wrapper = await open()
   const card = wrapper.get('.message-card-item.unread')

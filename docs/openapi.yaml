@@ -574,6 +574,28 @@ paths:
               schema: { $ref: '#/components/schemas/OrderDetailEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /orders/{orderNo}/itinerary:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    get:
+      tags: [Orders]
+      operationId: getMyOrderItinerary
+      summary: 查看本人已报名订单的每日行程
+      description: |
+        仅订单所有者可访问，订单必须为 CONFIRMED、TRAVELLING 或 COMPLETED。
+        返回该订单关联线路的当前每日行程（不是下单时快照）；线路下架不影响访问。
+        不提供酒店公开详情的额外权限，不返回酒店内部联系方式。
+      responses:
+        '200':
+          description: 按天排序的当前行程，没有安排时返回空数组
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /orders/{orderNo}/pay:
     parameters:
       - { $ref: '#/components/parameters/OrderNo' }

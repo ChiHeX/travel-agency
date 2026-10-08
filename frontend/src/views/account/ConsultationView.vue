@@ -107,16 +107,19 @@ async function deleteConsultation(consultation) {
   }
 }
 
+let latestRequest = 0
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   error.value = ''
   try {
     const result = await accountApi.consultations({ page: page.value, size: 10 })
+    if (requestId !== latestRequest) return
     items.value = result.items
     total.value = result.total
-  } catch (cause) { error.value = cause.message || '咨询加载失败'
+  } catch (cause) { if (requestId === latestRequest) error.value = cause.message || '咨询加载失败'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 

@@ -13,6 +13,8 @@ const currentRoute = useRoute()
 const router = useRouter()
 const routeData = ref(null)
 const savedTravelers = ref([])
+const travelersError = ref('')
+const travelersLoading = ref(false)
 const loading = ref(true)
 const submitting = ref(false)
 const loadError = ref('')
@@ -72,16 +74,28 @@ function syncTravelers() {
 
 watch(participantCount, syncTravelers, { immediate: true })
 
+async function loadSavedTravelers() {
+  if (travelersLoading.value) return
+  travelersLoading.value = true
+  travelersError.value = ''
+  try {
+    savedTravelers.value = await accountApi.travelers() || []
+  } catch (error) {
+    travelersError.value = error.message || '常用出行人加载失败'
+  } finally {
+    travelersLoading.value = false
+  }
+}
+
 onMounted(async () => {
   loadError.value = ''
   try {
-    const [detailResult, travelersResult] = await Promise.allSettled([
+    const [detailResult] = await Promise.allSettled([
       routeApi.detail(currentRoute.query.routeId),
-      accountApi.travelers()
+      loadSavedTravelers()
     ])
     if (detailResult.status === 'rejected') throw detailResult.reason
     routeData.value = detailResult.value
-    savedTravelers.value = travelersResult.status === 'fulfilled' ? travelersResult.value || [] : []
   } catch (error) {
     loadError.value = error.message || '报名资料加载失败，请返回线路详情重试'
   } finally {
@@ -275,6 +289,10 @@ async function goToPayment() {
                 <p>共 {{ participantCount }} 位，请填写与证件一致的实名信息。</p>
               </header>
 
+              <div v-if="travelersError" class="form-error" role="alert">
+                常用出行人加载失败：{{ travelersError }}。您仍可手工填写。
+                <button type="button" class="text-button" :disabled="travelersLoading" @click="loadSavedTravelers">{{ travelersLoading ? '重试中…' : '重新加载' }}</button>
+              </div>
               <div class="travelers-list">
                 <div
                   v-for="(traveler, index) in form.travelers"

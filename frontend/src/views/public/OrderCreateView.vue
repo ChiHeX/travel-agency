@@ -89,13 +89,9 @@ async function loadSavedTravelers() {
 
 onMounted(async () => {
   loadError.value = ''
+  void loadSavedTravelers()
   try {
-    const [detailResult] = await Promise.allSettled([
-      routeApi.detail(currentRoute.query.routeId),
-      loadSavedTravelers()
-    ])
-    if (detailResult.status === 'rejected') throw detailResult.reason
-    routeData.value = detailResult.value
+    routeData.value = await routeApi.detail(currentRoute.query.routeId)
   } catch (error) {
     loadError.value = error.message || '报名资料加载失败，请返回线路详情重试'
   } finally {

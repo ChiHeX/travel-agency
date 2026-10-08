@@ -534,8 +534,9 @@ Mock 模式的 `/api` 请求由 Vite 转发到本机 `4010` 端口。普通 `npm
   - 字段、类型、必填性均未变；`popularRoutes[].validBookingCount` 的含义明确为「有效报名订单条数」
     （注意与 `popularDestinations[].validBookingCount` 的「游客人数」区分，二者同名不同度量）；
   - 数值与排序会随真实订单变化（不再固定），数量可能比此前小；
-  - 无数据库结构变更、无需迁移脚本。`sql/test-data.sql` 不再预置 `travel_route.valid_booking_count`，
-    改为在订单插入后按权威口径重算，演示数据与真实订单一致。
+  - **无数据库结构变更、无必填迁移**。`sql/test-data.sql` 不再预置 `travel_route.valid_booking_count`，
+    改为在订单插入后按权威口径重算；存量库如需让仍按该列排序的入口（如公开线路列表的「报名人数」排序）
+    回到真实数据，可执行纯数据的幂等迁移 `sql/migrations/013-align-valid-booking-count.sql`。
 - **确认状态**：随 PRD §27/§32 收口提出，已随对应 PR 评审。**未记录前端、后端、测试成员的分别确认**，
   不得据此声称三方已分别确认；如需成员级确认，请在合并前补记。
 

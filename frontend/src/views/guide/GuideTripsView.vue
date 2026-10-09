@@ -10,6 +10,21 @@ const rows = ref([])
 const data = ref(null)
 const loading = ref(false)
 const pending = ref(false)
+const errorMessage = ref('')
+// 「我的团期」列表的分类筛选与分页：契约 GET /guide/departures 支持 scope + page/size，
+// 不传参时后端按 page=1、size=20 返回，页面上既没有翻页入口、也拿不到第 21 条之后的团期。
+const scope = ref('')
+const page = ref(1)
+const pageSize = 9
+const total = ref(0)
+
+// scope 取值与契约 GET /guide/departures 的枚举一致（UPCOMING=待出发 / CURRENT=行程中 / HISTORY=已完成）。
+const scopeTabs = [
+  { value: '', label: '全部团期' },
+  { value: 'UPCOMING', label: '待出发' },
+  { value: 'CURRENT', label: '行程中' },
+  { value: 'HISTORY', label: '已完成' }
+]
 
 /**
  * 契约 POST /guide/departures/{departureId}/start 允许的前置状态
@@ -26,8 +41,20 @@ const itemTypeNames = {
   ATTRACTION: '景点', TRANSPORT: '交通', MEAL: '餐食', ACTIVITY: '活动', OTHER: '其他'
 }
 
+/**
+ * 请求序号：只允许**最新一次**请求写回 rows / total / errorMessage / loading。
+ *
+ * <p>切换分类或翻页会连续发出多个请求，而返回顺序不保证与发出顺序一致：旧请求晚到成功会
+ * 覆盖新分类的列表（选中的分类与列表对不上），晚到失败会清空新结果并弹出一条过期错误；
+ * 旧请求结束时若把 loading 关掉，还会让仍在途的新请求提前露出旧一页的数据。
+ * 与 RouteListView / ReviewsView / AdminDashboardView 等列表页同一方案。</p>
+ */
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
+  errorMessage.value = ''
   try {
     if (props.detail) {
       // 契约：GET /guide/departures/{id} 返回 { departure, route, itinerary }；
@@ -36,13 +63,43 @@ async function load() {
         guideApi.detail(currentRoute.params.id),
         guideApi.passengers(currentRoute.params.id)
       ])
+      if (requestId !== latestRequest) return
       data.value = { ...detail, passengers }
     } else {
-      rows.value = (await guideApi.departures())?.items || []
+      // 带上 scope 与分页参数：契约声明 page/size（size 上限 100），scope 只接受
+      // UPCOMING/CURRENT/HISTORY（空值 = 不筛选）。只取第一页会漏掉后续团期。
+      const result = await guideApi.departures({
+        ...(scope.value ? { scope: scope.value } : {}),
+        page: page.value,
+        size: pageSize
+      })
+      if (requestId !== latestRequest) return
+      rows.value = result?.items || []
+      total.value = result?.total || 0
     }
+  } catch (cause) {
+    // 过期请求的失败不得清空新结果，也不得显示已经过时的错误。
+    if (requestId !== latestRequest) return
+    rows.value = []
+    total.value = 0
+    errorMessage.value = cause?.message || '团期列表加载失败，请稍后重试'
   } finally {
-    loading.value = false
+    // 只有最新请求才有权结束加载态。
+    if (requestId === latestRequest) loading.value = false
   }
+}
+
+/** 切换分类筛选：回到第一页再请求，避免停留在超出新结果范围的页码上。 */
+function selectScope(value) {
+  if (scope.value === value) return
+  scope.value = value
+  page.value = 1
+  load()
+}
+
+function changePage(nextPage) {
+  page.value = nextPage
+  load()
 }
 
 /**
@@ -215,8 +272,27 @@ onMounted(load)
         </div>
       </div>
 
+      <div class="scope-tab-bar">
+        <button
+          v-for="tab in scopeTabs"
+          :key="tab.value || 'all'"
+          type="button"
+          class="scope-tab-btn"
+          :class="{ active: scope === tab.value }"
+          @click="selectScope(tab.value)"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+
       <div v-if="loading" class="admin-panel">
         <el-skeleton :rows="8" animated />
+      </div>
+
+      <div v-else-if="errorMessage" class="empty-box trip-error">
+        <strong>团期暂时无法加载</strong>
+        <span>{{ errorMessage }}</span>
+        <button type="button" class="secondary-button" @click="load">重新加载</button>
       </div>
 
       <div v-else-if="rows.length" class="trips-grid">
@@ -233,7 +309,7 @@ onMounted(load)
             <span class="trip-id-text">团期 #{{ trip.id }}</span>
           </div>
 
-          <h3>跟团线路 #{{ trip.routeId }}</h3>
+          <h3>{{ trip.routeName || `跟团线路 #${trip.routeId}` }}</h3>
           <p class="trip-dates-text">{{ trip.startDate }} 至 {{ trip.endDate }}</p>
 
           <div class="card-foot-link">
@@ -243,7 +319,18 @@ onMounted(load)
       </div>
 
       <div v-else class="empty-box">
-        暂无分配给您的带团排期记录。
+        暂无符合当前筛选的带团排期记录。
+      </div>
+
+      <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+        <el-pagination
+          background
+          layout="prev, pager, next"
+          :current-page="page"
+          :page-size="pageSize"
+          :total="total"
+          @current-change="changePage"
+        />
       </div>
     </template>
   </div>
@@ -385,6 +472,56 @@ onMounted(load)
 .card-foot-link {
   padding-top: 12px;
   border-top: 1px solid var(--border-line);
+}
+
+.scope-tab-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.scope-tab-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-full, 999px);
+  background: white;
+  border: 1px solid var(--border-line);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.scope-tab-btn:hover {
+  background: var(--bg-subtle, #f7f8fa);
+  color: var(--text-primary);
+  border-color: var(--border-strong, #c7d0dc);
+}
+
+.scope-tab-btn.active {
+  background: var(--brand-blue);
+  color: white;
+  border-color: var(--brand-blue);
+  font-weight: 600;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 4px;
+}
+
+.trip-error {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+}
+
+.trip-error span {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 @media (max-width: 900px) {

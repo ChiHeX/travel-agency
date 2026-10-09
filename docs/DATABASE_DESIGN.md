@@ -194,21 +194,32 @@ erDiagram
 
 ## 6. 数据一致性注意事项
 
-### 6.1 `travel_route.valid_booking_count` 是计数器，不会自动对齐真实订单
+### 6.1 热门线路按有效订单实时统计，`valid_booking_count` 不再承载排行
 
-该列由业务链路维护：工作人员确认报名时 `+1`，退款完成时 `-1`。
-但 `test-data.sql` 为演示效果直接预置了较大的数值（如 `106`），因此它与库中真实的
-「有效报名」订单数之间存在一个**固定的偏差**。
+「有效报名」的权威口径是**订单集合**：已确认（含出行中 / 已完成），或退款申请中但由已确认发起的
+订单（退款完成前名额与计数都未回退）。`TravelRouteMapper` 的两条统计都直接聚合 `travel_order`：
 
-⚠️ **这个偏差不会自动修正。** 后续的 `+1 / -1` 只是在这个预置基数上做增减：
-确认一单让它变成 107，退款一单让它变回 106，永远围绕预置基数浮动，而不是向真实订单数收敛。
+- `popularRouteCounts(limit)`：热门线路，按该集合的**订单条数**排行（PRD §27「按有效报名订单统计」）；
+- `popularDestinations()`：热门目的地，按同一集合的**游客人数**排行（PRD §27「按有效报名游客数量统计」）。
 
-⚠️ **重算时口径必须与业务一致，否则会重复扣减。** 退款申请提交后、退款完成之前，
-名额与线路计数都还没有回退（退款完成才 `-1`），这些订单**仍属有效报名**。
-如果重算只统计 `CONFIRMED / TRAVELLING / COMPLETED`，就会把「已确认但正在退款」的订单提前排除，
-等退款真正完成时再减一次 —— 计数被扣两遍。
+两处「热门」共用同一套「有效」定义，只是度量不同。后台工作台（`AdminController#popularRoutes`）与
+用户首页（`HomeService`）都复用 `RouteService#popularRoutes`，不会再出现两套口径。
 
-因此重算条件必须与 `TravelRouteMapper#popularDestinations()`（「有效报名」的权威口径）完全一致：
+`travel_route.valid_booking_count` 仍是一个由业务链路维护的计数器（确认报名 `+1`、退款完成 `-1`），
+但**已不再参与热门排行**，只作为轻量字段保留给需要「按报名数排序」的列表查询复用。
+
+> ⚠️ 这一列是反范式的物化计数，一旦被预置或被绕过业务链路的写入污染，就会长期偏离真实订单、
+> 且不会自动收敛。因此**权威口径永远是订单聚合**；真实环境不应预置该列。
+
+**演示数据不再预置基数。** `test-data.sql` 的线路插入不再写死 `valid_booking_count`，而是在订单、
+退款插入完成后执行一次重算，使其等于真实有效报名订单数（脚本内附重算语句）。重算条件必须与上面的
+权威口径完全一致：
+
+- 退款申请提交后、退款完成之前，名额与计数都还没有回退，这些订单**仍属有效报名**；
+  若重算只统计 `CONFIRMED / TRAVELLING / COMPLETED`，会把「已确认但正在退款」的订单提前排除，
+  等退款真正完成时再减一次 —— 计数被扣两遍。
+- `PAID_WAIT_CONFIRM` 的订单也能申请退款，但它从未 `+1` 过，必须用退款单上的
+  `original_order_status` 区分，不能算进来。
 
 ```sql
 UPDATE travel_route r
@@ -217,24 +228,19 @@ SET valid_booking_count = (
     FROM travel_order o
     WHERE o.route_id = r.id
       AND (o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED')
-           -- 退款处理中：名额与计数都还没回退，仍计入有效报名。
-           -- 必须用退款单上的 original_order_status 区分：PAID_WAIT_CONFIRM 的订单
-           -- 也能申请退款，但它从未 +1 过，不能算进来。
            OR EXISTS (SELECT 1 FROM refund f
                       WHERE f.order_id = o.id
                         AND f.status IN ('APPLYING', 'PROCESSING')
-                        AND f.original_order_status IN ('CONFIRMED', 'TRAVELLING'))));
+                        AND f.original_order_status IN ('CONFIRMED', 'TRAVELLING')))
+)
+WHERE r.deleted = 0;
 ```
 
-演示时需知晓由此带来的口径差异：
-
-| 看板指标 | 数据来源 | 与真实订单的关系 |
-|---|---|---|
-| 热门线路 | `travel_route.valid_booking_count`（有效报名**订单条数**） | 预置基数 + 增量，可能明显高于真实订单数 |
-| 热门目的地 | 同一「有效报名」集合的**游客人数**（`popularDestinations()`） | 与真实订单一致 |
-
-两者数量级不同属于演示数据的固有特征，不是功能缺陷；演示前可执行上面的重算语句对齐，
-或直接说明「热门线路」展示的是演示基数。真实环境不应预置该列。
+存量演示库**升级到本次变更时应执行一次** `sql/migrations/013-align-valid-booking-count.sql`，按同一口径
+一次性对齐（纯数据更新、幂等，不改结构、不改订单）：虽然热门排行已不读该列，但后台线路列表与线路详情的
+「有效报名订单数」、公开线路列表的「报名人数」排序（PRD §15.4，来源见 PRD §27「系统有效订单」）读的就是它，
+不对齐会继续显示预置值。最新初始化的库由 `test-data.sql` 在订单导入后自行重算，无需执行。
+执行方式见[迁移说明](../sql/migrations/README.md)。
 
 ### 6.2 名额计数只由业务链路维护
 

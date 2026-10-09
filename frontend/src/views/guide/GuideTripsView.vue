@@ -41,7 +41,18 @@ const itemTypeNames = {
   ATTRACTION: '景点', TRANSPORT: '交通', MEAL: '餐食', ACTIVITY: '活动', OTHER: '其他'
 }
 
+/**
+ * 请求序号：只允许**最新一次**请求写回 rows / total / errorMessage / loading。
+ *
+ * <p>切换分类或翻页会连续发出多个请求，而返回顺序不保证与发出顺序一致：旧请求晚到成功会
+ * 覆盖新分类的列表（选中的分类与列表对不上），晚到失败会清空新结果并弹出一条过期错误；
+ * 旧请求结束时若把 loading 关掉，还会让仍在途的新请求提前露出旧一页的数据。
+ * 与 RouteListView / ReviewsView / AdminDashboardView 等列表页同一方案。</p>
+ */
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   errorMessage.value = ''
   try {
@@ -52,6 +63,7 @@ async function load() {
         guideApi.detail(currentRoute.params.id),
         guideApi.passengers(currentRoute.params.id)
       ])
+      if (requestId !== latestRequest) return
       data.value = { ...detail, passengers }
     } else {
       // 带上 scope 与分页参数：契约声明 page/size（size 上限 100），scope 只接受
@@ -61,15 +73,19 @@ async function load() {
         page: page.value,
         size: pageSize
       })
+      if (requestId !== latestRequest) return
       rows.value = result?.items || []
       total.value = result?.total || 0
     }
   } catch (cause) {
+    // 过期请求的失败不得清空新结果，也不得显示已经过时的错误。
+    if (requestId !== latestRequest) return
     rows.value = []
     total.value = 0
     errorMessage.value = cause?.message || '团期列表加载失败，请稍后重试'
   } finally {
-    loading.value = false
+    // 只有最新请求才有权结束加载态。
+    if (requestId === latestRequest) loading.value = false
   }
 }
 

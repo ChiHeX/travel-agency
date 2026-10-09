@@ -216,3 +216,87 @@ it('surfaces a load failure on the 我的团期 list', async () => {
 
   expect(wrapper.text()).toContain('团期服务不可用')
 })
+
+/** 手动控制 settle 时机的 promise，用来构造「旧请求晚到」的返回顺序。 */
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function tripsNamed(...names) {
+  return tripPage(names.map((name, index) => ({ ...SAMPLE_TRIPS[0], id: String(index + 1), routeName: name })))
+}
+
+/**
+ * 分类切换的竞态：`load()` 只允许**最新一次**请求写回 rows / total / errorMessage / loading。
+ *
+ * <p>先点「待出发」再点「行程中」时，两次请求会并发在途，而返回顺序不保证与发出顺序一致。
+ * 没有请求序号保护的话：旧请求晚到成功会覆盖新分类的列表（选中的分类与列表对不上）、
+ * 晚到失败会清空新结果并显示过期错误、旧请求结束时还会提前关掉新请求的加载态。
+ * 与 RouteListView / ReviewsView 等处同一套方案。</p>
+ */
+
+it('旧请求晚到成功时不得覆盖新分类的结果与 total', async () => {
+  const wrapper = await openList(tripPage(SAMPLE_TRIPS))
+  const upcoming = deferred()
+  const current = deferred()
+
+  api.departures.mockReturnValueOnce(upcoming.promise)
+  await buttonByText(wrapper, '待出发').trigger('click')
+  api.departures.mockReturnValueOnce(current.promise)
+  await buttonByText(wrapper, '行程中').trigger('click')
+
+  // 后发的「行程中」先返回，先发的「待出发」后返回（旧请求带更大的 total，会多出分页控件）
+  current.resolve(tripsNamed('行程中团期'))
+  await flushPromises()
+  upcoming.resolve(tripsNamed('待出发团期', '待出发团期二'), { total: 25, totalPages: 3 })
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('行程中团期')
+  expect(wrapper.text()).not.toContain('待出发团期')
+  expect(wrapper.findComponent(ElPaginationStub).exists()).toBe(false)
+})
+
+it('旧请求晚到失败时不得清空新结果或显示过期错误', async () => {
+  const wrapper = await openList(tripPage(SAMPLE_TRIPS))
+  const upcoming = deferred()
+
+  api.departures.mockReturnValueOnce(upcoming.promise)
+  await buttonByText(wrapper, '待出发').trigger('click')
+  api.departures.mockResolvedValueOnce(tripsNamed('行程中团期'))
+  await buttonByText(wrapper, '行程中').trigger('click')
+  await flushPromises()
+
+  upcoming.reject(new Error('待出发请求超时'))
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('行程中团期')
+  expect(wrapper.text()).not.toContain('待出发请求超时')
+  expect(wrapper.text()).not.toContain('团期暂时无法加载')
+})
+
+it('旧请求结束时不得提前关掉新请求的加载态', async () => {
+  const wrapper = await openList(tripPage(SAMPLE_TRIPS))
+  const upcoming = deferred()
+  const current = deferred()
+
+  api.departures.mockReturnValueOnce(upcoming.promise)
+  await buttonByText(wrapper, '待出发').trigger('click')
+  api.departures.mockReturnValueOnce(current.promise)
+  await buttonByText(wrapper, '行程中').trigger('click')
+
+  upcoming.resolve(tripsNamed('待出发团期'))
+  await flushPromises()
+
+  // 「行程中」还在路上：应仍是加载态，既不显示旧分类的结果，也不露出上一页
+  expect(wrapper.find('.trips-grid').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('待出发团期')
+
+  current.resolve(tripsNamed('行程中团期'))
+  await flushPromises()
+
+  expect(wrapper.find('.trips-grid').exists()).toBe(true)
+  expect(wrapper.text()).toContain('行程中团期')
+})

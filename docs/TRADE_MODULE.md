@@ -126,6 +126,42 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 - **事务边界**：`processRefund` 是 `approveRefund` / `rejectRefund` 的共用实现，**不是事务入口**
   （自调用，Spring 代理不生效，因此它不标 `@Transactional`）。`noRollbackFor` 挂在两个公开入口上。
 
+### 6.1 留痕的边界：哪些交易动作**不**进 `operation_log`
+
+`operation_log` 是**后台写操作**日志（`GET /admin/logs`，契约 `x-roles: [ADMIN]`），
+不是"所有状态变化"的流水。判据是**动作的执行者是不是后台员工**：
+
+| 动作 | 执行者 | 进 `operation_log` | 靠什么追溯 |
+|---|---|---|---|
+| 确认报名 / 退款审核 | 后台员工 | ✅ | 上表 |
+| 用户取消订单 | 用户本人 | ❌ | `travel_order.status` + `cancelled_at` |
+| 支付回调入账 | 支付宝（第三方） | ❌ | `payment.third_party_trade_no` + `paid_at` |
+| 用户提交退款申请 | 用户本人 | ❌ | `refund` 行本身 + `travel_order.status` |
+
+两条不写的理由并不相同：
+
+- **取消订单**：`operator_id` 的外键指向 `sys_user`，填用户 id 技术上可行，但这份日志是**后台视图**，
+  混进用户自助动作会把"员工做过什么"淹掉；而这次变更的可追溯性已由订单自己的
+  `status` / `cancelled_at` 完整承担。
+- **支付回调**：**没有合法操作人** —— 支付宝不是 `sys_user`，而 `operator_id` 是 `NOT NULL` 且带外键。
+  硬填订单所属用户会伪造出一条"该用户执行了后台操作"的假记录，比不记更糟。
+
+> ⚠️ **已知缺口**：回调**因金额不符被拒**（`409 PAYMENT_AMOUNT_MISMATCH`）目前没有任何留痕 ——
+> 属于"外部事件被拒绝却查不到"。补它需要先定操作人取值（新增系统账号？），并且要在抛异常处加
+> `noRollbackFor` 才能让留痕在回滚中存活。见 §10。
+
+### 6.2 时间戳必须由数据库维护
+
+`updatedAt` 在契约里是**必返字段**（订单、团期、酒店、线路、文章、出行人…），前端拿它当"最后更新时间"，
+所以它必须真的随改动前进。`BaseEntity.updatedAt` 没有任何填充注解，实体又是从库里读出来的 ——
+持有的正是**旧值**；MyBatis-Plus `updateById` 默认按 NOT_NULL 策略把它写进 `SET`，
+压掉了列定义上的 `ON UPDATE CURRENT_TIMESTAMP`，该列于是永远停在创建时间。
+**最坏的是支付回调**：条件 UPDATE 先原子推进支付单（此时 `ON UPDATE` 生效、时间戳前进），
+紧接着 `updateById` 又把旧值写回去，等于前进后再倒退。
+
+修法：给两列时间戳加 `@TableField(updateStrategy = FieldStrategy.NEVER)`，把写入权交回数据库
+（只禁 update，insert 仍走 `DEFAULT CURRENT_TIMESTAMP`）。实测见 §8.3。
+
 ## 7. 支付与出款链路
 
 ### 7.1 收银台
@@ -176,6 +212,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 | `DepartureCapacityConcurrencyIntegrationTest` | 名额守恒压测（30 抢 10）、单车超容量、**并发确认只生效一次**、并发退款审核、**审核异常"业务回滚 + 留痕通知提交"** |
 | `RefundPendingConfirmationIntegrationTest` | 「出款结果未确认」的事务语义：新连接读到持久 `PROCESSING`、拒绝被拦、同请求号重试收敛、**待确认与通过的审计留痕都已提交** |
 | `OrderAuditRollbackIntegrationTest` | **审计写入失败 ⇒ 业务修改一起回滚**：用 `operation_log.operator_id` 的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计、确认留痕、确认通知全部随事务回滚（含合法操作人的对照组） |
+| `UpdatedAtDatabaseMaintainedIntegrationTest` | **`updated_at` 必须由数据库维护**：取消订单与支付回调两条路径都要真的推进该列（跨秒边界断言，避免"同一秒假绿"） |
 | `TradingFlowContractIntegrationTest` | 端到端契约：报名→支付→回调→确认→出团→完成→评价，以及取消/退款全链路 |
 | `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
 | `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
@@ -217,13 +254,34 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 ```
 
 同一变异下全量 **571 条中只红这一条**（`succeeded=570 failed=1`），说明断言精准指向这条性质，
-不是大面积误伤。还原后全量恢复 **571/571**。
+不是大面积误伤。还原后全量恢复 **571/571**。（该次实验在 #55 分支上进行，当时全量 571 条；
+合并进 `dev` 后加上 §8.3 新增的 2 条为 573，见 §9。）
+
+### 8.3 时间戳由数据库维护（真实 MySQL）
+
+`updated_at` 被 `updateById` 写回旧值这件事，只有**跨过秒边界再看一眼**才暴露得出来：
+`DATETIME` 没有小数位，插入与更新若落在同一秒，即使该列从未前进，两次读到的值也相等 ——
+不跨秒的断言会假绿。用例因此在两次读之间等待 1.1 秒。
+
+```text
+修复前（同一库、同一路径）
+  cancel   : before=2026-10-07T18:02:12  after=2026-10-07T18:02:12   ← 冻结
+  markPaid : before=2026-10-07T18:02:13  after=2026-10-07T18:02:13   ← 冻结
+
+修复后
+  cancel   : before=2026-10-07T18:02:41  after=2026-10-07T18:02:42   ← 前进 1 秒
+  markPaid : before=2026-10-07T18:02:42  after=2026-10-07T18:02:43   ← 前进 1 秒
+```
+
+库里留下的那几行订单本身就是证据：修复前跑出来的行 `updated_at == created_at`，
+修复后跑出来的行 `updated_at = created_at + 1s`，同库同表并列可见。
 
 ## 9. 回归结果与前置条件
 
-**最新全量回归**：后端 **571 条用例，571 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。本次改动新增 10 条用例（`561 → 571`；
-末一条 `OrderAuditRollbackIntegrationTest` 是应评审意见补的"审计写失败 ⇒ 业务回滚"数据库测试）。
+**最新全量回归**：后端 **573 条用例，573 通过、0 失败、0 跳过**
+（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。
+`571 → 573` 即 §8.3 新增的 2 条（`561 → 571` 那 10 条来自 #55：B-01~B-04 的代码与
+`OrderAuditRollbackIntegrationTest`）。
 
 > ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
@@ -231,9 +289,9 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 > 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
 > （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
 >
-> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 34 / payment 34 / refund 8 /
+> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 40 / payment 40 / refund 9 /
 > departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /
-> staff 1 / operation_log 27`）。
+> staff 1 / operation_log 30 / sys_message 30`）。
 
 ## 10. 未完成项与风险
 
@@ -244,6 +302,9 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
   不能宣称支付链路已完成验收。** 需要的输入与方案见下。
 - ⬜ **退款对账的定时收敛未做**：`PROCESSING`（待确认）目前依赖人工筛出后用同一请求号重试，
   没有定时任务自动向支付宝查询收敛。金额不大时够用，但缺少兜底。
+- ⬜ **回调金额不符被拒时没有留痕**（见 §6.1）：`409 PAYMENT_AMOUNT_MISMATCH` 是一个
+  "外部事件被拒绝"却查不到的缺口。补它要先定操作人取值（回调没有对应的 `sys_user`，
+  可能要新增一个系统账号），并且要在抛异常处加 `noRollbackFor`，才能让留痕在事务回滚中存活。
 - ⬜ **前端联调未回执**：订单详情、退款审核、评价管理三个页面尚未由前端反馈联调结果；
   契约字段与 `openapi.yaml` 一致，但页面行为未验收。
 - ⬜ **共享 dev 库的 `005` 索引仍未生效**（`travel_order` 缺 `idx_order_created_at`），

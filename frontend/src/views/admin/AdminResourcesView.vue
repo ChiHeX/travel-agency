@@ -1,7 +1,10 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
+import AttractionFormDialog from '@/components/AttractionFormDialog.vue'
+import HotelFormDialog from '@/components/HotelFormDialog.vue'
+import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -12,6 +15,14 @@ const rows = ref([])
 const loading = ref(false)
 /** 正在提交审核的退款单 id；用来禁用按钮，防止重复点出两次出款请求。 */
 const pending = ref(null)
+/** 正在删除的行 id。 */
+const deleting = ref(null)
+
+// ---------- 表单弹窗 ----------
+const attractionDialogVisible = ref(false)
+const hotelDialogVisible = ref(false)
+const departureDialogVisible = ref(false)
+const editingRow = ref(null)
 
 const loaders = {
   attractions: adminApi.attractions,
@@ -21,10 +32,9 @@ const loaders = {
   refunds: adminApi.refunds
 }
 
-/**
- * 退款状态文案。`PROCESSING` 特别重要：它不是「审核中」，而是**出款已发出、结果还没确认**
- * （钱可能已经退出去），后端会把它持久化，并且在确认之前禁止拒绝。
- */
+/** 支持新增/编辑的资源。guides 已由独立页面处理；refunds 是审核流。 */
+const canManage = computed(() => ['attractions', 'hotels', 'departures'].includes(props.resource))
+
 const REFUND_STATUS_LABEL = {
   APPLYING: '待审核',
   PROCESSING: '退款结果待确认',
@@ -52,18 +62,6 @@ async function updateDeparture(row) {
   ElMessage.success('团期状态已更新')
 }
 
-/**
- * 提交一次退款审核动作。
- *
- * <p>两种情况都要重新拉列表，因此刷新放在 finally 里：
- * ① 成功 —— 状态已从 APPLYING 变成 REFUNDED / REJECTED；
- * ② 失败且是「结果未确认」（后端 503 `REFUND_RESULT_UNCONFIRMED`）—— 此时出款请求已经发出去，
- * 后端把退款单落成了持久的 PROCESSING，页面若还停在旧的 `APPLYING` 上，
- * 管理员就会对着一个早已不接受拒绝的单子继续点「拒绝」（后端会回 409，白点一次）。</p>
- *
- * <p>{@code PROCESSING} 的重试走的就是 APPROVE：后端对已处于 PROCESSING 的单子放行同意、
- * 拦掉拒绝，用同一个出款请求号再确认一次结果。</p>
- */
 async function decision(row, action) {
   if (pending.value != null) return
   pending.value = row.id
@@ -73,11 +71,53 @@ async function decision(row, action) {
     else await adminApi.rejectRefund(row.id, comment)
     ElMessage.success(action === 'APPROVE' ? '退款审核已处理完毕' : '退款申请已驳回')
   } catch {
-    // 失败提示由 axios 拦截器统一弹出（frontend/src/api/request.js 的 ElMessage.error）；
-    // 这里不重抛，避免在点击处理器里留下未处理的 Promise rejection。
+    // 失败提示由 axios 拦截器统一弹出。
   } finally {
     pending.value = null
     await load().catch(() => {})
+  }
+}
+
+// ---------- 新增/编辑 ----------
+
+function openCreate() {
+  editingRow.value = null
+  if (props.resource === 'attractions') attractionDialogVisible.value = true
+  else if (props.resource === 'hotels') hotelDialogVisible.value = true
+  else if (props.resource === 'departures') departureDialogVisible.value = true
+}
+
+function openEdit(row) {
+  editingRow.value = row
+  if (props.resource === 'attractions') attractionDialogVisible.value = true
+  else if (props.resource === 'hotels') hotelDialogVisible.value = true
+  else if (props.resource === 'departures') departureDialogVisible.value = true
+}
+
+async function remove(row) {
+  if (deleting.value) return
+  if (props.resource === 'departures') return
+  const deleteApi =
+    props.resource === 'attractions' ? adminApi.deleteAttraction : adminApi.deleteHotel
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${row.name}」吗？如已被行程引用，将无法删除。`,
+      '删除资料',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  deleting.value = row.id
+  try {
+    await deleteApi(row.id)
+    ElMessage.success('已删除')
+    await load()
+  } catch (cause) {
+    if (cause.status === 409) ElMessage.warning(cause.message || '该资料已被行程引用，无法删除')
+    else ElMessage.error(cause.message || '删除失败')
+  } finally {
+    deleting.value = null
   }
 }
 
@@ -92,12 +132,8 @@ onMounted(load)
         <h2>{{ title }}</h2>
         <p>维护基础业务资源档案、可追溯资料与审核流。</p>
       </div>
-      <button
-        v-if="resource !== 'refunds'"
-        class="primary-button"
-        @click="ElMessage.info('新增表单已对接对应后端 CRUD API')"
-      >
-        + 新增{{ title.replace('管理', '').replace('资料', '') }}
+      <button v-if="canManage" class="primary-button" @click="openCreate">
+        + 新增{{ resource === 'attractions' ? '景点' : resource === 'hotels' ? '酒店' : '团期' }}
       </button>
     </div>
 
@@ -137,6 +173,7 @@ onMounted(load)
             <th>地理经纬度</th>
             <th>资料来源</th>
             <th>状态</th>
+            <th v-if="canManage" style="text-align: right;">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -146,13 +183,19 @@ onMounted(load)
               <td>{{ row.startDate }}</td>
               <td>{{ row.endDate }}</td>
               <td class="amount">¥{{ row.adultPrice }}</td>
-              <td>{{ row.confirmedPeople == null ? '—' : row.confirmedPeople }} / {{ row.maxPeople == null ? '—' : row.maxPeople }}<span v-if="row.confirmedPeople != null || row.maxPeople != null"> 人</span></td>
+              <td>
+                {{ row.confirmedPeople == null ? '—' : row.confirmedPeople }} /
+                {{ row.maxPeople == null ? '—' : row.maxPeople }}
+                <span v-if="row.confirmedPeople != null || row.maxPeople != null"> 人</span>
+              </td>
               <td>
                 <span class="tag" :class="row.status === 'OPEN' ? 'success' : row.status === 'CLOSED' ? 'danger' : 'warning'">
                   {{ row.status }}
                 </span>
               </td>
-              <td style="text-align: right;">
+              <td style="text-align: right;" class="row-actions">
+                <button type="button" class="text-button" @click="openEdit(row)">编辑</button>
+                <span class="divider">|</span>
                 <button type="button" class="text-button" @click="updateDeparture(row)">
                   {{ row.status === 'OPEN' ? '关闭报名' : '开放报名' }}
                 </button>
@@ -175,11 +218,6 @@ onMounted(load)
                   <span class="divider">|</span>
                   <button type="button" class="text-button text-danger" :disabled="pending === row.id" @click="decision(row, 'REJECT')">拒绝</button>
                 </template>
-                <!--
-                  出款已发出、结果未确认。钱可能已经退出去，所以这里只给「重试确认」
-                  （同一个出款请求号再查一次结果），绝不显示拒绝 —— 后端对 PROCESSING 的
-                  REJECT 会判 409，前端不该给出一个必然失败的按钮。
-                -->
                 <template v-else-if="row.status === 'PROCESSING'">
                   <button type="button" class="text-button text-success" :disabled="pending === row.id" @click="decision(row, 'APPROVE')">
                     {{ pending === row.id ? '确认中…' : '重试确认' }}
@@ -202,15 +240,44 @@ onMounted(load)
               <td>{{ row.longitude || '—' }}, {{ row.latitude || '—' }}</td>
               <td>{{ row.dataSource || '—' }}</td>
               <td><span class="tag success">{{ row.status }}</span></td>
+              <td v-if="canManage" style="text-align: right;" class="row-actions">
+                <button type="button" class="text-button" @click="openEdit(row)">编辑</button>
+                <span class="divider">|</span>
+                <button
+                  type="button"
+                  class="text-button text-danger"
+                  :disabled="deleting === row.id"
+                  @click="remove(row)"
+                >
+                  {{ deleting === row.id ? '删除中…' : '删除' }}
+                </button>
+              </td>
             </tr>
           </template>
         </tbody>
       </table>
 
-      <div v-else class="empty-box">
-        暂无相关资料数据。
-      </div>
+      <div v-else class="empty-box">暂无相关资料数据。</div>
     </div>
+
+    <AttractionFormDialog
+      v-if="resource === 'attractions'"
+      v-model="attractionDialogVisible"
+      :attraction="editingRow"
+      @saved="load"
+    />
+    <HotelFormDialog
+      v-if="resource === 'hotels'"
+      v-model="hotelDialogVisible"
+      :hotel="editingRow"
+      @saved="load"
+    />
+    <DepartureFormDialog
+      v-if="resource === 'departures'"
+      v-model="departureDialogVisible"
+      :departure="editingRow"
+      @saved="load"
+    />
   </div>
 </template>
 
@@ -237,5 +304,9 @@ onMounted(load)
 .muted-text {
   color: var(--text-tertiary);
   font-size: 12px;
+}
+
+.row-actions {
+  white-space: nowrap;
 }
 </style>

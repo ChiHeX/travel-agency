@@ -59,9 +59,9 @@ function renderMap() {
       maxBounds: L.latLngBounds([-85.05112878, -900], [85.05112878, 900]),
       maxBoundsViscosity: 1
     })
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer('https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      attribution: '&copy; 高德地图'
     }).addTo(mapInstance)
     L.control.zoom({ position: 'topright' }).addTo(mapInstance)
     overlays = L.layerGroup().addTo(mapInstance)

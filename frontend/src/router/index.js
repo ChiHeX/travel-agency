@@ -30,9 +30,14 @@ import AdminRouteDetailView from '@/views/admin/AdminRouteDetailView.vue'
 import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
+// 新增：后台内容管理页面 + 独立导游管理页面
+import AdminReviewsView from '@/views/admin/AdminReviewsView.vue'
+import AdminConsultationsView from '@/views/admin/AdminConsultationsView.vue'
+import AdminArticlesView from '@/views/admin/AdminArticlesView.vue'
+import AdminLogsView from '@/views/admin/AdminLogsView.vue'
+import AdminGuidesView from '@/views/admin/AdminGuidesView.vue'
 import GuideDashboardView from '@/views/guide/GuideDashboardView.vue'
 import GuideTripsView from '@/views/guide/GuideTripsView.vue'
-import ComingSoonView from '@/views/ComingSoonView.vue'
 
 const routes = [
   {
@@ -88,15 +93,17 @@ const routes = [
       { path: 'departures', name: 'admin-departures', component: AdminResourcesView, props: { title: '团期管理', resource: 'departures' } },
       { path: 'attractions', name: 'admin-attractions', component: AdminResourcesView, props: { title: '景点管理', resource: 'attractions' } },
       { path: 'hotels', name: 'admin-hotels', component: AdminResourcesView, props: { title: '酒店资料', resource: 'hotels' } },
-      { path: 'guides', name: 'admin-guides', component: AdminResourcesView, props: { title: '导游管理', resource: 'guides' } },
+      // 修改：导游管理拆为独立页面，支持创建/编辑/停用
+      { path: 'guides', name: 'admin-guides', component: AdminGuidesView },
       { path: 'orders', name: 'admin-orders', component: AdminOrdersView },
       { path: 'refunds', name: 'admin-refunds', component: AdminResourcesView, props: { title: '退款审核', resource: 'refunds' } },
       { path: 'users', name: 'admin-users', component: AdminUsersView },
       { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' } },
-      { path: 'reviews', name: 'admin-reviews', component: ComingSoonView, props: { title: '评价管理' } },
-      { path: 'consultations', name: 'admin-consultations', component: ComingSoonView, props: { title: '在线咨询' } },
-      { path: 'articles', name: 'admin-articles', component: ComingSoonView, props: { title: '旅游攻略管理' } },
-      { path: 'logs', name: 'admin-logs', component: ComingSoonView, props: { title: '操作日志' } }
+      // 后台四个内容管理页面
+      { path: 'reviews', name: 'admin-reviews', component: AdminReviewsView },
+      { path: 'consultations', name: 'admin-consultations', component: AdminConsultationsView },
+      { path: 'articles', name: 'admin-articles', component: AdminArticlesView },
+      { path: 'logs', name: 'admin-logs', component: AdminLogsView }
     ]
   },
   {

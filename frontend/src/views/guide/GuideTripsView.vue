@@ -1,7 +1,7 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { guideApi } from '@/api/modules'
 
 const props = defineProps({ detail: { type: Boolean, default: false } })
@@ -9,9 +9,14 @@ const currentRoute = useRoute()
 const rows = ref([])
 const data = ref(null)
 const loading = ref(false)
+const acting = ref(false)
 
 const itemTypeNames = {
-  ATTRACTION: '景点', TRANSPORT: '交通', MEAL: '餐食', ACTIVITY: '活动', OTHER: '其他'
+  ATTRACTION: '景点',
+  TRANSPORT: '交通',
+  MEAL: '餐食',
+  ACTIVITY: '活动',
+  OTHER: '其他'
 }
 
 async function load() {
@@ -33,10 +38,69 @@ async function load() {
   }
 }
 
+/**
+ * 路由复用修复：/guide/departures 与 /guide/departures/:id 共用本组件，
+ * Vue Router 切换这两个路由时不会销毁重建组件，onMounted 不会再执行，
+ * 导致从详情跳回列表、或详情之间互跳时数据不刷新。
+ * 监听 detail prop 与路由参数 id，任一变化就清空旧状态并重新加载。
+ */
+watch(
+  () => [props.detail, currentRoute.params.id],
+  () => {
+    rows.value = []
+    data.value = null
+    load()
+  }
+)
+
+/** 开始行程：状态 OPEN / FULL / CLOSED → TRAVELLING。 */
+async function markStart() {
+  if (!data.value || acting.value) return
+  try {
+    await ElMessageBox.confirm('确认开始本次行程吗？开始后将进入 TRAVELLING 状态。', '开始行程', {
+      type: 'warning',
+      confirmButtonText: '确认开始',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  acting.value = true
+  try {
+    await guideApi.start(data.value.departure.id)
+    ElMessage.success('行程已开始')
+    await load()
+  } catch (cause) {
+    if (cause.status === 409) ElMessage.warning(cause.message || '当前状态不允许开始行程')
+    else ElMessage.error(cause.message || '操作失败')
+  } finally {
+    acting.value = false
+  }
+}
+
+/** 结束行程：状态 TRAVELLING → FINISHED。 */
 async function markFinished() {
-  await guideApi.complete(data.value.departure.id)
-  ElMessage.success('团期已顺利标记为完成')
-  load()
+  if (!data.value || acting.value) return
+  try {
+    await ElMessageBox.confirm('确认本次行程已顺利结束吗？', '结束行程', {
+      type: 'warning',
+      confirmButtonText: '确认结束',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  acting.value = true
+  try {
+    await guideApi.complete(data.value.departure.id)
+    ElMessage.success('团期已顺利标记为完成')
+    await load()
+  } catch (cause) {
+    if (cause.status === 409) ElMessage.warning(cause.message || '当前状态不允许结束行程')
+    else ElMessage.error(cause.message || '操作失败')
+  } finally {
+    acting.value = false
+  }
 }
 
 onMounted(load)
@@ -50,14 +114,28 @@ onMounted(load)
           <h2>带团详情与游客名单</h2>
           <p>核对集合情况，仅展示出团必须的游客联系与脱敏信息。</p>
         </div>
-        <button
-          v-if="data?.departure?.status === 'TRAVELLING'"
-          type="button"
-          class="primary-button"
-          @click="markFinished"
-        >
-          标记行程已结束
-        </button>
+        <div v-if="data" class="head-actions">
+          <!-- 开始行程：OPEN / FULL / CLOSED 都能开始 -->
+          <button
+            v-if="['OPEN', 'FULL', 'CLOSED'].includes(data.departure.status)"
+            type="button"
+            class="primary-button"
+            :disabled="acting"
+            @click="markStart"
+          >
+            {{ acting ? '处理中…' : '开始行程' }}
+          </button>
+          <!-- 结束行程：只有 TRAVELLING 能结束 -->
+          <button
+            v-if="data.departure.status === 'TRAVELLING'"
+            type="button"
+            class="primary-button"
+            :disabled="acting"
+            @click="markFinished"
+          >
+            {{ acting ? '处理中…' : '标记行程已结束' }}
+          </button>
+        </div>
       </div>
 
       <div v-if="loading" class="admin-panel">
@@ -69,7 +147,10 @@ onMounted(load)
           <span class="eyebrow">SCHEDULE #{{ data.departure.id }}</span>
           <h3>{{ data.route?.name || `跟团线路 #${data.departure.routeId}` }}</h3>
           <div class="trip-meta-tags">
-            <span v-if="data.route">{{ data.route.departureCity }} → {{ data.route.destination }} · {{ data.route.durationDays }} 天</span>
+            <span v-if="data.route">
+              {{ data.route.departureCity }} → {{ data.route.destination }} ·
+              {{ data.route.durationDays }} 天
+            </span>
             <span>·</span>
             <span>出团日期：{{ data.departure.startDate }} 至 {{ data.departure.endDate }}</span>
             <span>·</span>
@@ -153,9 +234,7 @@ onMounted(load)
             </tbody>
           </table>
 
-          <div v-else class="empty-box">
-            本团期暂无已报名的实名游客。
-          </div>
+          <div v-else class="empty-box">本团期暂无已报名的实名游客。</div>
         </div>
       </template>
     </template>
@@ -195,14 +274,17 @@ onMounted(load)
         </RouterLink>
       </div>
 
-      <div v-else class="empty-box">
-        暂无分配给您的带团排期记录。
-      </div>
+      <div v-else class="empty-box">暂无分配给您的带团排期记录。</div>
     </template>
   </div>
 </template>
 
 <style scoped>
+.head-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .trip-hero-card {
   margin-bottom: 20px;
 }

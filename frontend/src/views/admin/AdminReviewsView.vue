@@ -7,7 +7,7 @@ import RequestState from '@/components/RequestState.vue'
 const rows = ref([])
 const loading = ref(false)
 const error = ref('')
-/** 正在提交状态变更的评价 id。 */
+/** 正在提交状态变更的评价 id（用于禁用该行按钮）。 */
 const updating = ref(null)
 
 const query = reactive({ page: 1, size: 20, status: '' })
@@ -16,7 +16,6 @@ const STATUS_LABEL = { VISIBLE: '可见', HIDDEN: '已隐藏' }
 const statusLabel = (status) => STATUS_LABEL[status] || status
 const statusClass = (status) => (status === 'VISIBLE' ? 'success' : 'danger')
 
-const page = computed(() => query.page)
 const total = ref(0)
 const totalPages = ref(0)
 
@@ -32,6 +31,7 @@ async function load(retryOnEmptyPage = true) {
     rows.value = result?.items || []
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
+    // 删/藏/恢复后当前页可能空了：回退一页，而不是停在一个空页上
     if (retryOnEmptyPage && !rows.value.length && query.page > 1) {
       query.page -= 1
       await load(false)
@@ -58,20 +58,25 @@ function goToPage(delta) {
 
 /**
  * 调整评价可见状态，走契约 PATCH /admin/reviews/{reviewId}/status。
- * 乐观更新 + 失败回滚，错误提示由 axios 拦截器统一弹出。
+ *
+ * <p>状态切换后**重新拉取当前筛选下的列表**，而不是只改本地这一行：
+ * 筛选为「可见」时隐藏一条评价，它必须从列表里消失；总数、分页也随之变化。
+ * 若只做本地乐观改写，"可见"列表会继续显示一条已经隐藏的记录，总数也不会变。</p>
+ *
+ * <p>失败时不做本地回滚：本来就没改过本地状态，<code>load()</code> 会把真实状态刷回来。
+ * 错误提示由 axios 拦截器统一弹出。</p>
  */
 async function toggleStatus(row) {
   if (updating.value) return
   const next = row.status === 'VISIBLE' ? 'HIDDEN' : 'VISIBLE'
-  const previous = row.status
   updating.value = row.id
-  row.status = next
   try {
-    const updated = await adminApi.updateReviewStatus(row.id, next)
-    if (updated) Object.assign(row, updated)
+    await adminApi.updateReviewStatus(row.id, next)
     ElMessage.success(next === 'HIDDEN' ? '评价已隐藏' : '评价已恢复可见')
+    await load()
   } catch {
-    row.status = previous
+    // 失败提示由 axios 拦截器统一弹出
+    await load().catch(() => {})
   } finally {
     updating.value = null
   }

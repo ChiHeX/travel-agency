@@ -26,6 +26,16 @@ const saving = ref(false)
 const formError = ref('')
 const editingId = ref(null)
 
+/**
+ * 详情请求序号：只允许「最新一次编辑请求」写回表单。
+ * 快速连点两篇攻略的「编辑」时，先点的请求可能后返回；
+ * 若不加序号，晚返回的旧数据会覆盖新请求的结果，导致表单显示 A 的内容
+ * 但 editingId 已是 B，保存时把 A 的内容写到 B 上。
+ */
+let editRequestSeq = 0
+/** 详情加载中：显示骨架并禁用保存，避免用户对着空/旧表单操作。 */
+const editLoading = ref(false)
+
 const TITLE_MIN = 2
 const TITLE_MAX = 200
 const SUMMARY_MAX = 500
@@ -101,6 +111,9 @@ function goToPage(delta) {
 }
 
 function openCreate() {
+  // 新建：推进序号，让所有在途的编辑请求作废
+  editRequestSeq += 1
+  editLoading.value = false
   editingId.value = null
   formError.value = ''
   Object.assign(form, {
@@ -111,10 +124,23 @@ function openCreate() {
 }
 
 async function openEdit(row) {
-  editingId.value = row.id
+  const seq = ++editRequestSeq
+  const id = row.id
+
+  // 立刻打开弹窗并进入加载态，先清空表单避免看到上一条的残留
+  dialogVisible.value = true
+  editLoading.value = true
+  editingId.value = null
   formError.value = ''
+  Object.assign(form, {
+    title: '', summary: '', content: '', city: '', destination: '', attractionId: '', coverUrl: ''
+  })
+
   try {
-    const detail = await adminApi.article(row.id)
+    const detail = await adminApi.article(id)
+    // 只有最新一次编辑请求才有权写回表单
+    if (seq !== editRequestSeq) return
+    editingId.value = id
     Object.assign(form, {
       title: detail?.title || '',
       summary: detail?.summary || '',
@@ -125,10 +151,13 @@ async function openEdit(row) {
       attractionId: detail?.attractionId ? String(detail.attractionId) : '',
       coverUrl: detail?.coverUrl || ''
     })
-    dialogVisible.value = true
     if (!attractionOptions.value.length) loadOptions()
   } catch (cause) {
+    if (seq !== editRequestSeq) return
+    dialogVisible.value = false
     ElMessage.error(cause.message || '攻略详情加载失败')
+  } finally {
+    if (seq === editRequestSeq) editLoading.value = false
   }
 }
 
@@ -167,6 +196,10 @@ function validate() {
 
 async function save() {
   if (saving.value) return
+  if (editLoading.value) {
+    ElMessage.warning('攻略详情还在加载，请稍候')
+    return
+  }
   formError.value = ''
   const invalid = validate()
   if (invalid) return ElMessage.warning(invalid)
@@ -344,7 +377,12 @@ onMounted(load)
       :close-on-click-modal="!saving"
       :show-close="!saving"
     >
-      <div class="dialog-form-grid">
+      <!-- 详情加载中：显示骨架，不显示可能已经过期的表单 -->
+      <div v-if="editLoading" class="dialog-loading">
+        <el-skeleton :rows="8" animated />
+      </div>
+
+      <div v-else class="dialog-form-grid">
         <p v-if="formError" class="form-error wide" role="alert">{{ formError }}</p>
 
         <div class="form-field wide">
@@ -417,7 +455,7 @@ onMounted(load)
 
       <template #footer>
         <button class="secondary-button" :disabled="saving" @click="dialogVisible = false">取消</button>
-        <button class="primary-button" :disabled="saving" @click="save">
+        <button class="primary-button" :disabled="saving || editLoading" @click="save">
           {{ saving ? '保存中…' : '保存' }}
         </button>
       </template>
@@ -425,10 +463,20 @@ onMounted(load)
   </div>
 </template>
 
+<style scoped>
+.toolbar { display: flex; gap: 10px; margin-bottom: 20px; }
+.divider { color: var(--border-strong); margin: 0 6px; font-size: 11px; }
+.text-danger { color: var(--danger-red) !important; }
+.row-actions { white-space: nowrap; }
+.resource-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.muted-text { color: var(--text-tertiary); font-size: 12px; }
+
+.dialog-loading { padding: 16px 4px; }
+
 .dialog-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px 20px;   /* 行间距 16px、列间距 20px，比原来宽松 */
+  gap: 16px 20px;
 }
 
 .dialog-form-grid .wide {
@@ -439,7 +487,7 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 14px;              /* 每个字段独立卡片感 */
+  padding: 12px 14px;
   border: 1px solid var(--border-divider, #ececf0);
   border-radius: 10px;
   background: #fbfcfe;
@@ -466,3 +514,15 @@ onMounted(load)
 .form-field textarea {
   resize: vertical;
 }
+
+.req { color: var(--danger-red); }
+.form-error { margin: 0; color: var(--danger-red, #dc2626); font-size: 12px; }
+.form-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-secondary); }
+.hint-error { color: var(--danger-red); }
+.form-counter { margin: 4px 0 0; font-size: 12px; text-align: right; color: var(--text-tertiary); }
+.form-counter.over { color: var(--danger-red); font-weight: 700; }
+
+@media (max-width: 640px) {
+  .dialog-form-grid { grid-template-columns: 1fr; }
+}
+</style>

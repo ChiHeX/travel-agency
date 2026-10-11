@@ -38,6 +38,11 @@ import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
 import AdminPlaceGuidesView from '@/views/admin/AdminPlaceGuidesView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
+// 新增：后台内容管理四页
+import AdminReviewsView from '@/views/admin/AdminReviewsView.vue'
+import AdminConsultationsView from '@/views/admin/AdminConsultationsView.vue'
+import AdminArticlesView from '@/views/admin/AdminArticlesView.vue'
+import AdminLogsView from '@/views/admin/AdminLogsView.vue'
 import GuideDashboardView from '@/views/guide/GuideDashboardView.vue'
 import GuideTripsView from '@/views/guide/GuideTripsView.vue'
 import ComingSoonView from '@/views/ComingSoonView.vue'
@@ -124,10 +129,11 @@ const routes = [
       { path: 'refunds', name: 'admin-refunds', component: AdminResourcesView, props: { title: '退款审核', resource: 'refunds' } },
       { path: 'users', name: 'admin-users', component: AdminUsersView },
       { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' } },
-      { path: 'reviews', name: 'admin-reviews', component: ComingSoonView, props: { title: '评价管理' } },
-      { path: 'consultations', name: 'admin-consultations', component: ComingSoonView, props: { title: '在线咨询' } },
-      { path: 'articles', name: 'admin-articles', component: ComingSoonView, props: { title: '旅游攻略管理' } },
-      { path: 'logs', name: 'admin-logs', component: ComingSoonView, props: { title: '操作日志' } }
+      // 后台内容管理四页：由 ComingSoonView 占位替换为真实页面
+      { path: 'reviews', name: 'admin-reviews', component: AdminReviewsView },
+      { path: 'consultations', name: 'admin-consultations', component: AdminConsultationsView },
+      { path: 'articles', name: 'admin-articles', component: AdminArticlesView },
+      { path: 'logs', name: 'admin-logs', component: AdminLogsView }
     ]
   },
   {

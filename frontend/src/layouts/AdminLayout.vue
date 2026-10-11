@@ -106,6 +106,25 @@ function logout() {
           </svg>
           地点指南管理
         </RouterLink>
+        <!-- 新增：内容运营下的三个内容管理页面（STAFF 与 ADMIN 都可访问） -->
+        <RouterLink to="/admin/reviews">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
+          评价管理
+        </RouterLink>
+        <RouterLink to="/admin/consultations">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          在线咨询
+        </RouterLink>
+        <RouterLink to="/admin/articles">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          旅游攻略管理
+        </RouterLink>
 
         <template v-if="auth.hasRole('ADMIN')">
           <div class="sidebar-caption nested-caption">系统权限与设置</div>
@@ -120,6 +139,13 @@ function logout() {
               <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><polyline points="17 11 19 13 23 9" />
             </svg>
             内部人员权限
+          </RouterLink>
+          <!-- 新增：操作日志仅 ADMIN 可见 -->
+          <RouterLink to="/admin/logs">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" />
+            </svg>
+            操作日志
           </RouterLink>
         </template>
       </nav>

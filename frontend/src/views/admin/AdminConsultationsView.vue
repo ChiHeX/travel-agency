@@ -24,6 +24,17 @@ const replyError = ref('')
 
 const closingId = ref(null)
 
+/**
+ * 请求序号：只允许「当前打开的那次」写回弹窗。
+ *
+ * <p>场景：给咨询 A 发送回复，请求还没回来时关闭弹窗、打开咨询 B 并输入回复草稿；
+ * A 的响应晚到后若无条件写回 detail / replyContent，弹窗会跳回 A、B 的草稿被清空。
+ * 加序号 + 当前咨询 id 校验后，过期响应一律丢弃。</p>
+ */
+let detailRequestSeq = 0
+/** 当前弹窗正在查看的咨询 id；关闭弹窗时置空。 */
+const activeConsultationId = ref(null)
+
 const STATUS_LABEL = { WAIT_REPLY: '待回复', REPLIED: '已回复', CLOSED: '已关闭' }
 const statusLabel = (status) => STATUS_LABEL[status] || status
 const statusClass = (status) =>
@@ -66,6 +77,8 @@ function goToPage(delta) {
 }
 
 async function openDetail(row) {
+  const seq = ++detailRequestSeq
+  activeConsultationId.value = row.id
   detailVisible.value = true
   detailLoading.value = true
   detailError.value = ''
@@ -73,12 +86,28 @@ async function openDetail(row) {
   replyContent.value = ''
   replyError.value = ''
   try {
-    detail.value = await adminApi.consultation(row.id)
+    const data = await adminApi.consultation(row.id)
+    // 期间用户又打开了别的咨询，或关闭了弹窗：这次响应已过期，丢弃
+    if (seq !== detailRequestSeq) return
+    detail.value = data
   } catch (cause) {
+    if (seq !== detailRequestSeq) return
     detailError.value = cause.message || '咨询详情加载失败'
   } finally {
-    detailLoading.value = false
+    if (seq === detailRequestSeq) detailLoading.value = false
   }
+}
+
+/** 关闭弹窗时让所有在途请求失效，避免它们晚到后把弹窗内容写脏。 */
+function onDialogClose() {
+  detailRequestSeq += 1
+  activeConsultationId.value = null
+  detail.value = null
+  detailLoading.value = false
+  detailError.value = ''
+  replyContent.value = ''
+  replyError.value = ''
+  replySaving.value = false
 }
 
 async function submitReply() {
@@ -88,17 +117,24 @@ async function submitReply() {
     replyError.value = '请填写回复内容'
     return
   }
+  // 记下这条请求属于哪个咨询
+  const targetId = detail.value.id
+  const seq = detailRequestSeq
   replySaving.value = true
   replyError.value = ''
   try {
-    detail.value = await adminApi.replyConsultation(detail.value.id, { content })
+    const updated = await adminApi.replyConsultation(targetId, { content })
+    // 用户已经切走（打开别的咨询、关闭弹窗）：丢弃响应，不清空当前草稿
+    if (seq !== detailRequestSeq || activeConsultationId.value !== targetId) return
+    detail.value = updated
     replyContent.value = ''
     ElMessage.success('回复已发送')
     await load()
   } catch (cause) {
+    if (seq !== detailRequestSeq) return
     replyError.value = cause.message || '回复失败'
   } finally {
-    replySaving.value = false
+    if (seq === detailRequestSeq) replySaving.value = false
   }
 }
 
@@ -113,13 +149,16 @@ async function closeConsultation(row) {
   } catch {
     return
   }
+  const targetId = row.id
+  const seq = detailRequestSeq
   closingId.value = row.id
   try {
-    await adminApi.closeConsultation(row.id)
+    await adminApi.closeConsultation(targetId)
     ElMessage.success('咨询已关闭')
     await load()
-    if (detail.value && detail.value.id === row.id) {
-      detail.value = await adminApi.consultation(row.id)
+    // 只有当前弹窗还在看这条咨询、且这次关闭仍是最新操作时才刷新详情
+    if (seq === detailRequestSeq && activeConsultationId.value === targetId) {
+      detail.value = await adminApi.consultation(targetId)
     }
   } catch (cause) {
     ElMessage.error(cause.message || '关闭失败')
@@ -202,7 +241,12 @@ onMounted(load)
       </RequestState>
     </div>
 
-    <el-dialog v-model="detailVisible" title="咨询详情" width="min(680px, calc(100vw - 32px))">
+    <el-dialog
+      v-model="detailVisible"
+      title="咨询详情"
+      width="min(680px, calc(100vw - 32px))"
+      @close="onDialogClose"
+    >
       <div v-if="detailLoading"><el-skeleton :rows="4" animated /></div>
 
       <div v-else-if="detailError" class="request-state" role="alert">

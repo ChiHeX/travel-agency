@@ -27,7 +27,7 @@ const totalPages = ref(0)
 const KEYWORD_MAX = 100
 
 /**
- * 契约 OrderStatus 的全部取值（8 个）。
+ * 当前业务使用的八个订单状态（不包含契约保留值）。
  *
  * <p><b>关于 REFUND_PROCESSING / REFUND_REJECTED</b>：这两个值是
  * {@code OrderStatus} 枚举里的<b>保留值</b>（契约里声明了，但当前业务不使用）；
@@ -52,7 +52,7 @@ const ORDER_STATUS_OPTIONS = [
   { value: 'REFUNDED', label: '已退款' }
 ]
 
-/** 订单业务状态的标签颜色（8 个值，与契约 OrderStatus 一致）。 */
+/** 当前业务使用的八种订单状态的标签颜色，不展示契约保留值。 */
 const ORDER_STATUS_CLASS = {
   WAIT_PAY: 'warning',
   PAID_WAIT_CONFIRM: 'warning',

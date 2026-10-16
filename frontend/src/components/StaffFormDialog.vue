@@ -175,6 +175,7 @@ async function save() {
     :title="editing ? '编辑员工资料' : '新增员工账号'"
     width="min(680px, calc(100vw - 32px))"
     :close-on-click-modal="!submitting"
+    :close-on-press-escape="!submitting"
     :show-close="!submitting"
     @update:model-value="emit('update:modelValue', $event)"
   >

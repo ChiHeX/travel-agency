@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// Additional failure, cancellation and response-order regressions alongside the wiring suite.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import AdminUsersView from '../AdminUsersView.vue'

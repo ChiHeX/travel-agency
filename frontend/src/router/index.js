@@ -127,13 +127,14 @@ const routes = [
       { path: 'place-guides', name: 'admin-place-guides', component: AdminPlaceGuidesView },
       { path: 'orders', name: 'admin-orders', component: AdminOrdersView },
       { path: 'refunds', name: 'admin-refunds', component: AdminResourcesView, props: { title: '退款审核', resource: 'refunds' } },
-      { path: 'users', name: 'admin-users', component: AdminUsersView },
-      { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' } },
-      // 后台内容管理四页：由 ComingSoonView 占位替换为真实页面
+      // E-06：以下三个页面仅 ADMIN 可访问（覆盖父级的 ['ADMIN', 'STAFF']）
+      { path: 'users', name: 'admin-users', component: AdminUsersView, meta: { roles: ['ADMIN'] } },
+      { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' }, meta: { roles: ['ADMIN'] } },
+      // 后台内容管理四页
       { path: 'reviews', name: 'admin-reviews', component: AdminReviewsView },
       { path: 'consultations', name: 'admin-consultations', component: AdminConsultationsView },
       { path: 'articles', name: 'admin-articles', component: AdminArticlesView },
-      { path: 'logs', name: 'admin-logs', component: AdminLogsView }
+      { path: 'logs', name: 'admin-logs', component: AdminLogsView, meta: { roles: ['ADMIN'] } }
     ]
   },
   {

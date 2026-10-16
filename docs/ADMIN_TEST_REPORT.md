@@ -9,9 +9,10 @@
 |---|---|---|
 | 员工创建、编辑、固定字段、重复错误、重试、密码字节、提交锁、取消 | `frontend/src/components/__tests__/StaffFormDialog.spec.js` | 通过 |
 | 用户／员工页面挂载、展示、搜索分页、启停确认、工作人员 ID、失败状态、列表竞态 | `frontend/src/views/admin/__tests__/AdminUsersView.regression.spec.js` | 通过 |
+| 原 PR 作者在接手期间补充的双模式、表单接线、启停、分页和列表测试 | `frontend/src/views/admin/__tests__/AdminUsersView.spec.js` | 保留原提交，16 个测试通过 |
 | 八种实际订单筛选、确认取消、订单详情竞态、退款意见、待确认安全重试、各后台列表竞态 | `frontend/src/views/admin/__tests__/AdminWorkflows.spec.js` | 通过 |
 | ADMIN／STAFF／GUIDE／USER 路由守卫及后台菜单 | `frontend/src/router/__tests__/adminAccess.spec.js` | 通过 |
-| 全量前端测试 | 项目既有检查入口 | 33 个文件、314 个测试全部通过；本轮新增 39 个测试 |
+| 全量前端测试 | 项目既有检查入口 | 34 个文件、330 个测试全部通过；接手新增 39 个测试，另保留作者补充的 16 个测试 |
 | 接口契约校验、生产构建 | 项目既有检查入口 | 均通过；构建保留既有大分包警告 |
 
 后端本轮未改动；本地未运行 MySQL 回归。新分支的远程 CI 需单独确认，不以原 PR 的绿色状态替代。

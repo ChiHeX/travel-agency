@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
+import StaffFormDialog from '@/components/StaffFormDialog.vue'
 import { codePointLength } from '@/utils/text'
 
 const props = defineProps({ mode: { type: String, default: 'users' } })
@@ -10,9 +11,9 @@ const props = defineProps({ mode: { type: String, default: 'users' } })
 const rows = ref([])
 const loading = ref(false)
 const error = ref('')
-/** 正在提交状态变更的用户 id。 */
+/** 正在提交状态变更的账号 id。 */
 const updatingId = ref(null)
-/** 正在加载详情的用户 id（用于禁用详情按钮）。 */
+/** 正在加载详情的用户 id（仅用户模式用）。 */
 const detailLoadingId = ref(null)
 
 const query = reactive({ page: 1, size: 20, keyword: '', status: '' })
@@ -21,27 +22,18 @@ const totalPages = ref(0)
 
 const KEYWORD_MAX = 100
 
-// ---------- 详情弹窗 ----------
-const detailVisible = ref(false)
-const detail = ref(null)
-const detailError = ref('')
-const detailLoading = ref(false)
-
 /**
- * 详情请求序号：只允许「当前打开的那次」写回弹窗。
- * 场景：打开用户 A、关闭后打开用户 B，A 的响应晚到后若无条件写回 detail，弹窗会跳回 A。
+ * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
+ *
+ * <p>快速切换筛选、翻页、输入关键字后立刻提交时，会连续发出多个请求；返回顺序不保证与
+ * 发出顺序一致。旧请求晚到成功会覆盖新筛选的结果（选中的筛选与列表对不上），
+ * 晚到失败会清空新结果并弹出一条已经过时的错误；旧请求结束时若把 loading 关掉，
+ * 还会让仍在途的新请求提前露出旧一页的数据。</p>
  */
-let detailRequestSeq = 0
-/** 当前弹窗正在查看的用户 id；关闭弹窗时置空。 */
-const activeDetailUserId = ref(null)
-
-const STATUS_LABEL = { ACTIVE: '正常使用', DISABLED: '已冻结' }
-const statusLabel = (status) => STATUS_LABEL[status] || status
-const statusClass = (status) => (status === 'ACTIVE' ? 'success' : 'danger')
-
-const isUserMode = computed(() => props.mode === 'users')
+let listRequestSeq = 0
 
 async function load(retryOnEmptyPage = true) {
+  const seq = ++listRequestSeq
   loading.value = true
   error.value = ''
   try {
@@ -54,22 +46,29 @@ async function load(retryOnEmptyPage = true) {
         status: query.status || undefined
       })
     } else {
-      // 员工模式暂保持原样（E-02 单独做）
-      result = await adminApi.staff({ page: query.page, size: query.size })
+      result = await adminApi.staff({
+        page: query.page,
+        size: query.size,
+        keyword: query.keyword.trim() || undefined,
+        status: query.status || undefined
+      })
     }
+    // 期间用户又改了筛选或翻页：这次响应已过期，丢弃
+    if (seq !== listRequestSeq) return
     rows.value = result?.items || []
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
-    // 筛选后当前页可能空了：回退一页
     if (retryOnEmptyPage && !rows.value.length && query.page > 1) {
       query.page -= 1
       await load(false)
     }
   } catch (cause) {
+    if (seq !== listRequestSeq) return
     rows.value = []
     error.value = cause.message || '账号列表加载失败'
   } finally {
-    loading.value = false
+    // 只有最新请求才有权结束加载态
+    if (seq === listRequestSeq) loading.value = false
   }
 }
 
@@ -97,7 +96,7 @@ function goToPage(delta) {
   load()
 }
 
-// ---------- 详情 ----------
+// ---------- 用户详情（仅用户模式） ----------
 async function openDetail(row) {
   const seq = ++detailRequestSeq
   const userId = row.id
@@ -109,7 +108,6 @@ async function openDetail(row) {
   detail.value = null
   try {
     const data = await adminApi.user(userId)
-    // 期间用户又打开了别的用户，或关闭了弹窗：这次响应已过期，丢弃
     if (seq !== detailRequestSeq) return
     detail.value = data
   } catch (cause) {
@@ -123,7 +121,6 @@ async function openDetail(row) {
   }
 }
 
-/** 关闭弹窗时让所有在途请求失效。 */
 function onDetailClose() {
   detailRequestSeq += 1
   activeDetailUserId.value = null
@@ -133,16 +130,28 @@ function onDetailClose() {
   detailError.value = ''
 }
 
-// ---------- 启用/停用 ----------
-/**
- * 停用/恢复用户。
- *
- * <p>成功后**重新拉当前筛选的列表**，而不是只改本地这一行：
- * 筛选为「正常使用」时停用一个账号，它必须从列表消失，总数与分页也随之变化。
- * 只做乐观改行的话，"正常使用"列表会继续显示一条已经停用的账号，总数也不变。
- * 若当前页空了，load() 会自动回退一页。</p>
- */
-async function toggleStatus(row) {
+// ---------- 员工表单（仅员工模式） ----------
+function openCreateStaff() {
+  editingStaff.value = null
+  staffDialogVisible.value = true
+}
+
+function openEditStaff(row) {
+  editingStaff.value = row
+  staffDialogVisible.value = true
+}
+
+function onStaffSaved(payload) {
+  if (payload?.created) {
+    query.page = 1
+    load()
+  } else {
+    load()
+  }
+}
+
+// ---------- 停用/恢复 ----------
+async function toggleUserStatus(row) {
   if (updatingId.value) return
   const isActive = row.status === 'ACTIVE'
   const next = isActive ? 'DISABLED' : 'ACTIVE'
@@ -161,7 +170,34 @@ async function toggleStatus(row) {
   try {
     await adminApi.updateUserStatus(row.id, next)
     ElMessage.success(next === 'DISABLED' ? '账号已停用' : '账号已恢复')
-    // 关键：重新拉当前筛选的列表，让筛选结果与总数同步更新；末页变空自动回退
+    await load()
+  } catch (cause) {
+    if (cause.status === 409) ElMessage.warning(cause.message || '当前状态不允许该操作')
+    else ElMessage.error(cause.message || '状态更新失败')
+  } finally {
+    updatingId.value = null
+  }
+}
+
+async function toggleStaffStatus(row) {
+  if (updatingId.value) return
+  const isActive = row.status === 'ACTIVE'
+  const next = isActive ? 'DISABLED' : 'ACTIVE'
+  if (isActive) {
+    try {
+      await ElMessageBox.confirm(
+        `确认停用员工「${row.realName}」吗？停用后该账号无法登录。`,
+        '停用员工账号',
+        { type: 'warning', confirmButtonText: '确认停用', cancelButtonText: '取消' }
+      )
+    } catch {
+      return
+    }
+  }
+  updatingId.value = row.id
+  try {
+    await adminApi.updateStaffStatus(row.id, next)
+    ElMessage.success(next === 'DISABLED' ? '员工账号已停用' : '员工账号已恢复')
     await load()
   } catch (cause) {
     if (cause.status === 409) ElMessage.warning(cause.message || '当前状态不允许该操作')
@@ -189,23 +225,28 @@ onMounted(load)
         <p>
           {{ isUserMode
             ? '查看注册游客基础资料与账户状态，支持按用户名/昵称/手机号搜索、查看详情、禁用或恢复账号。'
-            : '管理员负责内部运营、客服与导游账号角色分配。' }}
+            : '管理员创建与维护内部运营、客服人员账号；创建后角色由系统固定为 STAFF，本页不提供角色选择。' }}
         </p>
       </div>
+      <button v-if="isStaffMode" class="primary-button" @click="openCreateStaff">
+        + 新增员工
+      </button>
     </div>
 
     <div class="admin-panel">
-      <!-- 搜索：仅用户模式；员工模式等到 E-02 再加 -->
-      <form v-if="isUserMode" class="toolbar" @submit.prevent="search">
+      <!-- 搜索：用户 / 员工模式都有 -->
+      <form class="toolbar" @submit.prevent="search">
         <input
           v-model="query.keyword"
           class="search-input"
-          placeholder="按用户名、昵称或手机号搜索"
+          :placeholder="isUserMode
+            ? '按用户名、昵称或手机号搜索'
+            : '按姓名、工号或手机号搜索'"
         />
         <select v-model="query.status" class="filter-select">
           <option value="">全部状态</option>
-          <option value="ACTIVE">正常使用</option>
-          <option value="DISABLED">已冻结</option>
+          <option value="ACTIVE">{{ isUserMode ? '正常使用' : '在岗' }}</option>
+          <option value="DISABLED">{{ isUserMode ? '已冻结' : '已停用' }}</option>
         </select>
         <button type="submit" class="secondary-button" :disabled="loading">查询</button>
         <button
@@ -221,17 +262,20 @@ onMounted(load)
         :loading="loading"
         :error="error"
         :empty="!loading && !error && rows.length === 0"
-        :empty-text="isUserMode ? '暂无符合条件的用户。' : '暂无员工数据。'"
+        :empty-text="isUserMode ? '暂无符合条件的用户。' : '暂无符合条件的员工。'"
         @retry="load"
       >
         <table class="data-table">
           <thead>
-            <tr v-if="!isUserMode">
+            <tr v-if="isStaffMode">
+              <th>姓名</th>
+              <th>登录账号</th>
               <th>员工工号</th>
-              <th>用户账号 ID</th>
               <th>所属部门</th>
               <th>职级岗位</th>
-              <th>入职/创建时间</th>
+              <th>联系电话</th>
+              <th>状态</th>
+              <th style="text-align: right;">操作</th>
             </tr>
             <tr v-else>
               <th>账号用户名</th>
@@ -244,13 +288,38 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <template v-if="!isUserMode">
+            <template v-if="isStaffMode">
               <tr v-for="row in rows" :key="row.id">
-                <td><strong>{{ row.employeeNo }}</strong></td>
-                <td>{{ row.userId }}</td>
+                <td><strong>{{ row.realName }}</strong></td>
+                <td>{{ row.username }}</td>
+                <td>{{ row.employeeNo }}</td>
                 <td>{{ row.department || '—' }}</td>
                 <td>{{ row.position || '—' }}</td>
-                <td>{{ row.createdAt }}</td>
+                <td>{{ row.phone || '—' }}</td>
+                <td>
+                  <span class="tag" :class="statusClass(row.status)">
+                    {{ staffStatusLabel(row.status) }}
+                  </span>
+                </td>
+                <td style="text-align: right;" class="row-actions">
+                  <button
+                    type="button"
+                    class="text-button"
+                    @click="openEditStaff(row)"
+                  >编辑</button>
+                  <span class="divider">|</span>
+                  <button
+                    type="button"
+                    class="text-button"
+                    :class="row.status === 'ACTIVE' ? 'text-danger' : 'text-success'"
+                    :disabled="updatingId === row.id"
+                    @click="toggleStaffStatus(row)"
+                  >
+                    {{ updatingId === row.id
+                      ? '提交中…'
+                      : row.status === 'ACTIVE' ? '停用' : '恢复' }}
+                  </button>
+                </td>
               </tr>
             </template>
             <template v-else>
@@ -280,7 +349,7 @@ onMounted(load)
                     class="text-button"
                     :class="row.status === 'ACTIVE' ? 'text-danger' : 'text-success'"
                     :disabled="updatingId === row.id"
-                    @click="toggleStatus(row)"
+                    @click="toggleUserStatus(row)"
                   >
                     {{ updatingId === row.id
                       ? '提交中…'
@@ -300,8 +369,9 @@ onMounted(load)
       </RequestState>
     </div>
 
-    <!-- 用户详情弹窗 -->
+    <!-- 用户详情弹窗（仅用户模式） -->
     <el-dialog
+      v-if="isUserMode"
       v-model="detailVisible"
       title="用户资料"
       width="min(560px, calc(100vw - 32px))"
@@ -337,6 +407,14 @@ onMounted(load)
         <p class="detail-hint">敏感字段（密码、完整证件号）不在本页面展示。</p>
       </div>
     </el-dialog>
+
+    <!-- 员工表单弹窗（仅员工模式） -->
+    <StaffFormDialog
+      v-if="isStaffMode"
+      v-model="staffDialogVisible"
+      :staff="editingStaff"
+      @saved="onStaffSaved"
+    />
   </div>
 </template>
 

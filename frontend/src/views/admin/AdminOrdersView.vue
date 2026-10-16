@@ -26,7 +26,14 @@ const totalPages = ref(0)
 
 const KEYWORD_MAX = 100
 
-/** 契约 OrderStatus 的全部取值。 */
+/**
+ * 契约 OrderStatus 的全部取值（8 个）。
+ *
+ * <p>注意：{@code REFUND_PROCESSING} 与 {@code REFUND_REJECTED} 是 {@code RefundStatus} 的取值
+ * （退款单自身在"出款结果待确认 / 已拒绝"时的状态），**不是 OrderStatus**。把它们当成订单状态
+ * 既会拼出后端不认识的查询串，也会误导工作人员把"退款单的状态"当成"订单的状态"。
+ * 退款处理中 / 拒绝的信息在订单详情的「退款记录」区块里按 {@code RefundStatus} 展示。</p>
+ */
 const ORDER_STATUS_OPTIONS = [
   { value: 'WAIT_PAY', label: '待支付' },
   { value: 'PAID_WAIT_CONFIRM', label: '待确认' },
@@ -35,12 +42,10 @@ const ORDER_STATUS_OPTIONS = [
   { value: 'COMPLETED', label: '已完成' },
   { value: 'CANCELLED', label: '已取消' },
   { value: 'REFUND_APPLYING', label: '退款审核中' },
-  { value: 'REFUND_PROCESSING', label: '退款结果待确认' },
-  { value: 'REFUNDED', label: '已退款' },
-  { value: 'REFUND_REJECTED', label: '退款被拒' }
+  { value: 'REFUNDED', label: '已退款' }
 ]
 
-/** 订单业务状态的标签颜色。 */
+/** 订单业务状态的标签颜色（8 个值，与契约 OrderStatus 一致）。 */
 const ORDER_STATUS_CLASS = {
   WAIT_PAY: 'warning',
   PAID_WAIT_CONFIRM: 'warning',
@@ -49,9 +54,7 @@ const ORDER_STATUS_CLASS = {
   COMPLETED: 'success',
   CANCELLED: 'danger',
   REFUND_APPLYING: 'warning',
-  REFUND_PROCESSING: 'warning',
-  REFUNDED: 'danger',
-  REFUND_REJECTED: 'danger'
+  REFUNDED: 'danger'
 }
 
 const orderStatusLabel = (status) => orderStatusLabels[status] || status
@@ -72,7 +75,14 @@ let detailRequestSeq = 0
 /** 当前弹窗正在查看的订单号；关闭弹窗时置空。 */
 const activeDetailOrderNo = ref(null)
 
+/**
+ * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
+ * 快速切换筛选或翻页时，旧响应晚到会覆盖新结果；靠序号把过期响应丢弃。
+ */
+let listRequestSeq = 0
+
 async function load(retryOnEmptyPage = true) {
+  const seq = ++listRequestSeq
   loading.value = true
   error.value = ''
   try {
@@ -82,6 +92,8 @@ async function load(retryOnEmptyPage = true) {
       keyword: query.keyword.trim() || undefined,
       status: query.status || undefined
     })
+    // 期间用户又改了筛选或翻页：这次响应已过期，丢弃
+    if (seq !== listRequestSeq) return
     rows.value = result?.items || []
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
@@ -91,10 +103,11 @@ async function load(retryOnEmptyPage = true) {
       await load(false)
     }
   } catch (cause) {
+    if (seq !== listRequestSeq) return
     rows.value = []
     error.value = cause.message || '订单列表加载失败'
   } finally {
-    loading.value = false
+    if (seq === listRequestSeq) loading.value = false
   }
 }
 

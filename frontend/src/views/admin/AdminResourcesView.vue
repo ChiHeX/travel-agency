@@ -8,6 +8,7 @@ import DepartureFormDialog from '@/components/DepartureFormDialog.vue'
 import GuideFormDialog from '@/components/GuideFormDialog.vue'
 import HotelFormDialog from '@/components/HotelFormDialog.vue'
 import { codePointLength } from '@/utils/text'
+import { fetchAllPages } from '@/utils/paging'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -38,38 +39,54 @@ const guideDialogVisible = ref(false)
 const editingGuide = ref(null)
 
 // ---------- 筛选 ----------
-/** 景点 / 酒店 / 导游列表的关键字。 */
 const keyword = ref('')
-/** 酒店列表的城市精确筛选。 */
 const city = ref('')
-/** 团期列表的筛选。 */
 const departureStatus = ref('')
 const departureRouteId = ref('')
 const departureGuideId = ref('')
 const departureStartFrom = ref('')
 const departureStartTo = ref('')
-/** 退款列表的状态筛选（E-04）。 */
 const refundStatus = ref('')
 
 /** 团期筛选用的线路 / 导游候选项。 */
 const departureRouteOptions = ref([])
 const departureGuideOptions = ref([])
 const departureOptionsLoaded = ref(false)
+const departureOptionsLoading = ref(false)
+const departureOptionsError = ref('')
 
+/**
+ * 加载团期筛选的线路 / 导游候选项。
+ *
+ * <p>契约 Size 上限是 100，只取第一页会让第 101 条之后的线路 / 导游在筛选下拉里永远选不到。
+ * 用 fetchAllPages 逐页取全量；失败时不标记为已加载（允许下次重试），并给出可重试的错误信息。</p>
+ */
 async function loadDepartureOptions() {
-  if (departureOptionsLoaded.value) return
-  departureOptionsLoaded.value = true
+  if (departureOptionsLoaded.value || departureOptionsLoading.value) return
+  departureOptionsLoading.value = true
+  departureOptionsError.value = ''
   try {
-    const [routePage, guidePage] = await Promise.all([
-      adminApi.routes({ page: 1, size: 100 }),
-      adminApi.guides({ page: 1, size: 100 })
+    const [routeList, guideList] = await Promise.all([
+      fetchAllPages(adminApi.routes),
+      fetchAllPages(adminApi.guides)
     ])
-    departureRouteOptions.value = routePage?.items || []
-    departureGuideOptions.value = guidePage?.items || []
-  } catch {
+    departureRouteOptions.value = routeList
+    departureGuideOptions.value = guideList
+    departureOptionsLoaded.value = true
+  } catch (cause) {
+    // 失败时不标记为已加载：用户可点"重试"按钮或切走再回来重新触发
     departureRouteOptions.value = []
     departureGuideOptions.value = []
+    departureOptionsError.value = cause?.message || '线路 / 导游候选项加载失败，请重试'
+  } finally {
+    departureOptionsLoading.value = false
   }
+}
+
+/** 失败后手动重试。 */
+function retryDepartureOptions() {
+  departureOptionsLoaded.value = false
+  loadDepartureOptions()
 }
 
 // ---------- 状态字典 ----------
@@ -371,7 +388,7 @@ async function changeDepartureStatus(row, next) {
   }
 }
 
-// ---------- 退款审核（E-04）----------
+// ---------- 退款审核 ----------
 
 /** 退款详情弹窗。 */
 const refundDetailVisible = ref(false)
@@ -379,24 +396,43 @@ const refundDetailLoading = ref(false)
 const refundDetailError = ref('')
 const refundDetail = ref(null)
 
+/**
+ * 退款详情请求序号：只允许「当前打开的那次」写回弹窗。
+ * 打开退款 A、关闭后打开 B，A 的响应晚到时会被丢弃，弹窗不会跳回 A。
+ */
+let refundDetailSeq = 0
+/** 当前退款详情弹窗正在查看的退款单 id；关闭弹窗时置空。 */
+const activeRefundDetailId = ref(null)
+
 async function openRefundDetail(row) {
+  const seq = ++refundDetailSeq
+  const refundId = row.id
   refundDetailVisible.value = true
+  activeRefundDetailId.value = refundId
   refundDetailLoading.value = true
   refundDetailError.value = ''
   refundDetail.value = null
   try {
-    refundDetail.value = await adminApi.refund(row.id)
+    const data = await adminApi.refund(refundId)
+    if (seq !== refundDetailSeq) return
+    refundDetail.value = data
   } catch (cause) {
+    if (seq !== refundDetailSeq) return
     refundDetailError.value = cause.message || '退款详情加载失败'
   } finally {
-    refundDetailLoading.value = false
+    if (seq === refundDetailSeq) refundDetailLoading.value = false
   }
 }
 
-/**
- * 弹出输入框让用户填写审核意见。
- * 契约 RefundDecisionRequest.comment 是 required + minLength 1 + maxLength 500。
- */
+/** 关闭退款详情弹窗时让所有在途请求失效。 */
+function onRefundDetailClose() {
+  refundDetailSeq += 1
+  activeRefundDetailId.value = null
+  refundDetail.value = null
+  refundDetailLoading.value = false
+  refundDetailError.value = ''
+}
+
 async function promptComment(action) {
   const title = action === 'APPROVE' ? '同意退款' : '拒绝退款'
   const placeholder = action === 'APPROVE'
@@ -416,34 +452,19 @@ async function promptComment(action) {
         return true
       },
       inputType: 'textarea',
-      // 拒绝时用红色警告
       type: action === 'REJECT' ? 'warning' : 'info'
     }
   )
   return String(value ?? '').trim()
 }
 
-/**
- * 提交一次退款审核动作。
- *
- * <p>两种情况都要重新拉列表，因此刷新放在 finally 里：
- * ① 成功 —— 状态已从 APPLYING 变成 REFUNDED / REJECTED；
- * ② 失败且是「结果未确认」（后端 503 `REFUND_RESULT_UNCONFIRMED`）—— 此时出款请求已经发出去，
- * 后端把退款单落成了持久的 PROCESSING，页面若还停在旧的 `APPLYING` 上，
- * 管理员就会对着一个早已不接受拒绝的单子继续点「拒绝」（后端会回 409，白点一次）。</p>
- *
- * <p>{@code PROCESSING} 的重试走的就是 APPROVE：后端对已处于 PROCESSING 的单子放行同意、拦掉拒绝，
- * 用同一个出款请求号再确认一次结果；该端点也要求 comment 必填，因此重试也要走输入框（可填同一句）。</p>
- */
 async function decision(row, action) {
   if (pending.value != null) return
 
-  // 先让用户填审核意见
   let comment
   try {
     comment = await promptComment(action)
   } catch {
-    // 用户取消，直接返回
     return
   }
 
@@ -530,7 +551,15 @@ onMounted(() => {
       <button v-if="hasDepartureFilters" type="button" class="text-button" :disabled="loading" @click="clearDepartureFilters">清空</button>
     </form>
 
-    <!-- 退款筛选（E-04） -->
+    <!-- 团期候选项加载失败提示（可重试） -->
+    <p v-if="isDepartureList && departureOptionsError" class="options-error" role="alert">
+      {{ departureOptionsError }}
+      <button type="button" class="text-button" :disabled="departureOptionsLoading" @click="retryDepartureOptions">
+        {{ departureOptionsLoading ? '加载中…' : '重试' }}
+      </button>
+    </p>
+
+    <!-- 退款筛选 -->
     <form v-else-if="isRefundList" class="resource-search" @submit.prevent="searchRefunds">
       <select v-model="refundStatus" class="filter-select">
         <option value="">全部状态</option>
@@ -787,8 +816,13 @@ onMounted(() => {
       @saved="load"
     />
 
-    <!-- 退款详情弹窗（E-04） -->
-    <el-dialog v-model="refundDetailVisible" title="退款详情" width="min(640px, calc(100vw - 32px))">
+    <!-- 退款详情弹窗 -->
+    <el-dialog
+      v-model="refundDetailVisible"
+      title="退款详情"
+      width="min(640px, calc(100vw - 32px))"
+      @close="onRefundDetailClose"
+    >
       <div v-if="refundDetailLoading"><el-skeleton :rows="5" animated /></div>
 
       <div v-else-if="refundDetailError" class="request-state" role="alert">
@@ -883,6 +917,16 @@ onMounted(() => {
 
 .departure-search .date-sep {
   color: var(--text-tertiary);
+}
+
+.options-error {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--danger-red, #dc2626);
+  border-radius: 6px;
+  background: #fef2f2;
+  color: var(--danger-red, #dc2626);
+  font-size: 12px;
 }
 
 .resource-pager {

@@ -27,6 +27,14 @@ const detail = ref(null)
 const detailError = ref('')
 const detailLoading = ref(false)
 
+/**
+ * 详情请求序号：只允许「当前打开的那次」写回弹窗。
+ * 场景：打开用户 A、关闭后打开用户 B，A 的响应晚到后若无条件写回 detail，弹窗会跳回 A。
+ */
+let detailRequestSeq = 0
+/** 当前弹窗正在查看的用户 id；关闭弹窗时置空。 */
+const activeDetailUserId = ref(null)
+
 const STATUS_LABEL = { ACTIVE: '正常使用', DISABLED: '已冻结' }
 const statusLabel = (status) => STATUS_LABEL[status] || status
 const statusClass = (status) => (status === 'ACTIVE' ? 'success' : 'danger')
@@ -91,22 +99,49 @@ function goToPage(delta) {
 
 // ---------- 详情 ----------
 async function openDetail(row) {
+  const seq = ++detailRequestSeq
+  const userId = row.id
   detailVisible.value = true
+  activeDetailUserId.value = userId
   detailLoading.value = true
-  detailLoadingId.value = row.id
+  detailLoadingId.value = userId
   detailError.value = ''
   detail.value = null
   try {
-    detail.value = await adminApi.user(row.id)
+    const data = await adminApi.user(userId)
+    // 期间用户又打开了别的用户，或关闭了弹窗：这次响应已过期，丢弃
+    if (seq !== detailRequestSeq) return
+    detail.value = data
   } catch (cause) {
+    if (seq !== detailRequestSeq) return
     detailError.value = cause.message || '用户资料加载失败'
   } finally {
-    detailLoading.value = false
-    detailLoadingId.value = null
+    if (seq === detailRequestSeq) {
+      detailLoading.value = false
+      detailLoadingId.value = null
+    }
   }
 }
 
+/** 关闭弹窗时让所有在途请求失效。 */
+function onDetailClose() {
+  detailRequestSeq += 1
+  activeDetailUserId.value = null
+  detail.value = null
+  detailLoading.value = false
+  detailLoadingId.value = null
+  detailError.value = ''
+}
+
 // ---------- 启用/停用 ----------
+/**
+ * 停用/恢复用户。
+ *
+ * <p>成功后**重新拉当前筛选的列表**，而不是只改本地这一行：
+ * 筛选为「正常使用」时停用一个账号，它必须从列表消失，总数与分页也随之变化。
+ * 只做乐观改行的话，"正常使用"列表会继续显示一条已经停用的账号，总数也不变。
+ * 若当前页空了，load() 会自动回退一页。</p>
+ */
 async function toggleStatus(row) {
   if (updatingId.value) return
   const isActive = row.status === 'ACTIVE'
@@ -124,9 +159,10 @@ async function toggleStatus(row) {
   }
   updatingId.value = row.id
   try {
-    const updated = await adminApi.updateUserStatus(row.id, next)
-    if (updated) Object.assign(row, updated)
+    await adminApi.updateUserStatus(row.id, next)
     ElMessage.success(next === 'DISABLED' ? '账号已停用' : '账号已恢复')
+    // 关键：重新拉当前筛选的列表，让筛选结果与总数同步更新；末页变空自动回退
+    await load()
   } catch (cause) {
     if (cause.status === 409) ElMessage.warning(cause.message || '当前状态不允许该操作')
     else ElMessage.error(cause.message || '状态更新失败')
@@ -265,7 +301,12 @@ onMounted(load)
     </div>
 
     <!-- 用户详情弹窗 -->
-    <el-dialog v-model="detailVisible" title="用户资料" width="min(560px, calc(100vw - 32px))">
+    <el-dialog
+      v-model="detailVisible"
+      title="用户资料"
+      width="min(560px, calc(100vw - 32px))"
+      @close="onDetailClose"
+    >
       <div v-if="detailLoading"><el-skeleton :rows="5" animated /></div>
 
       <div v-else-if="detailError" class="request-state" role="alert">

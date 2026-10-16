@@ -61,6 +61,16 @@ const orderStatusClass = (status) => ORDER_STATUS_CLASS[status] || ''
 const detailVisible = ref(false)
 const detail = ref(null)
 const detailError = ref('')
+/**
+ * 详情请求序号：只允许「当前打开的那次」写回弹窗。
+ *
+ * <p>场景：打开订单 A、关闭后打开订单 B，A 的响应晚到后若无条件写回 detail，
+ * 弹窗会跳回 A 的内容；A 里若有"确认报名"按钮，还会让工作人员对着 B 的页面
+ * 误点 A 的操作。加序号 + 当前订单号校验后，过期响应一律丢弃。</p>
+ */
+let detailRequestSeq = 0
+/** 当前弹窗正在查看的订单号；关闭弹窗时置空。 */
+const activeDetailOrderNo = ref(null)
 
 async function load(retryOnEmptyPage = true) {
   loading.value = true
@@ -114,17 +124,33 @@ function goToPage(delta) {
 
 // ---------- 详情 ----------
 async function openDetail(row) {
+  const seq = ++detailRequestSeq
+  const orderNo = row.orderNo
   detailVisible.value = true
-  detailLoadingOrderNo.value = row.orderNo
+  activeDetailOrderNo.value = orderNo
+  detailLoadingOrderNo.value = orderNo
   detailError.value = ''
   detail.value = null
   try {
-    detail.value = await adminApi.order(row.orderNo)
+    const data = await adminApi.order(orderNo)
+    // 期间用户又打开了别的订单，或关闭了弹窗：这次响应已过期，丢弃
+    if (seq !== detailRequestSeq) return
+    detail.value = data
   } catch (cause) {
+    if (seq !== detailRequestSeq) return
     detailError.value = cause.message || '订单详情加载失败'
   } finally {
-    detailLoadingOrderNo.value = null
+    if (seq === detailRequestSeq) detailLoadingOrderNo.value = null
   }
+}
+
+/** 关闭弹窗时让所有在途请求失效，避免它们晚到后把弹窗内容写脏。 */
+function onDetailClose() {
+  detailRequestSeq += 1
+  activeDetailOrderNo.value = null
+  detail.value = null
+  detailLoadingOrderNo.value = null
+  detailError.value = ''
 }
 
 // ---------- 确认报名 ----------
@@ -144,9 +170,13 @@ async function confirm(row) {
     await adminApi.confirmOrder(row.orderNo)
     ElMessage.success('订单已确认通过')
     await load()
-    // 如果详情弹窗正开着，顺便刷新详情
-    if (detailVisible.value && detail.value?.order?.orderNo === row.orderNo) {
-      detail.value = await adminApi.order(row.orderNo)
+    // 只有当前弹窗还停在这条订单上时才刷新详情
+    if (detailVisible.value && activeDetailOrderNo.value === row.orderNo) {
+      const seq = detailRequestSeq
+      const fresh = await adminApi.order(row.orderNo)
+      if (seq === detailRequestSeq && activeDetailOrderNo.value === row.orderNo) {
+        detail.value = fresh
+      }
     }
   } catch (cause) {
     if (cause.status === 409) ElMessage.warning(cause.message || '当前订单状态不允许确认')
@@ -275,6 +305,7 @@ onMounted(load)
       title="订单详情"
       width="min(860px, calc(100vw - 32px))"
       top="6vh"
+      @close="onDetailClose"
     >
       <div v-if="detailLoadingOrderNo"><el-skeleton :rows="8" animated /></div>
 

@@ -26,7 +26,21 @@ const totalPages = ref(0)
 
 const KEYWORD_MAX = 100
 
-/** 契约 OrderStatus 的全部取值。 */
+/**
+ * 当前业务使用的八个订单状态（不包含契约保留值）。
+ *
+ * <p><b>关于 REFUND_PROCESSING / REFUND_REJECTED</b>：这两个值是
+ * {@code OrderStatus} 枚举里的<b>保留值</b>（契约里声明了，但当前业务不使用）；
+ * 它们<b>不是 {@code RefundStatus} 的取值</b>。</p>
+ *
+ * <p>退款单自身的状态由 {@code RefundStatus} 表达，是<b>不带前缀</b>的
+ * {@code APPLYING / PROCESSING / REFUNDED / REJECTED}。因此：</p>
+ * <ul>
+ *   <li>订单筛选下拉里<b>不出现</b> REFUND_PROCESSING / REFUND_REJECTED；</li>
+ *   <li>退款处理中 / 拒绝的信息，在订单详情的「退款记录」区块按 {@code RefundStatus}
+ *       展示（取的是 {@code refund.status}，不是 {@code order.status}）。</li>
+ * </ul>
+ */
 const ORDER_STATUS_OPTIONS = [
   { value: 'WAIT_PAY', label: '待支付' },
   { value: 'PAID_WAIT_CONFIRM', label: '待确认' },
@@ -35,12 +49,10 @@ const ORDER_STATUS_OPTIONS = [
   { value: 'COMPLETED', label: '已完成' },
   { value: 'CANCELLED', label: '已取消' },
   { value: 'REFUND_APPLYING', label: '退款审核中' },
-  { value: 'REFUND_PROCESSING', label: '退款结果待确认' },
-  { value: 'REFUNDED', label: '已退款' },
-  { value: 'REFUND_REJECTED', label: '退款被拒' }
+  { value: 'REFUNDED', label: '已退款' }
 ]
 
-/** 订单业务状态的标签颜色。 */
+/** 当前业务使用的八种订单状态的标签颜色，不展示契约保留值。 */
 const ORDER_STATUS_CLASS = {
   WAIT_PAY: 'warning',
   PAID_WAIT_CONFIRM: 'warning',
@@ -49,9 +61,7 @@ const ORDER_STATUS_CLASS = {
   COMPLETED: 'success',
   CANCELLED: 'danger',
   REFUND_APPLYING: 'warning',
-  REFUND_PROCESSING: 'warning',
-  REFUNDED: 'danger',
-  REFUND_REJECTED: 'danger'
+  REFUNDED: 'danger'
 }
 
 const orderStatusLabel = (status) => orderStatusLabels[status] || status
@@ -72,7 +82,14 @@ let detailRequestSeq = 0
 /** 当前弹窗正在查看的订单号；关闭弹窗时置空。 */
 const activeDetailOrderNo = ref(null)
 
+/**
+ * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
+ * 快速切换筛选或翻页时，旧响应晚到会覆盖新结果；靠序号把过期响应丢弃。
+ */
+let listRequestSeq = 0
+
 async function load(retryOnEmptyPage = true) {
+  const seq = ++listRequestSeq
   loading.value = true
   error.value = ''
   try {
@@ -82,6 +99,8 @@ async function load(retryOnEmptyPage = true) {
       keyword: query.keyword.trim() || undefined,
       status: query.status || undefined
     })
+    // 期间用户又改了筛选或翻页：这次响应已过期，丢弃
+    if (seq !== listRequestSeq) return
     rows.value = result?.items || []
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
@@ -91,10 +110,11 @@ async function load(retryOnEmptyPage = true) {
       await load(false)
     }
   } catch (cause) {
+    if (seq !== listRequestSeq) return
     rows.value = []
     error.value = cause.message || '订单列表加载失败'
   } finally {
-    loading.value = false
+    if (seq === listRequestSeq) loading.value = false
   }
 }
 

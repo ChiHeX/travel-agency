@@ -40,7 +40,14 @@ const statusLabel = (status) => STATUS_LABEL[status] || status
 const statusClass = (status) =>
   status === 'REPLIED' ? 'success' : status === 'CLOSED' ? 'danger' : 'warning'
 
+/**
+ * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
+ * 快速切换状态筛选或翻页时，旧响应晚到会覆盖新结果；靠序号把过期响应丢弃。
+ */
+let listRequestSeq = 0
+
 async function load(retryOnEmptyPage = true) {
+  const seq = ++listRequestSeq
   loading.value = true
   error.value = ''
   try {
@@ -49,6 +56,8 @@ async function load(retryOnEmptyPage = true) {
       size: query.size,
       status: query.status || undefined
     })
+    // 期间用户又改了筛选或翻页：这次响应已过期，丢弃
+    if (seq !== listRequestSeq) return
     rows.value = result?.items || []
     total.value = Number(result?.total ?? rows.value.length)
     totalPages.value = Number(result?.totalPages ?? (rows.value.length ? 1 : 0))
@@ -57,10 +66,11 @@ async function load(retryOnEmptyPage = true) {
       await load(false)
     }
   } catch (cause) {
+    if (seq !== listRequestSeq) return
     rows.value = []
     error.value = cause.message || '咨询列表加载失败'
   } finally {
-    loading.value = false
+    if (seq === listRequestSeq) loading.value = false
   }
 }
 

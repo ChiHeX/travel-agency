@@ -74,7 +74,6 @@ async function loadDepartureOptions() {
     departureGuideOptions.value = guideList
     departureOptionsLoaded.value = true
   } catch (cause) {
-    // 失败时不标记为已加载：用户可点"重试"按钮或切走再回来重新触发
     departureRouteOptions.value = []
     departureGuideOptions.value = []
     departureOptionsError.value = cause?.message || '线路 / 导游候选项加载失败，请重试'
@@ -169,7 +168,14 @@ const hasDepartureFilters = computed(
 
 const RESOURCE_LABEL = { attractions: '景点', hotels: '酒店', guides: '导游', departures: '团期', refunds: '退款单' }
 
+/**
+ * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
+ * 快速切换筛选 / 翻页 / 切换资源时，旧响应晚到会覆盖新结果；靠序号把过期响应丢弃。
+ */
+let listRequestSeq = 0
+
 async function load(retryOnEmptyPage = true) {
+  const seq = ++listRequestSeq
   loading.value = true
   error.value = ''
   try {
@@ -205,6 +211,8 @@ async function load(retryOnEmptyPage = true) {
     } else {
       result = await loaders[props.resource]()
     }
+    // 期间用户又改了筛选 / 翻了页 / 切了资源：这次响应已过期，丢弃
+    if (seq !== listRequestSeq) return
     rows.value = result?.items || []
     if (!pagedResource.value) return
 
@@ -215,10 +223,11 @@ async function load(retryOnEmptyPage = true) {
       await load(false)
     }
   } catch (cause) {
+    if (seq !== listRequestSeq) return
     rows.value = []
     error.value = cause.message || '列表加载失败'
   } finally {
-    loading.value = false
+    if (seq === listRequestSeq) loading.value = false
   }
 }
 

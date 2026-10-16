@@ -16,7 +16,7 @@ travel-agency/
 ├─ frontend/                Vue 3 用户端 + 管理后台 SPA
 ├─ sql/                     schema.sql / test-data.sql
 ├─ deploy/                  Docker Compose、容器配置
-└─ docs/                    PRD、架构、API 规范和 OpenAPI 契约
+└─ docs/                    核心规范及按设计、测试、手册、附录分类的文档
 ```
 
 ## 本地启动
@@ -202,7 +202,17 @@ npm run build
 
 项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。
 
-其它文档：部署（含 HTTPS）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，数据库设计（E-R、字段与索引）见 [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)，数据来源与许可见 [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)。
+### 项目文档导航
+
+`docs` 根目录保留 API、架构、开发规范、PRD 和 OpenAPI 五份核心文件，其余文档按用途分类：
+
+| 分类 | 文档 |
+|---|---|
+| 需求与核心规范 | [产品需求](docs/PRD.md)、[总体架构](docs/ARCHITECTURE.md)、[开发规范](docs/DEVELOPMENT_GUIDE.md)、[API 规范](docs/API.md)、[OpenAPI](docs/openapi.yaml) |
+| 设计 `design/` | [数据库设计](docs/design/DATABASE_DESIGN.md)、[交易模块详细设计](docs/design/TRADE_MODULE.md) |
+| 测试 `testing/` | [项目测试报告](docs/testing/TEST_REPORT.md)（历史回归证据、验证范围及待验收项） |
+| 手册 `manuals/` | [用户操作手册](docs/manuals/USER_MANUAL.md)、[后台操作手册](docs/manuals/ADMIN_MANUAL.md)、[部署手册](docs/manuals/DEPLOYMENT.md) |
+| 附录 `appendices/` | [数据来源与许可](docs/appendices/DATA_SOURCES.md) |
 
 ## 站内消息与提醒
 
@@ -210,7 +220,7 @@ PRD §29 的站内消息覆盖：支付成功、报名确认、订单审核异�
 
 - 订单审核异常在后台确认报名时由业务复核触发（`POST /admin/orders/{orderNo}/confirm` 复核不通过）：
   只向用户发通知、**不改订单状态**，订单仍停在待确认、名额保持预留，用户补齐资料后可重新确认。
-  去重、脱敏与审计口径见 [交易模块说明](docs/TRADE_MODULE.md) §4 / §5。
+  去重、脱敏与审计口径见 [交易模块说明](docs/design/TRADE_MODULE.md) §4 / §5。
 
 - 即将出发提醒由定时任务 `DepartureReminderService` 发送：默认提前 `DEPARTURE_REMINDER_DAYS=3` 天，
   每天 `DEPARTURE_REMINDER_CRON`（默认 `0 0 9 * * *`）执行；只提醒符合出行条件的订单（已确认报名、团期未取消未完成），

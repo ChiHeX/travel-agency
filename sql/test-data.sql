@@ -485,7 +485,7 @@ FROM travel_order o WHERE o.order_no = 'TEST-ORDER-REFUND-APPLYING'
 -- 口径与 TravelRouteMapper#popularRouteCounts / #popularDestinations 完全一致：
 -- 已确认（含出行中/已完成），或退款申请中但由已确认发起的订单（退款完成前名额与计数都未回退；
 -- PAID_WAIT_CONFIRM 发起的退款从未 +1，靠 refund.original_order_status 区分）。
--- 真实环境不应预置该列（见 docs/DATABASE_DESIGN.md §6.1）。
+-- 真实环境不应预置该列（见 docs/design/DATABASE_DESIGN.md §6.1）。
 UPDATE travel_route r
 SET r.valid_booking_count = (
     SELECT COUNT(*)

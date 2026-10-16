@@ -4,7 +4,7 @@
 > 本文补齐 **HTTPS 入口**，并给出前后端、地图底图与支付宝回调的可访问性验收步骤。
 >
 > 关键约束（务必遵守）：**不提交任何密钥/证书；不重置已有数据库或 Docker 数据卷。**
-> 详见 [CONTRIBUTING §14](../CONTRIBUTING.md)。
+> 详见 [CONTRIBUTING §14](../../CONTRIBUTING.md)。
 
 ## 1. 部署拓扑
 
@@ -186,7 +186,7 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.https.yml p
 
 - 首次启动时若数据卷为空，`sql/schema.sql`、`sql/test-data.sql` 会自动导入。
 - **已有数据卷不会被重置**：`up`/`down` 都不会删除卷；**不要使用 `down -v`**（会清空数据库）。
-- 存量库升级请先按 [sql/migrations/README.md](../sql/migrations/README.md) 执行尚未应用的迁移（当前最新为 `011-add-departure-reminder.sql`）。
+- 存量库升级请先按 [sql/migrations/README.md](../../sql/migrations/README.md) 执行尚未应用的迁移（当前最新为 `011-add-departure-reminder.sql`）。
 
 ### 4.4 查看日志
 

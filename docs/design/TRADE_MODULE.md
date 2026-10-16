@@ -1,10 +1,9 @@
-# 交易模块（成员 B）设计与验证
+# 交易模块详细设计
 
-覆盖订单、支付、支付回调、退款、评价五条链路。所有端点挂在全局 `context-path: /api` 之下，
+覆盖订单、支付、支付回调、退款、评价五条链路。所有端点使用 `/api` 前缀，
 契约的唯一事实来源是 `docs/openapi.yaml` + `docs/API.md`。
 
-> 本文记录**当前实现**的设计取舍与验证证据。历史回归报告（`AUTH_REGRESSION.md`、
-> `PR9_REGRESSION.md`）里关于支付适配器的旧结论已被后续实现取代，两处都已补记指向本文。
+> 本文保留交易模块设计；历史验证证据及待验收事项统一见[测试报告](../testing/TEST_REPORT.md)。
 
 ## 1. 端点清单
 
@@ -73,7 +72,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 **原则**：所有不可重复的副作用（名额迁移、线路有效报名数、订单/支付单状态、站内通知）
 都排在"抢到了某条带旧状态条件的 UPDATE"之后，靠影响行数而不是靠事务回滚来决定谁执行。
 
-## 4. 确认报名的业务复核（B-02）
+## 4. 确认报名的业务复核
 
 `POST /admin/orders/{orderNo}/confirm` 在此前只检查订单状态、团期状态与容量。现在按 PRD §11.1
 **重新核对**三项，全部通过才允许进入 `CONFIRMED`：
@@ -89,7 +88,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
   **不回滚**事务：唯一被提交的是"一条审计留痕 + 一条站内通知"。若让它回滚，通知会一起消失，
   用户就看不到异常说明了。
 
-## 5. 报名审核异常的站内通知（B-03）
+## 5. 报名审核异常的站内通知
 
 - **触发**：上面任一复核项不通过时（PRD §29「订单审核异常」）。
 - **可见性**：用户通过 `GET /messages` 看到 `type = ORDER_AUDIT_ANOMALY` 的通知，标题形如
@@ -106,7 +105,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
   串行化），不需要唯一键当并发闸门；而唯一键必须包含 `title`，标题里已带订单号与原因短标签，
   不同订单、不同原因的标题本就不同，加了也不会互相冲突。普通索引在这里只解决查询效率。
 
-## 6. 审计一致性（B-04）
+## 6. 审计一致性
 
 `operation_log` 的写入全部移入 Service 的业务事务内，Controller 不再各自记录：
 
@@ -131,8 +130,7 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 ### 7.1 收银台
 
 四项配置（`ALIPAY_APP_ID`、`ALIPAY_APP_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY`、`ALIPAY_NOTIFY_URL`）
-**全配齐**才生成真实沙箱收银台链接，`notify_url` 作为公共参数参与签名；不齐时回退占位地址，
-接口仍有稳定形状。详见 `README.md` 的「支付宝沙箱」。
+**全配齐**才生成真实沙箱收银台链接，`notify_url` 作为公共参数参与签名；缺任意一项时返回 409 `PAYMENT_NOT_CONFIGURED`，不生成支付链接。详见 `README.md` 的「支付宝沙箱」。
 
 ### 7.2 回调入账
 
@@ -160,104 +158,4 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 模拟订单**不支持**退款（申请与审核都回 409 `LOCAL_PAYMENT_REFUND_UNSUPPORTED`，不调支付宝网关）。
 
 > ⚠️ **模拟支付不能用来宣称"支付链路已完成"**：它不经过支付宝验签、不出网、不动资金。
-> 真实验签、金额核对、重复回调、出款与待确认重试必须在沙箱里单独验证（见 §9 未完成项）。
-
-## 8. 测试用例
-
-交易模块共 **13 个测试类 / 142 条用例**，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
-
-| 测试类 | 覆盖 |
-|---|---|
-| `OrderServiceCreateTest` | 下单价格快照、出行人快照、名额占用、幂等 |
-| `OrderServicePaymentTest` | 发起支付、回调入账、金额核对、重复回调、收银台闸门 |
-| `OrderServiceConfirmTest` | **确认报名**：成功返回 `OrderEnvelope`、状态守卫、团期关闭、状态迁移闸门、名额抢占、三项复核（支付未到账 / 快照数量不符 / 实名缺失且不泄露姓名证件号）、重复异常只通知一次 |
-| `OrderServiceRefundTest` | 退款申请与审核：出款成功才落 `REFUNDED`、名额只释放一次、配置不齐 fail-closed、明确失败 503、结果未确认、待确认重试与并发、请求号恒定、拒绝恢复原状态、审计留痕 |
-| `OrderServiceReviewTest` | 评价唯一性、未完成不能评价、越权、线路评分重算、**后台改可见状态 + 审计留痕** |
-| `DepartureCapacityConcurrencyIntegrationTest` | 名额守恒压测（30 抢 10）、单车超容量、**并发确认只生效一次**、并发退款审核、**审核异常"业务回滚 + 留痕通知提交"** |
-| `RefundPendingConfirmationIntegrationTest` | 「出款结果未确认」的事务语义：新连接读到持久 `PROCESSING`、拒绝被拦、同请求号重试收敛、**待确认与通过的审计留痕都已提交** |
-| `OrderAuditRollbackIntegrationTest` | **审计写入失败 ⇒ 业务修改一起回滚**：用 `operation_log.operator_id` 的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计、确认留痕、确认通知全部随事务回滚（含合法操作人的对照组） |
-| `TradingFlowContractIntegrationTest` | 端到端契约：报名→支付→回调→确认→出团→完成→评价，以及取消/退款全链路 |
-| `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
-| `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
-| `AlipayGatewayClientTest` | 验签、`app_id`/`seller_id` 核对、出款结果三态分类 |
-
-### 8.1 并发实测数据（真实 MySQL，8 线程）
-
-```text
-[CONFIRM-RACE]  threads=8 succeeded=1 rejected=7 dbReserved=0 dbConfirmed=2 validBookingCount=1 confirmLogs=1
-[REFUND-RACE]   threads=8 succeeded=1 rejected=7 dbReserved=0 dbConfirmed=0 validBookingCount=0
-[CAPACITY-STRESS] requests=30 capacity=10 succeeded=10 rejected=20 dbReserved=10 dbConfirmed=0 dbMax=10
-```
-
-- 同一订单 8 个并发确认：**只成功 1 次**，其余 7 次 `409 ORDER_STATE_CONFLICT`；
-  名额只从 `reserved` 迁到 `confirmed` 一次（2 人），线路有效报名数只 `+1`，审计留痕恰好 1 条。
-- 30 个并发下单抢 10 个名额：成功数恰好等于容量，占用不超上限，无超额订单与支付单。
-
-### 8.2 审计失败时的事务原子性（真实 MySQL）
-
-`OrderService.confirm` 的写入顺序是「订单状态迁移 → 团期名额迁移 → 线路统计回填 → **写审计**」，
-所以"审计与业务在同一个事务"这件事，只有在审计写失败时才能验证。让审计写失败用的是库自己的
-约束（`operation_log.operator_id` 的外键 `fk_operation_log_operator`），不建触发器、不改表结构、
-也不 mock 掉 Recorder，因此走的仍是真实事务与真实连接。
-
-```text
-[对照] 合法操作人  -> CONFIRMED, confirmed_at 已写, confirmLogs=1
-[实验] 不存在的操作人 -> 抛 DataIntegrityViolationException（fk_operation_log_operator）
-                       订单 PAID_WAIT_CONFIRM, confirmed_at=NULL,
-                       团期 reserved/confirmed 均回到调用前, validBookingCount 回到调用前,
-                       confirmLogs=0, 确认通知=0
-```
-
-**反向对照（证明这条用例真的守得住这个性质）**：把那条确认留痕包进 `try/catch` 吞掉失败 ——
-等价于回到 PR 之前的形状（那时审计写在 Controller 里、业务事务已经提交），
-该用例立刻变红：
-
-```text
-Expected org.springframework.dao.DataIntegrityViolationException to be thrown, but nothing was thrown.
-```
-
-同一变异下全量 **571 条中只红这一条**（`succeeded=570 failed=1`），说明断言精准指向这条性质，
-不是大面积误伤。还原后全量恢复 **571/571**。
-
-## 9. 回归结果与前置条件
-
-**最新全量回归**：后端 **571 条用例，571 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。本次改动新增 10 条用例（`561 → 571`；
-末一条 `OrderAuditRollbackIntegrationTest` 是应评审意见补的"审计写失败 ⇒ 业务回滚"数据库测试）。
-
-> ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
-> 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
-> `Unknown column`，**39 条与交易无关的用例（酒店 / 线路 / 导游）会一起变红**，
-> 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
-> （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
->
-> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 34 / payment 34 / refund 8 /
-> departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /
-> staff 1 / operation_log 27`）。
-
-## 10. 未完成项与风险
-
-- 🔴 **支付宝沙箱真实联调尚未完成（B-05）**：本环境**没有配置沙箱密钥**
-  （`ALIPAY_APP_ID` 等四项），也没有公网可达的 `notify_url`，因此**尚未**演示
-  "真实支付发起 → 官方验签回调 → 金额核对 → 重复回调 → 退款通过 → 结果待确认 → 重试"
-  这一串真实动作。**当前所有支付/退款结论都来自测试替身与本地模拟支付，
-  不能宣称支付链路已完成验收。** 需要的输入与方案见下。
-- ⬜ **退款对账的定时收敛未做**：`PROCESSING`（待确认）目前依赖人工筛出后用同一请求号重试，
-  没有定时任务自动向支付宝查询收敛。金额不大时够用，但缺少兜底。
-- ⬜ **前端联调未回执**：订单详情、退款审核、评价管理三个页面尚未由前端反馈联调结果；
-  契约字段与 `openapi.yaml` 一致，但页面行为未验收。
-- ⬜ **共享 dev 库的 `005` 索引仍未生效**（`travel_order` 缺 `idx_order_created_at`），
-  与本次改动无关，属历史遗留。
-
-### 10.1 B-05 需要什么
-
-| 项 | 说明 |
-|---|---|
-| 沙箱应用 | 开放平台沙箱应用的 `APPID` 与「接口加签方式」里生成的**应用私钥** |
-| 支付宝公钥 | 沙箱应用页给出的**支付宝公钥**（用于验签） |
-| 买家账号 | 沙箱买家账号与登录/支付密码，用于在收银台完成一笔真实支付 |
-| `notify_url` | 必须**公网可达**。本机可用内网穿透（如 ngrok / cpolar）临时映射 8080 端口 |
-| 可选 | `ALIPAY_SELLER_ID`（配置后会一并核对商户 UID） |
-
-配置方式见 `README.md` 的「支付宝沙箱」。四项齐备后会产出**脱敏**联调报告
-（记录每一步的请求/响应结构与 `code`/`fund_change`，不记录私钥、公钥全文与完整交易号）。
+> 真实验签、金额核对、重复回调、出款与待确认重试必须在沙箱里单独验证（见[测试报告](../testing/TEST_REPORT.md)的待验收事项）。

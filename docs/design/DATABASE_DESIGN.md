@@ -3,8 +3,8 @@
 > 目标：给出本项目数据库的 **E-R 关系、表与索引说明、演示数据标注**。
 >
 > 规范来源：结构基线 `sql/schema.sql`，增量变更 `sql/migrations/NNN-*.sql`（清单与执行方式见
-> [迁移说明](../sql/migrations/README.md)，本文不重复维护），
-> 协作规则见 [CONTRIBUTING §12](../CONTRIBUTING.md)。全部业务数据来自数据库，禁止硬编码假数据（[DEVELOPMENT_GUIDE §5](DEVELOPMENT_GUIDE.md)）。
+> [迁移说明](../../sql/migrations/README.md)，本文不重复维护），
+> 协作规则见 [CONTRIBUTING §12](../../CONTRIBUTING.md)。全部业务数据来自数据库，禁止硬编码假数据（[DEVELOPMENT_GUIDE §5](../DEVELOPMENT_GUIDE.md)）。
 
 ## 1. 基线与迁移策略
 
@@ -65,7 +65,7 @@ erDiagram
     sys_user ||--o{ idempotency_record : "幂等键"
 ```
 
-**核心口径**（详见 [ARCHITECTURE](ARCHITECTURE.md)）：`TravelRoute` 是可复用线路，`Departure` 是具体出发团期；
+**核心口径**（详见 [ARCHITECTURE](../ARCHITECTURE.md)）：`TravelRoute` 是可复用线路，`Departure` 是具体出发团期；
 订单必须关联具体团期；下单时把团期价格与出行人复制成订单快照，历史订单不随当前资料变化。
 
 ## 3. 表清单
@@ -190,7 +190,7 @@ erDiagram
   |---|---|---|---|
   | 演示景点与线路基础资料 | 团队原创整理的课程测试数据 | TEAM_TEST_DATA | 仅限课程项目开发、测试与答辩演示 |
   | 扩展线路、订单与攻略测试资料 | 团队原创整理的课程测试数据 | TEAM_TEST_DATA | 仅限课程项目开发、测试与答辩演示 |
-- 图片、景点、坐标的来源与许可清单见 [DATA_SOURCES.md](DATA_SOURCES.md)。
+- 图片、景点、坐标的来源与许可清单见 [DATA_SOURCES.md](../appendices/DATA_SOURCES.md)。
 
 ## 6. 数据一致性注意事项
 
@@ -240,7 +240,7 @@ WHERE r.deleted = 0;
 一次性对齐（纯数据更新、幂等，不改结构、不改订单）：虽然热门排行已不读该列，但后台线路列表与线路详情的
 「有效报名订单数」、公开线路列表的「报名人数」排序（PRD §15.4，来源见 PRD §27「系统有效订单」）读的就是它，
 不对齐会继续显示预置值。最新初始化的库由 `test-data.sql` 在订单导入后自行重算，无需执行。
-执行方式见[迁移说明](../sql/migrations/README.md)。
+执行方式见[迁移说明](../../sql/migrations/README.md)。
 
 ### 6.2 名额计数只由业务链路维护
 

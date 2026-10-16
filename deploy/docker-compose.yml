@@ -7,7 +7,7 @@ services:
       # 数据库口令一律由环境变量注入。默认值只是本地开发用的演示口令，
       # 对外部署必须显式设置（HTTPS 叠加配置用 `:?` 强制要求，缺失即启动失败）。
       # 注意：这两个变量只在【数据卷首次初始化】时生效，已有数据卷不会被改口令；
-      # 已有库请把 DB_PASSWORD 设成库内该账号当前的密码（见 docs/DEPLOYMENT.md §4.2）。
+      # 已有库请把 DB_PASSWORD 设成库内该账号当前的密码（见 docs/manuals/DEPLOYMENT.md §4.2）。
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
       MYSQL_DATABASE: travel_agency
       MYSQL_USER: travel

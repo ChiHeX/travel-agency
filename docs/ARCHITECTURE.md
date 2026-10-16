@@ -151,7 +151,7 @@ REFUND_APPLYING ──拒绝──> 恢复原业务状态（PAID_WAIT_CONFIRM / 
   拦下并把原因通知下单用户（PRD §29）。该通知**不改变订单状态**（仍停在 `PAID_WAIT_CONFIRM`，预留名额不动），
   用户补齐资料后可重新确认。消息按「订单号 + 异常原因」去重，同一问题不重复发送、原因变化则各通知一次；
   正文与接口 `message` 只回「第 N 位出行人缺少哪个字段」，不含姓名与证件号。
-  完整设计见 [交易模块说明](TRADE_MODULE.md) §4 / §5。
+  完整设计见 [交易模块说明](design/TRADE_MODULE.md) §4 / §5。
 
 - **团期状态变化**：后台 `DepartureService#changeStatus` 与导游 `start` / `complete` 在状态**确实变化**后，
   用一条 `INSERT ... SELECT DISTINCT` 向该团期下有效订单（排除未支付 / 已取消 / 已退款）的用户投递消息；

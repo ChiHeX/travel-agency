@@ -6,7 +6,7 @@
 # 前置条件：
 #   1. 已把 TLS 证书**复制**到 deploy/certs/（fullchain.pem + privkey.pem），且证书覆盖对外域名；
 #      证书与私钥不要提交到仓库，也不要用指向宿主机 /etc/letsencrypt 的软链接 ——
-#      容器里只挂载了 deploy/certs，软链接的目标在容器内不存在（见 docs/DEPLOYMENT.md §4.1）。
+#      容器里只挂载了 deploy/certs，软链接的目标在容器内不存在（见 docs/manuals/DEPLOYMENT.md §4.1）。
 #   2. 已设置对外域名：PUBLIC_ORIGIN=https://<你的域名>（用于 CORS 与支付宝回调地址）。
 #   3. 已显式设置 JWT_SECRET 与数据库口令：下面用 `:?` 强制要求，缺失即报错退出，
 #      不会静默退回仓库里的演示口令。

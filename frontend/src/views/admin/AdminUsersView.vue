@@ -22,6 +22,35 @@ const totalPages = ref(0)
 
 const KEYWORD_MAX = 100
 
+// ---------- 当前模式 ----------
+const isUserMode = computed(() => props.mode === 'users')
+const isStaffMode = computed(() => props.mode === 'staff')
+
+// ---------- 状态字典 ----------
+const STATUS_LABEL = { ACTIVE: '正常使用', DISABLED: '已冻结' }
+const STAFF_STATUS_LABEL = { ACTIVE: '在岗', DISABLED: '已停用' }
+const statusLabel = (status) => STATUS_LABEL[status] || status
+const staffStatusLabel = (status) => STAFF_STATUS_LABEL[status] || status
+const statusClass = (status) => (status === 'ACTIVE' ? 'success' : 'danger')
+
+// ---------- 用户详情弹窗（仅用户模式） ----------
+const detailVisible = ref(false)
+const detail = ref(null)
+const detailError = ref('')
+const detailLoading = ref(false)
+
+/**
+ * 详情请求序号：只允许「当前打开的那次」写回弹窗。
+ * 场景：打开用户 A、关闭后打开用户 B，A 的响应晚到后若无条件写回 detail，弹窗会跳回 A。
+ */
+let detailRequestSeq = 0
+/** 当前弹窗正在查看的用户 id；关闭弹窗时置空。 */
+const activeDetailUserId = ref(null)
+
+// ---------- 员工表单弹窗（仅员工模式） ----------
+const staffDialogVisible = ref(false)
+const editingStaff = ref(null)
+
 /**
  * 列表请求序号：只允许「最新一次」写回 rows / total / error / loading。
  *
@@ -151,20 +180,26 @@ function onStaffSaved(payload) {
 }
 
 // ---------- 停用/恢复 ----------
+/**
+ * 用户账号停用/恢复。
+ *
+ * <p>停用与恢复都要确认：停用是"账号无法登录"，恢复是"重新允许登录"——
+ * 两者都会改变账号的登录能力，误操作的影响对称，因此两边都要弹确认；取消时不发请求。</p>
+ */
 async function toggleUserStatus(row) {
   if (updatingId.value) return
   const isActive = row.status === 'ACTIVE'
   const next = isActive ? 'DISABLED' : 'ACTIVE'
-  if (isActive) {
-    try {
-      await ElMessageBox.confirm(
-        `确认停用账号「${row.username}」吗？停用后该账号无法登录。`,
-        '停用账号',
-        { type: 'warning', confirmButtonText: '确认停用', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
+  try {
+    await ElMessageBox.confirm(
+      isActive
+        ? `确认停用账号「${row.username}」吗？停用后该账号无法登录。`
+        : `确认恢复账号「${row.username}」吗？恢复后该账号可以重新登录。`,
+      isActive ? '停用账号' : '恢复账号',
+      { type: 'warning', confirmButtonText: isActive ? '确认停用' : '确认恢复', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
   }
   updatingId.value = row.id
   try {
@@ -179,20 +214,23 @@ async function toggleUserStatus(row) {
   }
 }
 
+/**
+ * 员工账号停用/恢复。与用户账号同口径：两边都确认，取消不发请求。
+ */
 async function toggleStaffStatus(row) {
   if (updatingId.value) return
   const isActive = row.status === 'ACTIVE'
   const next = isActive ? 'DISABLED' : 'ACTIVE'
-  if (isActive) {
-    try {
-      await ElMessageBox.confirm(
-        `确认停用员工「${row.realName}」吗？停用后该账号无法登录。`,
-        '停用员工账号',
-        { type: 'warning', confirmButtonText: '确认停用', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
+  try {
+    await ElMessageBox.confirm(
+      isActive
+        ? `确认停用员工「${row.realName}」吗？停用后该账号无法登录。`
+        : `确认恢复员工「${row.realName}」吗？恢复后该账号可以重新登录。`,
+      isActive ? '停用员工账号' : '恢复员工账号',
+      { type: 'warning', confirmButtonText: isActive ? '确认停用' : '确认恢复', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
   }
   updatingId.value = row.id
   try {
@@ -234,7 +272,6 @@ onMounted(load)
     </div>
 
     <div class="admin-panel">
-      <!-- 搜索：用户 / 员工模式都有 -->
       <form class="toolbar" @submit.prevent="search">
         <input
           v-model="query.keyword"

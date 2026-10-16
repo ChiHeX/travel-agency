@@ -29,10 +29,17 @@ const KEYWORD_MAX = 100
 /**
  * 契约 OrderStatus 的全部取值（8 个）。
  *
- * <p>注意：{@code REFUND_PROCESSING} 与 {@code REFUND_REJECTED} 是 {@code RefundStatus} 的取值
- * （退款单自身在"出款结果待确认 / 已拒绝"时的状态），**不是 OrderStatus**。把它们当成订单状态
- * 既会拼出后端不认识的查询串，也会误导工作人员把"退款单的状态"当成"订单的状态"。
- * 退款处理中 / 拒绝的信息在订单详情的「退款记录」区块里按 {@code RefundStatus} 展示。</p>
+ * <p><b>关于 REFUND_PROCESSING / REFUND_REJECTED</b>：这两个值是
+ * {@code OrderStatus} 枚举里的<b>保留值</b>（契约里声明了，但当前业务不使用）；
+ * 它们<b>不是 {@code RefundStatus} 的取值</b>。</p>
+ *
+ * <p>退款单自身的状态由 {@code RefundStatus} 表达，是<b>不带前缀</b>的
+ * {@code APPLYING / PROCESSING / REFUNDED / REJECTED}。因此：</p>
+ * <ul>
+ *   <li>订单筛选下拉里<b>不出现</b> REFUND_PROCESSING / REFUND_REJECTED；</li>
+ *   <li>退款处理中 / 拒绝的信息，在订单详情的「退款记录」区块按 {@code RefundStatus}
+ *       展示（取的是 {@code refund.status}，不是 {@code order.status}）。</li>
+ * </ul>
  */
 const ORDER_STATUS_OPTIONS = [
   { value: 'WAIT_PAY', label: '待支付' },

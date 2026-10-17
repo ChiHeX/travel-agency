@@ -147,8 +147,20 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
   硬填订单所属用户会伪造出一条"该用户执行了后台操作"的假记录，比不记更糟。
 
 > ⚠️ **已知缺口**：回调**因金额不符被拒**（`409 PAYMENT_AMOUNT_MISMATCH`）目前没有任何留痕 ——
-> 属于"外部事件被拒绝却查不到"。补它需要先定操作人取值（新增系统账号？），并且要在抛异常处加
-> `noRollbackFor` 才能让留痕在回滚中存活。见 §10。
+> 属于"外部事件被拒绝却查不到"。补它要先定操作人取值（新增系统账号？），再定**留痕怎么活过回滚**：
+> 三种做法都可行，取舍不同（见下）。见 §10。
+
+**让留痕活过业务回滚的可选做法**（不是只有 `noRollbackFor` 一条路）：
+
+| 做法 | 机制 | 代价 / 适用 |
+|---|---|---|
+| 收窄 `noRollbackFor` | 只让指定异常不回滚，事务提交 | 本模块 `confirm` / `approveRefund` 用的就是它。前提是**该异常下确实没有需要回滚的业务写入** |
+| 留痕走独立事务 | 留痕方法标 `@Transactional(propagation = REQUIRES_NEW)` | 业务照常回滚、留痕独立提交，两者互不牵连；需要另开连接，且要接受"业务失败但留痕成功"是预期状态 |
+| 落独立事件日志 | 留痕写进与业务表无关的日志/消息表，随业务事务一起回滚后再由外层补记 | 最干净，但要多一条投递路径 |
+
+**选择原则**：为保留一条日志而**笼统地取消整个业务事务的回滚**是不可取的 —— 那会把本该撤销的
+业务写入一起提交，用数据一致性换日志，得不偿失。所以像「回调金额不符被拒」这种
+**业务本来就该整体回滚**的路径，应该优先用独立事务或独立事件日志，而不是 `noRollbackFor`。
 
 ### 6.2 时间戳必须由数据库维护
 
@@ -159,8 +171,16 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 **最坏的是支付回调**：条件 UPDATE 先原子推进支付单（此时 `ON UPDATE` 生效、时间戳前进），
 紧接着 `updateById` 又把旧值写回去，等于前进后再倒退。
 
-修法：给两列时间戳加 `@TableField(updateStrategy = FieldStrategy.NEVER)`，把写入权交回数据库
-（只禁 update，insert 仍走 `DEFAULT CURRENT_TIMESTAMP`）。实测见 §8.3。
+修法分两半，缺一半都会留下错值：
+
+1. **写入侧**：给两列时间戳加 `@TableField(updateStrategy = FieldStrategy.NEVER)`，把写入权交回数据库
+   （只禁 update，insert 仍走 `DEFAULT CURRENT_TIMESTAMP`）。
+2. **返回侧**：UPDATE 之后**内存实体仍持有旧时间戳**，`FieldStrategy.NEVER` 管不到"响应里装的是什么"。
+   凡是用写操作返回实体的接口（`cancel`、`confirm`…）都必须**回查一次再装配视图**，
+   否则就是"库对了、响应还是旧的"，前端要等下一次查询才看到新值。
+   回查而不是在内存里补 `LocalDateTime.now()`，是为了不让 JVM 时钟成为第二个时间来源。
+
+实测见 §8.3。
 
 ## 7. 支付与出款链路
 
@@ -200,7 +220,8 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 
 ## 8. 测试用例
 
-交易模块共 **13 个测试类 / 142 条用例**，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
+交易模块的测试类与覆盖如下，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）；
+全量用例数见 §9（用例会随实现演进增减，所以不在这里固定一个数）。
 
 | 测试类 | 覆盖 |
 |---|---|
@@ -212,7 +233,8 @@ APPLYING ──审核通过（入口抢占）──> PROCESSING ──出款成�
 | `DepartureCapacityConcurrencyIntegrationTest` | 名额守恒压测（30 抢 10）、单车超容量、**并发确认只生效一次**、并发退款审核、**审核异常"业务回滚 + 留痕通知提交"** |
 | `RefundPendingConfirmationIntegrationTest` | 「出款结果未确认」的事务语义：新连接读到持久 `PROCESSING`、拒绝被拦、同请求号重试收敛、**待确认与通过的审计留痕都已提交** |
 | `OrderAuditRollbackIntegrationTest` | **审计写入失败 ⇒ 业务修改一起回滚**：用 `operation_log.operator_id` 的外键失败注入审计写失败，断言订单状态、`confirmed_at`、团期名额、线路统计、确认留痕、确认通知全部随事务回滚（含合法操作人的对照组） |
-| `UpdatedAtDatabaseMaintainedIntegrationTest` | **`updated_at` 必须由数据库维护**：取消订单与支付回调两条路径都要真的推进该列（跨秒边界断言，避免"同一秒假绿"） |
+| `UpdatedAtDatabaseMaintainedIntegrationTest` | **`updated_at` 必须由数据库维护**：取消订单、后台确认、支付回调三条路径都要真的推进该列（跨秒边界断言，避免"同一秒假绿"）；支付回调额外断言**支付单自己**那一列；取消与确认还断言**响应里的 `updatedAt` 与库一致**（只查库会漏掉"库对了、响应是旧的"） |
+| `ConsultationUpdatedAtContractIntegrationTest` | **关闭咨询的响应必须带回库里的最新 `updatedAt`**：同一类错值（库已前进、响应仍是旧值）在 `ConsultationView` 上的回归，走 MockMvc 比对"响应 vs 库" |
 | `TradingFlowContractIntegrationTest` | 端到端契约：报名→支付→回调→确认→出团→完成→评价，以及取消/退款全链路 |
 | `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
 | `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
@@ -263,6 +285,8 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 `DATETIME` 没有小数位，插入与更新若落在同一秒，即使该列从未前进，两次读到的值也相等 ——
 不跨秒的断言会假绿。用例因此在两次读之间等待 1.1 秒。
 
+**A. 写入侧：`FieldStrategy.NEVER` 是否真的把写入权交回数据库**
+
 ```text
 修复前（同一库、同一路径）
   cancel   : before=2026-10-07T18:02:12  after=2026-10-07T18:02:12   ← 冻结
@@ -273,15 +297,48 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
   markPaid : before=2026-10-07T18:02:42  after=2026-10-07T18:02:43   ← 前进 1 秒
 ```
 
+反向对照（只摘掉 `updatedAt` 上的注解、其余不动，同一套用例立刻转红）：
+
+```text
+取消是一次业务更新，updated_at 必须前进：before=2026-10-17T13:22:54 after=2026-10-17T13:22:54
+回调入账是一次业务更新，订单 updated_at 必须前进：before=2026-10-17T13:22:56 after=2026-10-17T13:22:56
+```
+
+**B. 返回侧：写操作的响应是否带回新值**
+
+写库对了不等于响应对了。`cancel` / `confirm` 直接返回 `OrderView`，
+`ConsultationController.close` 直接返回 `ConsultationView` —— 如果把更新前读到的实体原样交给
+`XxxView.from(...)`，库是新的、响应还是旧的。反向对照（只把响应处的回查去掉）：
+
+```text
+取消接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:21:59> but was: <2026-10-17T13:21:58>
+确认接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:22>   but was: <2026-10-17T13:21:59>
+关闭咨询接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:30:01> but was: <2026-10-17T13:29:59>
+```
+
+三处都只有一个断言的差距、都恰好差若干秒：**这不是"差不多对"，是明确的错值**。
+
+这三条路径都做过分层核对，顺序是「先确认断言会红，再确认修复后转绿」——
+否则很容易写出永远为真的断言（比如拿内存对象自己跟自己比）。
+
 库里留下的那几行订单本身就是证据：修复前跑出来的行 `updated_at == created_at`，
 修复后跑出来的行 `updated_at = created_at + 1s`，同库同表并列可见。
 
 ## 9. 回归结果与前置条件
 
-**最新全量回归**：后端 **573 条用例，573 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。
-`571 → 573` 即 §8.3 新增的 2 条（`561 → 571` 那 10 条来自 #55：B-01~B-04 的代码与
-`OrderAuditRollbackIntegrationTest`）。
+**最新全量回归**：后端 **575 条用例，575 通过、0 失败、0 错误、0 跳过**
+（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。`573 → 575` 是两个新增用例：
+§8.3 的「确认报名」路径（+1）与 `ConsultationUpdatedAtContractIntegrationTest`（+1）；
+`571 → 573` 那 2 条来自本 PR 原有的取消 / 支付回调用例。
+
+> 环境注意：本机 Maven 默认由 Mockito 自附加 inline mock-maker，在没有权限派出 agent 的
+> 受限环境里会让 269 条单测统一报
+> `Could not initialize plugin: interface org.mockito.plugins.MockMaker`。
+> 那不是代码问题，用 Mockito 官方推荐的做法把 jar 直接当 agent 传入即可：
+> `mvn test -DargLine="-javaagent:$HOME/.m2/repository/org/mockito/mockito-core/5.20.0/mockito-core-5.20.0.jar"`。
 
 > ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
@@ -289,9 +346,13 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 > 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
 > （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
 >
-> 测试结束后核对 12 张表的行数基线，确认零漂移（`travel_order 40 / payment 40 / refund 9 /
-> departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /
-> staff 1 / operation_log 30 / sys_message 30`）。
+> 测试结束后核对 12 张表的行数基线，确认零漂移。本次复核所用库的跑前 / 跑后完全一致
+> （`travel_order 6 / payment 6 / refund 1 / departure 40 / guide 2 / sys_user 8 /
+> sys_user_role 6 / travel_route 10 / favorite 3 / staff 1 / operation_log 1 / sys_message 3`）。
+> 这组数字与 PR 最初提交时的库不同（那次是 `travel_order 40 / payment 40 / refund 9 / …`）——
+> 本地库的数据量本来就不一样，需要核对的是**跑前跑后没有变化**，不是具体数量。
+> 新用例的 `tearDown` 还要显式清掉自己写入的 `operation_log`（`confirm` 会以测试用户为操作人
+> 留痕，而 `fk_operation_log_operator` 指向 `sys_user`，不清就会在删用户时撞外键）。
 
 ## 10. 未完成项与风险
 
@@ -303,8 +364,11 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 - ⬜ **退款对账的定时收敛未做**：`PROCESSING`（待确认）目前依赖人工筛出后用同一请求号重试，
   没有定时任务自动向支付宝查询收敛。金额不大时够用，但缺少兜底。
 - ⬜ **回调金额不符被拒时没有留痕**（见 §6.1）：`409 PAYMENT_AMOUNT_MISMATCH` 是一个
-  "外部事件被拒绝"却查不到的缺口。补它要先定操作人取值（回调没有对应的 `sys_user`，
-  可能要新增一个系统账号），并且要在抛异常处加 `noRollbackFor`，才能让留痕在事务回滚中存活。
+  "外部事件被拒绝"却查不到的缺口。补它要先定两件事：操作人取值（回调没有对应的 `sys_user`，
+  可能要新增一个系统账号），以及**留痕怎么活过回滚** —— 独立事务、
+  独立事件日志、收窄 `noRollbackFor` 三条路都可行，取舍见 §6.1。
+  注意这条路径**业务本来就该整体回滚**（金额不符的订单不该被推进），
+  所以倾向用前两者，不宜为了留一条日志就取消整个业务事务的回滚。
 - ⬜ **前端联调未回执**：订单详情、退款审核、评价管理三个页面尚未由前端反馈联调结果；
   契约字段与 `openapi.yaml` 一致，但页面行为未验收。
 - ⬜ **共享 dev 库的 `005` 索引仍未生效**（`travel_order` 缺 `idx_order_created_at`），

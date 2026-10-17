@@ -347,6 +347,23 @@ public class OrderService {
     }
 
     /**
+     * 回查订单行后再装配契约视图，供<b>写操作</b>的成功响应使用。
+     *
+     * <p><b>为什么必须回查</b>：{@code created_at} / {@code updated_at} 已经交回数据库维护
+     * （{@code BaseEntity} 上两列的 {@code FieldStrategy.NEVER}），一次 UPDATE 之后内存里的实体
+     * 仍持有<b>旧</b>时间戳。直接把旧实体交给 {@link #loadOrderView}，取消 / 确认的成功响应就会
+     * 带着更新前的 {@code updatedAt}：库已经对了，响应却是错的，前端要等下一次查询才能看到新值。
+     * 而 {@code updatedAt} 在契约里是必返字段、前端拿它当"最后更新时间"，这正是本次要消除的错值。</p>
+     *
+     * <p>回查一行而不是在内存里补 {@code LocalDateTime.now()}：时间值的唯一来源仍是数据库，
+     * 不会出现"JVM 时钟"与"数据库时钟"两个来源。同一事务内的回查能读到本事务自己的写入。</p>
+     */
+    private OrderView reloadOrderView(TravelOrder order) {
+        TravelOrder fresh = orderMapper.selectById(order.id);
+        return loadOrderView(fresh == null ? order : fresh);
+    }
+
+    /**
      * 当前用户订单分页查询，对齐契约 GET /orders（page/size + status）。
      */
     public PageResponse<OrderSummaryView> listMine(Long userId, String status, int page, int size) {
@@ -567,7 +584,8 @@ public class OrderService {
         order.cancelledAt = LocalDateTime.now();
         orderMapper.updateById(order);
         releaseReserved(order);
-        return loadOrderView(order);
+        // 回查而不是直接返回内存里的 order：updated_at 由数据库维护，实体上仍是旧值。
+        return reloadOrderView(order);
     }
 
     /**
@@ -702,8 +720,9 @@ public class OrderService {
         operationLog.record(operatorId, "订单", "CONFIRM", "ORDER", order.orderNo,
                 OperationLogRecorder.SUCCESS, "确认报名（" + participantCount + " 人）");
         notify(order.userId, "报名已确认", "订单 " + order.orderNo + " 已通过旅行社审核。", "ORDER_CONFIRMED");
-        // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）
-        return loadOrderView(order);
+        // 回查线路与团期，返回契约 OrderEnvelope 要求的订单对象（不能是空 data）。
+        // 订单自身也必须回查：updated_at 由数据库维护，上面只改了内存里的 status / confirmedAt。
+        return reloadOrderView(order);
     }
 
     /**

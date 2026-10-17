@@ -12,4 +12,14 @@ public class RouteItineraryDay extends BaseEntity {
     public String transportation;
     public String meals;
     public Long hotelId;
+
+    public String accommodationType;
+
+    public String accommodationStandard;
+
+    public String roomType;
+
+    public Integer breakfastIncluded;
+
+    public String accommodationNote;
 }

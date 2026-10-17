@@ -29,12 +29,16 @@ export const homeApi = {
 export const routeApi = {
   list: (params) => request.get('/routes', { params }),
   detail: (routeId) => request.get(`/routes/${routeId}`),
-  reviews: (routeId, params) => request.get(`/routes/${routeId}/reviews`, { params })
+  reviews: (routeId, params) => request.get(`/routes/${routeId}/reviews`, { params }),
+  hotel: (routeId, hotelId) => request.get(`/routes/${routeId}/hotels/${hotelId}`)
 }
 
 export const orderApi = {
+  paymentOptions: () => request.get('/payments/options'),
+  simulatePayment: (orderNo) => request.post(`/payments/local/${encodeURIComponent(orderNo)}`),
   list: (params) => request.get('/orders', { params }),
   detail: (orderNo) => request.get(`/orders/${orderNo}`),
+  itinerary: (orderNo) => request.get(`/orders/${encodeURIComponent(orderNo)}/itinerary`),
   create: (payload, idempotencyKey) => request.post('/orders', payload, idempotentConfig(idempotencyKey)),
   pay: (orderNo, idempotencyKey) => request.post(`/orders/${orderNo}/pay`, null, idempotentConfig(idempotencyKey)),
   cancel: (orderNo) => request.post(`/orders/${orderNo}/cancel`),
@@ -58,13 +62,22 @@ export const accountApi = {
   consultations: (params) => request.get('/consultations', { params }),
   consultation: (consultationId) => request.get(`/consultations/${consultationId}`),
   createConsultation: (payload) => request.post('/consultations', payload),
-  closeConsultation: (consultationId) => request.post(`/consultations/${consultationId}/close`)
+  closeConsultation: (consultationId) => request.post(`/consultations/${consultationId}/close`),
+  deleteConsultation: (consultationId) => request.delete(`/consultations/${consultationId}`)
 }
 
 export const contentApi = {
   articles: (params) => request.get('/articles', { params }),
   article: (articleId) => request.get(`/articles/${articleId}`),
-  attractions: (params) => request.get('/attractions', { params })
+  attractions: (params) => request.get('/attractions', { params }),
+  attraction: (attractionId) => request.get(`/attractions/${attractionId}`)
+}
+
+export const placeGuideApi = {
+  list: (params) => request.get('/place-guides', { params }),
+  detail: (id) => request.get(`/place-guides/${id}`),
+  cities: () => request.get('/place-guides/cities'),
+  publishers: () => request.get('/place-guides/publishers')
 }
 
 export const adminApi = {
@@ -96,6 +109,7 @@ export const adminApi = {
   updateAttraction: (attractionId, payload) => request.put(`/admin/attractions/${attractionId}`, payload),
   deleteAttraction: (attractionId) => request.delete(`/admin/attractions/${attractionId}`),
   hotels: (params) => request.get('/admin/hotels', { params }),
+  hotel: (hotelId) => request.get(`/admin/hotels/${hotelId}`),
   createHotel: (payload) => request.post('/admin/hotels', payload),
   updateHotel: (hotelId, payload) => request.put(`/admin/hotels/${hotelId}`, payload),
   deleteHotel: (hotelId) => request.delete(`/admin/hotels/${hotelId}`),
@@ -131,6 +145,15 @@ export const adminApi = {
   replyConsultation: (consultationId, payload) =>
     request.post(`/admin/consultations/${consultationId}/replies`, payload),
   closeConsultation: (consultationId) => request.post(`/admin/consultations/${consultationId}/close`),
+  // 地点指南（地图联动内容）：契约 /admin/place-guides。列表只声明 page/size，
+  // 没有状态或关键字筛选参数，页面因此不做契约外的筛选查询。
+  placeGuides: (params) => request.get('/admin/place-guides', { params }),
+  placeGuide: (guideId) => request.get(`/admin/place-guides/${guideId}`),
+  createPlaceGuide: (payload) => request.post('/admin/place-guides', payload),
+  updatePlaceGuide: (guideId, payload) => request.put(`/admin/place-guides/${guideId}`, payload),
+  updatePlaceGuideStatus: (guideId, status) =>
+    request.patch(`/admin/place-guides/${guideId}/status`, { status }),
+
   articles: (params) => request.get('/admin/articles', { params }),
   article: (articleId) => request.get(`/admin/articles/${articleId}`),
   createArticle: (payload) => request.post('/admin/articles', payload),

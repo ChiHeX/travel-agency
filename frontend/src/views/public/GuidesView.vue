@@ -1,14 +1,17 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { placeGuideApi } from '@/api/modules'
 import AppIcon from '@/components/AppIcon.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
 import RequestState from '@/components/RequestState.vue'
 
 const router = useRouter()
 const closeDrawer = inject('closeDrawer', () => {})
 const guides = ref([])
-const loading = ref(false)
+const loading = ref(true)
 const error = ref('')
+const cityData = ref([])
 const activeRegion = ref('')
 const activeCity = ref('')
 const failedImages = ref(new Set())
@@ -17,18 +20,18 @@ const openRegion = ref('')
 const wideSubmenu = ref(false)
 const submenuPosition = ref({ top: '0px', left: '0px', width: '320px' })
 
-const cities = computed(() => [...new Set(guides.value.map((item) => item.city).filter(Boolean))])
-const cityCards = computed(() => cities.value.map((city) => {
-  const cityGuides = guides.value.filter((item) => item.city === city)
-  return { city, count: cityGuides.length, coverGuide: cityGuides.find((item) => item.coverUrl) || null }
-}))
+const latestGridRef = ref(null)
+const canScrollLatestLeft = ref(false)
+const canScrollLatestRight = ref(false)
+
+const cityCards = computed(() => cityData.value.map((item) => ({ ...item, coverGuide: item.coverUrl ? { id: item.city, coverUrl: item.coverUrl } : null })))
 const regionGroups = computed(() => {
   const groups = new Map()
-  for (const guide of guides.value) {
-    const region = guide.destination || guide.city
+  for (const item of cityData.value) {
+    const region = item.destination || item.city
     if (!region) continue
     const group = groups.get(region) || { name: region, cities: new Set() }
-    if (guide.city) group.cities.add(guide.city)
+    if (item.city) group.cities.add(item.city)
     groups.set(region, group)
   }
   return [...groups.values()].map((group) => ({ name: group.name, cities: [...group.cities] }))
@@ -41,6 +44,54 @@ const visibleGuides = computed(() => {
 const scopeLabel = computed(() => activeCity.value || activeRegion.value || '全球')
 const featured = computed(() => visibleGuides.value[0])
 const latest = computed(() => visibleGuides.value.slice(0, 4))
+
+function updateLatestScrollState() {
+  if (!latestGridRef.value) return
+  const { scrollLeft, scrollWidth, clientWidth } = latestGridRef.value
+  canScrollLatestLeft.value = scrollLeft > 6
+  canScrollLatestRight.value = scrollLeft + clientWidth < scrollWidth - 6
+}
+
+function scrollCarousel(el, direction) {
+  if (!el) return
+  const card = el.firstElementChild
+  const step = card ? card.offsetWidth + 10 : el.clientWidth * 0.75
+  el.scrollBy({
+    left: direction === 'left' ? -step : step,
+    behavior: 'smooth'
+  })
+}
+
+watch([latest, loading], async () => {
+  await nextTick()
+  updateLatestScrollState()
+})
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const [page, cities] = await Promise.all([
+      placeGuideApi.list({ page: 1, size: 100 }),
+      placeGuideApi.cities()
+    ])
+    guides.value = page?.items || []
+    cityData.value = cities || []
+  } catch (cause) {
+    error.value = cause.message || '指南加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  window.addEventListener('resize', updateLatestScrollState, { passive: true })
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateLatestScrollState)
+})
 
 function openGuide(id) {
   router.push({ name: 'guide-detail', params: { id } })
@@ -99,7 +150,6 @@ function toggleScopeMenu() {
     wideSubmenu.value = false
   }
 }
-
 </script>
 
 <template>
@@ -111,7 +161,7 @@ function toggleScopeMenu() {
           <span>{{ scopeLabel }}</span><AppIcon name="chevron-down" size="14" />
         </button>
       </div>
-      <button type="button" class="circle-button" aria-label="关闭指南" @click="closeDrawer"><AppIcon name="close" size="13" /></button>
+      <PanelIconButton action="close" label="关闭指南" @click="closeDrawer" />
     </header>
 
     <div v-if="showScopeMenu" class="scope-menu-layer" @click.self="closeScopeMenu">
@@ -139,7 +189,7 @@ function toggleScopeMenu() {
     </Teleport>
 
     <main class="guide-scroll">
-      <RequestState v-if="error" :error="error" />
+      <RequestState v-if="error" :error="error" @retry="load" />
       <div v-else-if="loading" class="loading-block"><el-skeleton :rows="9" animated /></div>
       <template v-else-if="visibleGuides.length">
         <button v-if="featured" type="button" class="hero-guide" @click="openGuide(featured.id)">
@@ -150,13 +200,35 @@ function toggleScopeMenu() {
         </button>
 
         <section v-if="latest.length" class="content-section">
-          <RouterLink class="section-title" :to="{ name: 'latest-guides' }"><h2>最新</h2><AppIcon name="chevron-right" size="16" color="#8e8e93" /></RouterLink>
-          <div class="latest-grid">
-            <button v-for="guide in latest" :key="guide.id" type="button" class="portrait-card" @click="openGuide(guide.id)">
-              <div class="media-fallback"><AppIcon name="guides" size="26" /></div>
-              <img v-if="guide.coverUrl && !failedImages.has(String(guide.id))" :src="guide.coverUrl" :alt="guide.title" @error="markImageFailed(guide.id)" />
-              <span class="card-shade"></span>
-              <span class="card-copy"><small>{{ guide.authorName }}</small><strong>{{ guide.title }}</strong></span>
+          <RouterLink class="section-title" :to="{ name: 'latest-guides' }">
+            <h2>最新</h2><AppIcon name="chevron-right" size="14" color="#8e8e93" />
+          </RouterLink>
+          <div class="carousel-container">
+            <button
+              v-show="canScrollLatestLeft"
+              type="button"
+              class="carousel-nav-btn prev"
+              aria-label="向左滚动"
+              @click="scrollCarousel(latestGridRef, 'left')"
+            >
+              <AppIcon name="chevron-left" size="16" />
+            </button>
+            <div ref="latestGridRef" class="latest-grid" @scroll.passive="updateLatestScrollState">
+              <button v-for="guide in latest" :key="guide.id" type="button" class="portrait-card" @click="openGuide(guide.id)">
+                <div class="media-fallback"><AppIcon name="guides" size="26" /></div>
+                <img v-if="guide.coverUrl && !failedImages.has(String(guide.id))" :src="guide.coverUrl" :alt="guide.title" @error="markImageFailed(guide.id)" />
+                <span class="card-shade"></span>
+                <span class="card-copy"><small>{{ guide.authorName }}</small><strong>{{ guide.title }}</strong></span>
+              </button>
+            </div>
+            <button
+              v-show="canScrollLatestRight"
+              type="button"
+              class="carousel-nav-btn next"
+              aria-label="向右滚动"
+              @click="scrollCarousel(latestGridRef, 'right')"
+            >
+              <AppIcon name="chevron-right" size="16" />
             </button>
           </div>
         </section>
@@ -187,7 +259,6 @@ function toggleScopeMenu() {
 .guide-header { position: relative; z-index: 22; display: flex; align-items: flex-start; justify-content: space-between; min-height: 60px; padding: 16px 20px 10px; }
 .guide-header h1, .guide-header h2 { margin: 0; color: #1d1d1f; font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
 .scope-label { display: inline-flex; align-items: center; gap: 3px; margin-top: 3px; margin-left: -3px; padding: 2px 4px; border: 0; border-radius: 6px; color: var(--theme-blue); background: transparent; font-size: 15px; font-weight: 650; line-height: 1.2; cursor: pointer; }.scope-label svg { margin-top: 1px; transition: transform .18s ease; }.scope-label[aria-expanded="true"] svg { transform: rotate(180deg); }.scope-label:hover { background: rgba(0,113,227,.07); }
-.circle-button { width: 28px; height: 28px; border: 0; border-radius: 50%; display: grid; place-items: center; color: #7d8185; background: rgba(0,0,0,.055); cursor: pointer; }
 .scope-menu-layer { position: absolute; z-index: 21; inset: 64px 0 0; padding: 10px 18px; background: rgba(245,249,248,.18); }
 .scope-menu { max-height: min(410px, calc(100% - 18px)); overflow-y: auto; border: 1px solid rgba(0,0,0,.05); border-radius: 16px; background: rgba(255,255,255,.97); box-shadow: 0 10px 32px rgba(0,0,0,.2); backdrop-filter: blur(24px) saturate(150%); }
 .scope-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 52px; padding: 0 20px; border: 0; color: #1d1d1f; background: transparent; font-size: 15px; text-align: left; cursor: pointer; }.scope-menu button:hover, .scope-menu button.selected { background: #f2f2f7; }.scope-menu .menu-back { justify-content: flex-start; gap: 8px; border-bottom: 1px solid #e5e5e7; color: var(--theme-blue); }.scope-menu .menu-back strong { color: #1d1d1f; }
@@ -207,11 +278,59 @@ function toggleScopeMenu() {
 .section-title { display: inline-flex; align-items: center; gap: 3px; margin-bottom: 10px; border-radius: 7px; color: inherit; text-decoration: none; }.section-title:hover { color: var(--theme-blue); }
 .content-section h2 { margin: 0 0 10px; color: #1d1d1f; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
 .section-title h2 { margin: 0; color: #1d1d1f; font-size: 15px; font-weight: 700; }
-.latest-grid { display: grid; grid-auto-flow: column; grid-auto-columns: 72%; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.carousel-container { position: relative; }
+.carousel-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #1d1d1f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.18s ease, background 0.15s ease;
+}
+.carousel-container:hover .carousel-nav-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+.carousel-nav-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  transform: translateY(-50%) scale(1.08);
+}
+.carousel-nav-btn:active {
+  transform: translateY(-50%) scale(0.94);
+}
+.carousel-nav-btn.prev {
+  left: -12px;
+}
+.carousel-nav-btn.next {
+  right: -12px;
+}
+.latest-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 72%;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
 .latest-grid::-webkit-scrollbar { display: none; }
 .portrait-card { height: 238px; border-radius: 17px; scroll-snap-align: start; }
 .card-copy strong { font-size: 14px; line-height: 1.2; }
-.city-section { margin-right: -22px; margin-left: -22px; padding: 20px 22px 22px; background: #f1f1ef; }
 .city-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .city-grid button { position: relative; min-height: 112px; padding: 14px; overflow: hidden; border: 0; border-radius: 16px; display: grid; align-content: end; justify-items: start; color: white; background: linear-gradient(145deg,#5f9fbd,#315f77); text-align: left; cursor: pointer; }.city-grid button img, .city-grid button i { position: absolute; inset: 0; width: 100%; height: 100%; }.city-grid button img { object-fit: cover; }.city-grid button i { background: linear-gradient(0deg,rgba(0,0,0,.6),transparent 70%); }
 .city-grid button:nth-child(2n) { background: linear-gradient(145deg,#807766,#464238); }

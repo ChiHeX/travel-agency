@@ -99,6 +99,33 @@ function logout() {
           导游团队档案
         </RouterLink>
 
+        <div class="sidebar-caption nested-caption">内容运营</div>
+        <RouterLink to="/admin/place-guides">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 20l-5.447-2.724A1 1 0 0 1 3 16.382V5.618a1 1 0 0 1 1.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0 0 21 18.382V7.618a1 1 0 0 0-.553-.894L15 4m0 13V4m0 0L9 7" />
+          </svg>
+          地点指南管理
+        </RouterLink>
+        <!-- 新增：内容运营下的三个内容管理页面（STAFF 与 ADMIN 都可访问） -->
+        <RouterLink to="/admin/reviews">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
+          评价管理
+        </RouterLink>
+        <RouterLink to="/admin/consultations">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          在线咨询
+        </RouterLink>
+        <RouterLink to="/admin/articles">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          旅游攻略管理
+        </RouterLink>
+
         <template v-if="auth.hasRole('ADMIN')">
           <div class="sidebar-caption nested-caption">系统权限与设置</div>
           <RouterLink to="/admin/users">
@@ -113,6 +140,13 @@ function logout() {
             </svg>
             内部人员权限
           </RouterLink>
+          <!-- 新增：操作日志仅 ADMIN 可见 -->
+          <RouterLink to="/admin/logs">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" />
+            </svg>
+            操作日志
+          </RouterLink>
         </template>
       </nav>
 
@@ -120,7 +154,7 @@ function logout() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 18 9 12 15 6" />
         </svg>
-        返回游客端前台
+        切换到游客端前台
       </RouterLink>
     </aside>
 

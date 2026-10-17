@@ -37,14 +37,30 @@ public class OperationLogRecorder {
      */
     public void record(Long operatorId, String module, String operationType, String objectType,
                        Object objectId, String detail) {
+        record(operatorId, module, operationType, objectType, objectId, SUCCESS, detail);
+    }
+
+    /**
+     * 记录一条带结果态的后台操作日志。
+     *
+     * <p>用于「业务规则判定了失败、但该判定本身必须留痕」的场景（报名审核异常）：这类失败不修改
+     * 业务数据，调用方需要把事务提交掉才能让审计与通知落库，因此结果态不能恒为 {@link #SUCCESS}。
+     * 取值只能是契约 {@code OperationLog.result} 枚举里的两个。</p>
+     */
+    public void record(Long operatorId, String module, String operationType, String objectType,
+                       Object objectId, String result, String detail) {
         OperationLog log = new OperationLog();
         log.operatorId = operatorId;
         log.module = module;
         log.operationType = operationType;
         log.objectType = objectType;
         log.objectId = objectId == null ? null : String.valueOf(objectId);
-        log.result = "SUCCESS";
+        log.result = result;
         log.detail = detail;
         operationLogMapper.insert(log);
     }
+
+    /** 契约 {@code OperationLog.result} 的枚举取值。 */
+    public static final String SUCCESS = "SUCCESS";
+    public static final String FAILURE = "FAILURE";
 }

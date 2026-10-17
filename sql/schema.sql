@@ -107,15 +107,41 @@ CREATE TABLE IF NOT EXISTS attraction (
 CREATE TABLE IF NOT EXISTS hotel (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(128) NOT NULL,
+    city VARCHAR(64) NOT NULL DEFAULT '',
     address VARCHAR(255),
     contact_phone VARCHAR(20),
+    cover_url VARCHAR(500),
     longitude DECIMAL(10,7),
     latitude DECIMAL(10,7),
+    star_rating TINYINT,
     intro TEXT,
+    -- 设施标签：契约 HotelFacility 枚举组成的 JSON 数组（如 ["WIFI","PARKING"]），
+    -- 用 JSON 列而不是逗号分隔文本，避免写入非法内容；未录入时为 NULL，接口返回 []。
+    facilities JSON,
+    -- 通常的入住/退房时刻，契约 ClockTime 的 HH:mm 文本（不是时间戳，不参与时区换算）。
+    check_in_time VARCHAR(5),
+    check_out_time VARCHAR(5),
     data_source VARCHAR(500),
     status TINYINT NOT NULL DEFAULT 1,
+    version INT NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    -- 后台酒店列表按城市精确筛选（与 attraction.city 同口径）
+    KEY idx_hotel_city (city)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 酒店详情图片：一张酒店多条，按 sort_order 升序展示（同序时按 id，即提交顺序）。
+-- 只登记外部图片 URL（第一版不提供图片上传服务）；删除记录不会删除图片文件本身。
+CREATE TABLE IF NOT EXISTS hotel_image (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    hotel_id BIGINT NOT NULL,
+    url VARCHAR(500) NOT NULL,
+    alt VARCHAR(200),
+    sort_order INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_hotel_image_hotel (hotel_id, sort_order, id),
+    CONSTRAINT fk_hotel_image_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS route_itinerary_day (
@@ -127,10 +153,32 @@ CREATE TABLE IF NOT EXISTS route_itinerary_day (
     transportation VARCHAR(255),
     meals VARCHAR(255),
     hotel_id BIGINT,
+    -- 当天的住宿安排类型（契约 AccommodationType）。默认 PENDING 而不是 NONE：
+    -- "没填酒店"不等于"不含住宿"，只有明确写入 NONE 才表示当天不含住宿。
+    -- HOTEL 才允许 hotel_id 非空（STANDARD / NONE / PENDING 必须为空，由服务层校验）。
+    accommodation_type VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    accommodation_standard VARCHAR(500),
+    room_type VARCHAR(100),
+    -- 三态：1 含早餐 / 0 不含 / NULL 尚未说明（与酒店的早餐服务无关，互不推断）
+    breakfast_included TINYINT,
+    accommodation_note VARCHAR(1000),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_route_day (route_id, day_number),
     KEY idx_day_route (route_id),
+    -- 线路下的酒店公开详情按 (route_id, hotel_id) 判定关联；酒店删除前的引用检查也走 hotel_id
+    KEY idx_day_hotel (hotel_id),
+    -- 住宿类型与酒店关联/住宿标准必须自洽（契约 ItineraryDayRequest 的住宿规则）。
+    -- 服务层已经拦下不一致的请求，这里再加一道是为了挡住绕过服务层的写入（导入脚本、手工 SQL）：
+    -- accommodation_type 有默认值 PENDING，只写 hotel_id 而不写类型会静默产出一行
+    -- "关联了酒店、类型却是待确认"的自相矛盾数据，接口层再也看不出它是错的。
+    CONSTRAINT ck_day_accommodation CHECK (
+           (accommodation_type = 'HOTEL'    AND hotel_id IS NOT NULL)
+        OR (accommodation_type = 'STANDARD' AND hotel_id IS NULL
+            AND accommodation_standard IS NOT NULL AND TRIM(accommodation_standard) <> '')
+        OR (accommodation_type = 'NONE'     AND hotel_id IS NULL)
+        OR (accommodation_type = 'PENDING'  AND hotel_id IS NULL)
+    ),
     CONSTRAINT fk_day_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_day_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -216,6 +264,8 @@ CREATE TABLE IF NOT EXISTS travel_order (
     UNIQUE KEY uk_order_no (order_no),
     KEY idx_order_user_status (user_id, status),
     KEY idx_order_departure (departure_id),
+    -- 后台工作台的今日订单数与 orderTrend 都按 created_at 过滤/分组，避免全表扫描。
+    KEY idx_order_created_at (created_at),
     CONSTRAINT fk_order_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_order_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_order_departure FOREIGN KEY (departure_id) REFERENCES departure(id)
@@ -314,6 +364,7 @@ CREATE TABLE IF NOT EXISTS sys_message (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_message_user_read (user_id, read_flag),
+    KEY idx_message_user_type_title (user_id, type, title),
     CONSTRAINT fk_message_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -360,6 +411,36 @@ CREATE TABLE IF NOT EXISTS travel_guide_article (
     CONSTRAINT fk_article_author FOREIGN KEY (author_id) REFERENCES sys_user(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS place_guide (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    title VARCHAR(200) NOT NULL,
+    summary VARCHAR(500),
+    city VARCHAR(64) NOT NULL,
+    destination VARCHAR(128),
+    cover_url VARCHAR(500),
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    author_id BIGINT NOT NULL,
+    published_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_place_guide_status_published (status, published_at),
+    KEY idx_place_guide_city (city),
+    KEY idx_place_guide_author (author_id),
+    CONSTRAINT fk_place_guide_author FOREIGN KEY (author_id) REFERENCES sys_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS place_guide_item (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    guide_id BIGINT NOT NULL,
+    attraction_id BIGINT NOT NULL,
+    sort_order INT NOT NULL,
+    note VARCHAR(500),
+    UNIQUE KEY uq_place_guide_attraction (guide_id, attraction_id),
+    UNIQUE KEY uq_place_guide_order (guide_id, sort_order),
+    CONSTRAINT fk_place_guide_item_guide FOREIGN KEY (guide_id) REFERENCES place_guide(id) ON DELETE CASCADE,
+    CONSTRAINT fk_place_guide_item_attraction FOREIGN KEY (attraction_id) REFERENCES attraction(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS operation_log (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     operator_id BIGINT NOT NULL,
@@ -404,4 +485,20 @@ CREATE TABLE IF NOT EXISTS idempotency_record (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_idempotency_user_scope_key (user_id, scope, idem_key),
     CONSTRAINT fk_idempotency_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 出发提醒发送记录：承载"即将出发提醒"（PRD §29）等按订单只发一次的站内消息。
+-- 唯一键 (order_id, remind_type) 是幂等闸门：定时任务重复执行、或多实例并发触发时，
+-- 每个订单同一类提醒只有一条记录能插入成功，只有它对应的站内消息会被发出，
+-- 从而保证"任务重复执行不重复发消息"。
+-- 存量库升级请执行 sql/migrations/011-add-departure-reminder.sql。
+CREATE TABLE IF NOT EXISTS departure_reminder (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    order_id BIGINT NOT NULL,
+    remind_type VARCHAR(32) NOT NULL,
+    sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_departure_reminder_order_type (order_id, remind_type),
+    CONSTRAINT fk_departure_reminder_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

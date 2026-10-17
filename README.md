@@ -6,7 +6,7 @@
 
 - 后端：Java 21、Spring Boot 4.0.8、Maven、MyBatis-Plus 3.5.17、MySQL 9.7
 - 前端：Vue 3、JavaScript、Vite、Vue Router、Pinia、Element Plus、npm、Leaflet
-- 第三方适配：OpenStreetMap 底图、支付宝沙箱回调适配点
+- 第三方适配：天地图 / OpenStreetMap 可切换底图、支付宝沙箱回调适配点
 
 ## 目录
 
@@ -16,7 +16,7 @@ travel-agency/
 ├─ frontend/                Vue 3 用户端 + 管理后台 SPA
 ├─ sql/                     schema.sql / test-data.sql
 ├─ deploy/                  Docker Compose、容器配置
-└─ docs/                    PRD、架构、API 规范和 OpenAPI 契约
+└─ docs/                    核心规范及按设计、测试、手册、附录分类的文档
 ```
 
 ## 本地启动
@@ -80,7 +80,17 @@ npm run dev
 
 访问：`http://localhost:5173`。Vite 会将 `/api` 代理到 `http://localhost:8080`。
 
-主地图无需 API Key。地图使用 Leaflet 加载 OpenStreetMap 公共瓦片；线路详情加载后，在主地图上显示行程数据中的景点坐标和顺序连线。没有坐标时仅显示底图，详情面板提示录入坐标。请为新录入的坐标使用 WGS-84，并核对已有坐标的来源；若已有数据是高德 GCJ-02 坐标，直接显示在 OpenStreetMap 底图上可能产生偏移。公共瓦片仅供符合 [OpenStreetMap 使用政策](https://operations.osmfoundation.org/policies/tiles/) 的交互浏览使用，地图中必须保留 OpenStreetMap 贡献者署名。
+主地图使用 Leaflet，默认加载天地图矢量底图与中文地名注记，保留 OpenStreetMap（OSM）。地图右侧「地图源」可以随时切换，浏览器记住选择；切换保留当前视角、景点标记与行程连线。未配置天地图 Key 时显示提示，不请求无授权瓦片，可手动切换 OSM。
+
+在 [天地图开放平台](https://lbs.tianditu.gov.cn/) 创建浏览器端应用、取得可调用地图瓦片服务的 Key，并按平台要求设置实际访问域名（本地联调包含 localhost）。在 `frontend/.env.local` 中填写：
+
+```dotenv
+VITE_TIANDITU_KEY=你的天地图Key
+```
+
+可选 `VITE_MAP_PROVIDER=osm` 将初始源设为 OSM（浏览器已保存的选择优先）。`.env.local` 已被 Git 忽略，真实 Key 不得提交。浏览器端 Key 会进入前端构建并随瓦片请求可见，应使用平台提供的域名限制，不能填服务端私密凭据。底图或注记加载失败会提示检查网络或地图服务授权，不自动跳转到可能同样无法访问的 OSM。
+
+线路详情加载后，在主地图上显示行程数据中的景点坐标和顺序连线。没有坐标时仅显示底图，详情面板提示录入坐标。坐标继续使用 WGS-84；天地图使用与 Leaflet 默认投影一致的 Web Mercator（`vec_w` / `cva_w`）WMTS。已有高德 GCJ-02 坐标需核对来源，切换底图不会自动转换历史坐标。地图保留当前平台署名与来源链接；OSM 公共瓦片仅供符合 [OpenStreetMap 使用政策](https://operations.osmfoundation.org/policies/tiles/) 的交互浏览使用，不批量下载或预取。
 
 演示管理员账号（执行 `test-data.sql` 后）：`admin / password`。该账号和所有 SQL 测试数据仅用于软件测试、课程演示，不代表真实旅行社经营数据。
 
@@ -116,11 +126,29 @@ ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
 ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
 ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID
 ALIPAY_CALLBACK_SECRET
+DEPARTURE_REMINDER_ENABLED / DEPARTURE_REMINDER_DAYS / DEPARTURE_REMINDER_CRON
 ```
 
 JWT 签名密钥是后端启动必填项，本地可放在上述 Git 忽略的配置文件中，部署环境应通过 `JWT_SECRET` 注入。密钥必须至少有 32 个 UTF-8 字节；缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥。
 
 ### 支付宝沙箱
+
+日常开发可以使用本地模拟支付，免去配置支付宝密钥和公网回调的步骤。从 `backend` 目录启动：
+
+```powershell
+mvn -ntp spring-boot:run "-Dspring-boot.run.profiles=local-payment"
+```
+
+也可以在 IDEA 的 Active profiles 填写 `local-payment`。数据库和 JWT 配置仍按上文设置。
+该 profile 将后端绑定到 `127.0.0.1`，改成非回环地址会拒绝启动。前端建议在本机启动
+`npm run dev --host 127.0.0.1`，不要通过公网隧道或反向代理公开这一开发实例。
+
+付款页将显示并优先选择“本地模拟支付”。点击“确认模拟付款”会写入本地数据库，订单进入待旅行社确认；
+结果页、订单详情和通知明确标记测试来源，不发生资金交易。已经发起支付宝支付的订单不能切换为模拟支付。
+重复提交同一模拟付款不会重复入账；其他账号不能代付。停止后端并移除该 profile 重启即可关闭模拟入口。
+默认环境以及同时启用 `prod` / `production` 的环境不提供模拟接口，普通支付宝支付不会自动降级。
+
+模拟订单不支持支付宝退款。需要测试退款、收银台、签名或异步回调时，请用下面的支付宝沙箱配置和新测试订单。
 
 沙箱密钥从开放平台沙箱应用页获取（`应用信息 → 开发信息 → 接口加签方式`），登录即得，无需申请资质：
 
@@ -173,3 +201,29 @@ npm run build
 ```
 
 项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。
+
+### 项目文档导航
+
+`docs` 根目录保留 API、架构、开发规范、PRD 和 OpenAPI 五份核心文件，其余文档按用途分类：
+
+| 分类 | 文档 |
+|---|---|
+| 需求与核心规范 | [产品需求](docs/PRD.md)、[总体架构](docs/ARCHITECTURE.md)、[开发规范](docs/DEVELOPMENT_GUIDE.md)、[API 规范](docs/API.md)、[OpenAPI](docs/openapi.yaml) |
+| 设计 `design/` | [数据库设计](docs/design/DATABASE_DESIGN.md)、[交易模块详细设计](docs/design/TRADE_MODULE.md) |
+| 测试 `testing/` | [项目测试报告](docs/testing/TEST_REPORT.md)（历史回归证据、验证范围及待验收项） |
+| 手册 `manuals/` | [用户操作手册](docs/manuals/USER_MANUAL.md)、[后台操作手册](docs/manuals/ADMIN_MANUAL.md)、[部署手册](docs/manuals/DEPLOYMENT.md) |
+| 附录 `appendices/` | [数据来源与许可](docs/appendices/DATA_SOURCES.md) |
+
+## 站内消息与提醒
+
+PRD §29 的站内消息覆盖：支付成功、报名确认、订单审核异常、退款审核结果、**即将出发提醒**、**团期状态变化**。
+
+- 订单审核异常在后台确认报名时由业务复核触发（`POST /admin/orders/{orderNo}/confirm` 复核不通过）：
+  只向用户发通知、**不改订单状态**，订单仍停在待确认、名额保持预留，用户补齐资料后可重新确认。
+  去重、脱敏与审计口径见 [交易模块说明](docs/design/TRADE_MODULE.md) §4 / §5。
+
+- 即将出发提醒由定时任务 `DepartureReminderService` 发送：默认提前 `DEPARTURE_REMINDER_DAYS=3` 天，
+  每天 `DEPARTURE_REMINDER_CRON`（默认 `0 0 9 * * *`）执行；只提醒符合出行条件的订单（已确认报名、团期未取消未完成），
+  通过 `departure_reminder` 唯一键保证重复执行不重复发送。可用 `DEPARTURE_REMINDER_ENABLED=false` 关闭。
+- 团期状态变化（后台改状态、导游开始/结束行程）会向该团期下有效订单的用户投递站内消息，与状态写入同一事务。
+- 存量库升级前请先执行 `sql/migrations/011-add-departure-reminder.sql`（详见 [迁移说明](sql/migrations/README.md)）。

@@ -5,6 +5,10 @@ import { ElMessage } from 'element-plus'
 import { accountApi, routeApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import AppIcon from '@/components/AppIcon.vue'
+import DepartureCard from '@/components/DepartureCard.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
+import RequestState from '@/components/RequestState.vue'
+import RouteItinerary from '@/components/RouteItinerary.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -22,15 +26,37 @@ const departures = computed(() => data.value?.departures || [])
 const selectedDeparture = computed(
   () => departures.value.find((d) => d.id === selectedDepartureId.value) || departures.value[0]
 )
-const reviews = computed(() => data.value?.reviews || [])
-const hasMapPoints = computed(() => data.value?.itinerary?.some((day) =>
-  day.items?.some((item) => item.longitude != null && item.latitude != null)) || false)
+const reviews = ref([])
+const reviewPage = ref(1)
+const reviewTotal = ref(0)
+const reviewsLoading = ref(false)
+const reviewsError = ref('')
+const reviewPageSize = 10
+let reviewRequest = 0
+
+async function loadReviews(page = reviewPage.value) {
+  const request = ++reviewRequest
+  reviewPage.value = page
+  reviewsLoading.value = true
+  reviewsError.value = ''
+  try {
+    const result = await routeApi.reviews(route.params.id, { page, size: reviewPageSize })
+    if (request !== reviewRequest) return
+    reviews.value = result.items
+    reviewTotal.value = result.total
+  } catch (cause) {
+    if (request === reviewRequest) reviewsError.value = cause.message || '评价加载失败'
+  } finally {
+    if (request === reviewRequest) reviewsLoading.value = false
+  }
+}
 
 async function load() {
   loading.value = true
   errorMessage.value = ''
   try {
     data.value = await routeApi.detail(route.params.id)
+    loadReviews(1)
     setMapItinerary(data.value?.itinerary || [])
     favorite.value = Boolean(data.value?.favorite)
     if (departures.value.length > 0) {
@@ -88,17 +114,6 @@ function selectDeparture(item) {
   if (isDepartureBookable(item)) selectedDepartureId.value = item.id
 }
 
-function itineraryType(type) {
-  const labels = {
-    ATTRACTION: '景点',
-    MEAL: '餐食',
-    TRANSPORT: '交通',
-    ACTIVITY: '活动',
-    OTHER: '其他'
-  }
-  return labels[type] || type || '行程'
-}
-
 async function shareRoute() {
   if (navigator.clipboard) {
     try {
@@ -126,24 +141,12 @@ onBeforeUnmount(() => setMapItinerary([]))
     </div>
 
     <template v-else-if="data && data.route">
-      <!-- Sheet Top Bar (Screenshot 3: 路线 📤 ✕) -->
       <div class="sheet-top-bar">
-        <button type="button" class="back-link-btn" @click="router.back()">
-          <AppIcon name="chevron-left" size="14" />
-          <span>返回</span>
-        </button>
+        <PanelIconButton action="back" :fallback-to="{ name: 'routes' }" />
         <div class="sheet-actions">
-          <button type="button" class="sheet-action-btn" :class="{ favorited: favorite }" :disabled="favoriteSubmitting" @click="toggleFavorite">
-            <AppIcon v-if="favorite" name="heart-filled" size="13" color="#ff3b30" />
-            <AppIcon v-else name="heart" size="13" />
-            <span>{{ favorite ? '已收藏' : '收藏' }}</span>
-          </button>
-          <button type="button" class="sheet-icon-circle" title="分享" @click="shareRoute">
-            <AppIcon name="share" size="13" />
-          </button>
-          <button type="button" class="sheet-icon-circle" title="关闭面板" @click="closeDrawer">
-            <AppIcon name="close" size="13" />
-          </button>
+          <PanelIconButton action="favorite" :active="favorite" :disabled="favoriteSubmitting" @click="toggleFavorite" />
+          <PanelIconButton action="share" @click="shareRoute" />
+          <PanelIconButton action="close" label="关闭面板" @click="closeDrawer" />
         </div>
       </div>
 
@@ -199,9 +202,12 @@ onBeforeUnmount(() => setMapItinerary([]))
             </div>
             <div class="route-rating-summary">
               <template v-if="data.route.ratingCount">
-                <strong>{{ data.route.ratingAvg }}</strong>
-                <span>/ 5</span>
-                <small>{{ data.route.ratingCount }} 条评价</small>
+                <div class="rating-score" :aria-label="`评分 ${data.route.ratingAvg}，满分 5 分`">
+                  <AppIcon name="star" size="14" />
+                  <strong>{{ data.route.ratingAvg }}</strong>
+                  <span>/ 5</span>
+                </div>
+                <small class="rating-count">{{ data.route.ratingCount }} 条评价</small>
               </template>
               <span v-else class="muted-rating">暂无评分</span>
             </div>
@@ -223,31 +229,9 @@ onBeforeUnmount(() => setMapItinerary([]))
           </div>
 
           <div v-if="departures.length" class="departures-sheet-list">
-            <div
-              v-for="item in departures"
-              :key="item.id"
-              class="departure-card-item"
-              :class="{
-                selected: selectedDepartureId === item.id,
-                soldout: getAvailableSeats(item) != null && getAvailableSeats(item) <= 0
-              }"
-              :aria-disabled="!isDepartureBookable(item)"
-              @click="selectDeparture(item)"
-            >
-              <div class="dep-dates">
-                <strong>{{ item.startDate }}</strong>
-                <span>至 {{ item.endDate }}</span>
-              </div>
-              <div class="dep-prices">
-                <span class="adult">¥{{ item.adultPrice }}<small>/成人</small></span>
-                <span class="child">¥{{ item.childPrice }}<small>/儿童</small></span>
-              </div>
-              <div class="dep-seats">
-                <span v-if="getAvailableSeats(item) != null && getAvailableSeats(item) > 0" class="tag success">余 {{ getAvailableSeats(item) }}</span>
-                <span v-else-if="getAvailableSeats(item) === 0" class="tag danger">已满</span>
-                <span v-else class="tag">余量待同步</span>
-              </div>
-            </div>
+            <DepartureCard v-for="item in departures" :key="item.id" :departure="item"
+                           :selected="selectedDepartureId === item.id" interactive
+                           @select="selectDeparture(item)" />
           </div>
           <div v-else class="empty-box">暂无排期。</div>
         </div>
@@ -259,52 +243,7 @@ onBeforeUnmount(() => setMapItinerary([]))
             <span class="sub-hint">{{ data.route.durationDays }} 天全程</span>
           </div>
 
-          <div v-if="data.itinerary && data.itinerary.length" class="day-itinerary-list">
-            <div v-for="item in data.itinerary" :key="item.id" class="day-row-card">
-              <div class="day-badge">D{{ item.dayNumber }}</div>
-              <div class="day-content">
-                <h5>{{ item.title }}</h5>
-                <p>{{ item.description || '暂无当日行程说明。' }}</p>
-                <div v-if="item.items && item.items.length" class="itinerary-items-list">
-                  <div v-for="entry in item.items" :key="entry.id" class="itinerary-item-row">
-                    <span class="itinerary-item-type">{{ itineraryType(entry.itemType) }}</span>
-                    <div class="itinerary-item-copy">
-                      <strong>{{ entry.name }}</strong>
-                      <span v-if="entry.description">{{ entry.description }}</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="day-meta-tags">
-                  <span class="meta-tag-item">
-                    <AppIcon name="bus" size="12" color="#0071e3" />
-                    <span>交通：{{ item.transportation || '暂无安排' }}</span>
-                  </span>
-                  <span>·</span>
-                  <span class="meta-tag-item">
-                    <AppIcon name="food" size="12" color="#ff9500" />
-                    <span>餐食：{{ item.meals || '暂无安排' }}</span>
-                  </span>
-                  <template v-if="item.hotelName">
-                    <span>·</span>
-                    <span class="meta-tag-item">
-                      <AppIcon name="hotel" size="12" color="#5856d6" />
-                      <span>住宿：{{ item.hotelName }}</span>
-                    </span>
-                  </template>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div v-else class="empty-box">暂无已发布的每日行程。</div>
-        </div>
-
-        <div class="sheet-section map-section">
-          <div class="section-title-row">
-            <h4>行程地图</h4>
-            <span class="sub-hint">按行程顺序展示</span>
-          </div>
-          <p v-if="hasMapPoints">景点标记与行程连线已显示在主地图上。收起面板可查看完整地图。</p>
-          <p v-else>暂无经纬度坐标。在后台行程项中录入景点坐标后，主地图会显示行程位置。</p>
+          <RouteItinerary :days="data.itinerary || []" :route-id="String(data.route.id)" />
         </div>
 
         <div class="sheet-section route-notes-section">
@@ -327,9 +266,10 @@ onBeforeUnmount(() => setMapItinerary([]))
         <div class="sheet-section reviews-section">
           <div class="section-title-row">
             <h4>用户评价</h4>
-            <span class="sub-hint">{{ data.route.ratingCount || 0 }} 条</span>
+            <span v-if="!reviewsLoading && !reviewsError" class="sub-hint">{{ reviewTotal }} 条</span>
           </div>
-          <div v-if="reviews.length" class="reviews-list">
+          <RequestState :loading="reviewsLoading" :error="reviewsError" :empty="!reviews.length" empty-text="暂无用户评价。" @retry="loadReviews()">
+          <div class="reviews-list">
             <article v-for="review in reviews" :key="review.id" class="review-row">
               <div class="review-row-head">
                 <div class="review-author-rating">
@@ -341,7 +281,8 @@ onBeforeUnmount(() => setMapItinerary([]))
               <p>{{ review.content || '用户未填写文字评价。' }}</p>
             </article>
           </div>
-          <div v-else class="empty-box">暂无用户评价。</div>
+          </RequestState>
+          <el-pagination v-if="reviewTotal > reviewPageSize" class="account-pagination" layout="prev, pager, next" :pager-count="5" :current-page="reviewPage" :page-size="reviewPageSize" :total="reviewTotal" :disabled="reviewsLoading" @current-change="loadReviews" />
         </div>
       </div>
 
@@ -410,57 +351,12 @@ onBeforeUnmount(() => setMapItinerary([]))
   justify-content: space-between;
   align-items: center;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.back-link-btn {
-  background: transparent;
-  border: none;
-  color: var(--theme-blue);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
 }
 
 .sheet-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.sheet-action-btn {
-  padding: 5px 12px;
-  border-radius: var(--radius-pill);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-  font-size: 12px;
-  color: var(--text-primary);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sheet-action-btn.favorited {
-  color: var(--status-red);
-  background: var(--status-red-bg);
-  border-color: transparent;
-}
-
-.sheet-icon-circle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  border: none;
-  font-size: 13px;
-  color: var(--text-secondary);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
 }
 
 /* Sheet Scroll Body */
@@ -630,6 +526,7 @@ onBeforeUnmount(() => setMapItinerary([]))
 
 .route-overview-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -646,22 +543,48 @@ onBeforeUnmount(() => setMapItinerary([]))
 }
 
 .route-rating-summary {
-  display: grid;
-  min-width: 78px;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   color: var(--text-secondary);
   font-size: 11px;
 }
 
-.route-rating-summary strong {
+.rating-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(180,83,9,.1);
+  border-radius: 10px;
+  background: rgba(255,247,230,.8);
   color: #b45309;
-  font-size: 20px;
+  white-space: nowrap;
+}
+
+.rating-score > svg {
+  align-self: center;
+  margin-right: 2px;
+}
+
+.rating-score strong {
+  font-size: 18px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
-.route-rating-summary small {
-  color: var(--text-tertiary);
-  font-size: 10px;
+.rating-score span {
+  color: #94734c;
+  font-size: 11px;
+}
+
+.rating-count {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .muted-rating {
@@ -694,177 +617,6 @@ onBeforeUnmount(() => setMapItinerary([]))
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.departure-card-item {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.departure-card-item[aria-disabled='true'] {
-  cursor: not-allowed;
-  opacity: 0.62;
-}
-
-.departure-card-item:hover {
-  background: rgba(255, 255, 255, 0.95);
-}
-
-.departure-card-item.selected {
-  border-color: var(--theme-blue);
-  background: var(--theme-blue-tint);
-}
-
-.dep-dates strong {
-  display: block;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.dep-dates span {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.dep-prices {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.dep-prices .adult {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--theme-blue);
-}
-
-.dep-prices .child {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.dep-prices small {
-  font-size: 9px;
-  color: var(--text-tertiary);
-}
-
-/* Day Itinerary */
-.day-itinerary-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.day-row-card {
-  display: grid;
-  grid-template-columns: 32px 1fr;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-.day-badge {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: var(--theme-blue-tint);
-  color: var(--theme-blue);
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.day-content h5 {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 4px;
-}
-
-.day-content p {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  margin: 0 0 6px;
-}
-
-.itinerary-items-list {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0;
-  padding: 8px 0 2px 10px;
-  border-left: 2px solid rgba(0, 113, 227, 0.14);
-}
-
-.itinerary-item-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-}
-
-.itinerary-item-type {
-  flex: 0 0 auto;
-  padding: 2px 5px;
-  border-radius: 4px;
-  color: var(--theme-blue);
-  background: var(--theme-blue-tint);
-  font-size: 9px;
-  line-height: 1.2;
-}
-
-.itinerary-item-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.itinerary-item-copy strong {
-  color: var(--text-primary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.itinerary-item-copy span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.day-meta-tags {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.meta-tag-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.map-section p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 .detail-notes-grid {
@@ -978,10 +730,6 @@ onBeforeUnmount(() => setMapItinerary([]))
 @media (max-width: 420px) {
   .route-overview-head {
     display: grid;
-  }
-
-  .route-rating-summary {
-    justify-items: start;
   }
 
   .detail-notes-grid {

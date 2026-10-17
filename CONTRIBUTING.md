@@ -246,6 +246,8 @@ dev → main
 
 任何代码进入 `main` 前必须完成测试。
 
+向 `dev` / `main` 提交 PR 后，应确认 CI 中 `Frontend checks` 和 `Backend checks` 均通过，再进行合并。前者运行契约校验、前端测试和构建；后者在临时 MySQL 中初始化数据库并运行全部后端测试及打包，禁止通过跳过集成测试取得绿灯。失败时查看 Actions 日志和 `backend-test-reports` 附件。仓库管理员应将这两项配置为分支保护的必需检查，详见 README 的「自动化 CI」。自动化检查不替代尚未覆盖的业务验收和真实第三方联调。
+
 至少包括：
 
 ```text

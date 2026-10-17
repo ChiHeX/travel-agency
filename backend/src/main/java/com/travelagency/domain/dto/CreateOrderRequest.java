@@ -8,11 +8,18 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
-import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
 
 import java.time.LocalDate;
 import java.util.List;
 
+/**
+ * 创建订单请求，对齐契约 {@code CreateOrderRequest}。
+ *
+ * <p><b>出行人字段的长度上限按 Unicode 码点计数</b>（{@link CodePointLength}）：契约的
+ * {@code maxLength} 是 JSON Schema 口径，数的是字符（码点），而 {@code @Size} 数的是
+ * UTF-16 码元 —— 一个 emoji 会被算成 2，于是出现「契约允许、实现却回 422」。</p>
+ */
 public record CreateOrderRequest(
         @NotNull(message = "团期不能为空") Long departureId,
         @NotNull(message = "成人数量不能为空") @Min(value = 0, message = "成人数量不能为负数") Integer adultCount,
@@ -35,18 +42,18 @@ public record CreateOrderRequest(
              * 变成硬报错 —— 前端下单会直接返回 400，整个下单流程不可用。</p>
              */
             @Positive(message = "来源常用出行人 ID 必须为正数") Long sourceTravelerId,
-            @NotBlank(message = "出行人姓名不能为空") @Size(max = 64, message = "出行人姓名不能超过 64 字") String name,
+            @NotBlank(message = "出行人姓名不能为空") @CodePointLength(max = 64, message = "出行人姓名不能超过 64 字") String name,
             @NotBlank(message = "性别不能为空")
             @Pattern(regexp = "MALE|FEMALE|OTHER", message = "性别取值不合法") String gender,
             @NotNull(message = "出生日期不能为空") LocalDate birthDate,
             @NotBlank(message = "证件类型不能为空")
             @Pattern(regexp = "CHINESE_ID_CARD|PASSPORT|OTHER", message = "证件类型取值不合法") String idType,
             @NotBlank(message = "证件号码不能为空")
-            @Size(min = 3, max = 64, message = "证件号码长度应为 3-64 位") String idNo,
-            @Size(max = 20, message = "手机号不能超过 20 位") String phone,
-            @NotBlank(message = "紧急联系人姓名不能为空") @Size(max = 64, message = "紧急联系人姓名不能超过 64 字") String emergencyName,
+            @CodePointLength(min = 3, max = 64, message = "证件号码长度应为 3-64 位") String idNo,
+            @CodePointLength(max = 20, message = "手机号不能超过 20 位") String phone,
+            @NotBlank(message = "紧急联系人姓名不能为空") @CodePointLength(max = 64, message = "紧急联系人姓名不能超过 64 字") String emergencyName,
             @NotBlank(message = "紧急联系人电话不能为空")
-            @Size(min = 3, max = 20, message = "紧急联系人电话长度应为 3-20 位") String emergencyPhone,
+            @CodePointLength(min = 3, max = 20, message = "紧急联系人电话长度应为 3-20 位") String emergencyPhone,
             /**
              * 出行人类型，取值 ADULT / CHILD。
              *

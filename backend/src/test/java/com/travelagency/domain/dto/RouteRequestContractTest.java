@@ -106,10 +106,10 @@ class RouteRequestContractTest {
 
     @Test
     void itineraryDayRequestRequiresDayNumberAndTitle() {
-        assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "上海 → 昆明", null, null, null, null)).isEmpty());
-        assertTrue(hasViolation(new ItineraryDayRequest(0, "标题", null, null, null, null), "dayNumber"));
-        assertTrue(hasViolation(new ItineraryDayRequest(1, " ", null, null, null, null), "title"));
-        assertTrue(hasViolation(new ItineraryDayRequest(null, "标题", null, null, null, null), "dayNumber"));
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "上海 → 昆明")).isEmpty());
+        assertTrue(hasViolation(itineraryDay(0, "标题"), "dayNumber"));
+        assertTrue(hasViolation(itineraryDay(1, " "), "title"));
+        assertTrue(hasViolation(itineraryDay(null, "标题"), "dayNumber"));
     }
 
     @Test
@@ -132,10 +132,75 @@ class RouteRequestContractTest {
                 1, "ATTRACTION", "大理古城", null, null, 181.0, null), "longitude"));
         assertTrue(hasViolation(new ItineraryItemRequest(
                 1, "ATTRACTION", "大理古城", null, null, null, -91.0), "latitude"));
+
+        // 经纬度必须成对（契约 CoordinatePairRule）：只给一个会被 422 拒绝，
+        // 因为单点坐标在用户端地图上无法落点，会被静默丢弃。按文案断言，不依赖约束的字段命名。
+        assertTrue(hasMessage(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, 100.1, null), "经度和纬度需要同时填写，或同时留空"));
+        assertTrue(hasMessage(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, null, 25.2), "经度和纬度需要同时填写，或同时留空"));
+        // 两个都留空是合法的：此时行程项整对继承所关联景点的坐标（见 AdminRouteService）。
+        assertTrue(VALIDATOR.validate(new ItineraryItemRequest(
+                1, "ATTRACTION", "大理古城", null, null, null, null)).isEmpty());
+    }
+
+    @Test
+    void itineraryDayRequestKeepsAccommodationConsistentWithTheHotel() {
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "HOTEL", null, 12L)).isEmpty());
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", null, null, 12L)).isEmpty());
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", null, null, null)).isEmpty());
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "PENDING", null, null)).isEmpty());
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "NONE", null, null)).isEmpty());
+        assertTrue(VALIDATOR.validate(itineraryDay(1, "第一天", "STANDARD", "市区舒适型酒店", null)).isEmpty());
+
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "HOTEL", null, null), "hotelId"),
+                "HOTEL 没带酒店应被拒绝");
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "STANDARD", " ", null), "accommodationStandard"),
+                "STANDARD 没写住宿标准应被拒绝");
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "NONE", null, 12L), "hotelId"),
+                "NONE 不该关联酒店");
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "PENDING", null, 12L), "hotelId"),
+                "PENDING 不该关联酒店");
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "STANDARD", "标准", 12L), "hotelId"),
+                "STANDARD 不该关联酒店");
+        assertTrue(hasViolation(itineraryDay(1, "第一天", "CAMPING", null, null), "accommodationType"));
+    }
+
+    @Test
+    void itineraryDayRequestEnforcesAccommodationTextRules() {
+        assertTrue(hasViolation(new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD",
+                "标".repeat(501), null, null, null, null), "accommodationStandard"));
+        assertTrue(hasViolation(new ItineraryDayRequest(1, "第一天", null, null, null, null,
+                null, "房".repeat(101), null, null, null), "roomType"));
+        assertTrue(hasViolation(new ItineraryDayRequest(1, "第一天", null, null, null, null,
+                null, null, null, "注".repeat(1001), null), "accommodationNote"));
+
+        assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "第一天", null, null, null, null,
+                null, null, Boolean.FALSE, null, null)).isEmpty());
+        assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "第一天", null, null, null, null,
+                null, null, Boolean.TRUE, null, null)).isEmpty());
+        assertTrue(VALIDATOR.validate(new ItineraryDayRequest(1, "第一天", null, null, null, null,
+                null, null, null, null, null)).isEmpty());
+    }
+
+    private static ItineraryDayRequest itineraryDay(Integer dayNumber, String title) {
+        return itineraryDay(dayNumber, title, null, null, null);
+    }
+
+    private static ItineraryDayRequest itineraryDay(Integer dayNumber, String title,
+                                                    String accommodationType, String standard, Long hotelId) {
+        return new ItineraryDayRequest(dayNumber, title, null, null, null,
+                accommodationType, standard, null, null, null, hotelId);
     }
 
     private static boolean hasViolation(Object target, String property) {
         return VALIDATOR.validate(target).stream()
                 .anyMatch(violation -> violation.getPropertyPath().toString().equals(property));
+    }
+
+    /** 按约束文案判断，避免类级/方法级约束的字段命名差异影响断言。 */
+    private static boolean hasMessage(Object target, String message) {
+        return VALIDATOR.validate(target).stream()
+                .anyMatch(violation -> message.equals(violation.getMessage()));
     }
 }

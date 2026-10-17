@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm install --no-package-lock --no-audit --no-fund
+      - run: npm run contract:validate
+      - run: npm test
+      - run: npm run build
+
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TRAVEL_MYSQL_TEST: 'true'
+      DB_URL: jdbc:mysql://127.0.0.1:3306/travel_agency?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      DB_USERNAME: travel
+      DB_PASSWORD: travel_password
+    services:
+      mysql:
+        image: mysql:9.7
+        env:
+          MYSQL_ROOT_PASSWORD: root_password
+          MYSQL_DATABASE: travel_agency
+          MYSQL_USER: travel
+          MYSQL_PASSWORD: travel_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot_password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: Initialize disposable test database
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: |
+          docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot_password --default-character-set=utf8mb4 < sql/schema.sql
+          docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot_password --default-character-set=utf8mb4 < sql/test-data.sql
+      - name: Run all tests and package
+        working-directory: backend
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Reject missing or skipped tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('backend/target/surefire-reports').glob('TEST-*.xml'))
+          if not reports:
+              raise SystemExit('No test reports were produced')
+          totals = dict.fromkeys(('tests', 'failures', 'errors', 'skipped'), 0)
+          for report in reports:
+              suite = ET.parse(report).getroot()
+              for key in totals:
+                  totals[key] += int(suite.get(key, '0'))
+          print(totals)
+          if totals['tests'] == 0 or any(totals[k] for k in ('failures', 'errors', 'skipped')):
+              raise SystemExit('All backend tests must execute and pass')
+          PY
+      - name: Upload backend test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-reports
+          path: backend/target/surefire-reports/
+          retention-days: 7

@@ -15,9 +15,11 @@ import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.mapper.ConsultationMapper;
 import com.travelagency.domain.mapper.ConsultationReplyMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
+import com.travelagency.domain.service.ConsultationService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -46,12 +48,20 @@ public class ConsultationController {
     private final ConsultationMapper consultationMapper;
     private final ConsultationReplyMapper replyMapper;
     private final SysUserMapper sysUserMapper;
+    private final ConsultationService consultationService;
 
     public ConsultationController(ConsultationMapper consultationMapper, ConsultationReplyMapper replyMapper,
-                                  SysUserMapper sysUserMapper) {
+                                  SysUserMapper sysUserMapper, ConsultationService consultationService) {
         this.consultationMapper = consultationMapper;
         this.replyMapper = replyMapper;
         this.sysUserMapper = sysUserMapper;
+        this.consultationService = consultationService;
+    }
+
+    @DeleteMapping("/{consultationId}")
+    public ResponseEntity<Void> delete(@PathVariable Long consultationId) {
+        consultationService.deleteClosed(consultationId, CurrentUser.required().userId());
+        return ResponseEntity.noContent().build();
     }
 
     /** 当前用户咨询分页查询，对齐契约 GET /consultations（ConsultationPageEnvelope）。 */

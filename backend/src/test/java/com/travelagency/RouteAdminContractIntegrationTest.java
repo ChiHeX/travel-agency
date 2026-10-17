@@ -9,6 +9,8 @@ import com.travelagency.domain.entity.RouteItineraryDay;
 import com.travelagency.domain.entity.RouteItineraryItem;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelRoute;
+import com.travelagency.domain.entity.TravelOrder;
+import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.AttractionMapper;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.HotelMapper;
@@ -81,6 +83,7 @@ class RouteAdminContractIntegrationTest {
     @Autowired SysUserMapper users;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
+    @Autowired TravelOrderMapper orders;
 
     private MockMvc mvc;
     private String staffToken;
@@ -288,6 +291,51 @@ class RouteAdminContractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * 停用的酒店不能再被安排进新行程（422），但已经安排好的行程不受影响。
+     *
+     * <p>停用是"这家酒店不再使用"的唯一手段 —— 被行程引用的酒店不允许删除（409）。
+     * 若这里放行，停用就只是一个没有任何效果的标记：后台写着"停止使用"，
+     * 工作人员却仍能把这家酒店排进新行程，用户端也照旧显示。</p>
+     */
+    @Test
+    void disabledHotelCannotBeScheduledIntoNewItineraryDays() throws Exception {
+        String id = createRoute("停用酒店线路-" + suffix(), 3);
+        Hotel disabled = disabledHotel();
+
+        // 新增行程指向停用酒店：422，且一天行程都不落库。
+        mvc.perform(post("/api/admin/routes/" + id + "/itinerary-days").header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天\",\"hotelId\":\"" + disabled.id + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message")
+                        .value(org.hamcrest.Matchers.containsString("已停用")));
+        assertEquals(0L, days.selectCount(new QueryWrapper<RouteItineraryDay>().eq("route_id", id)).longValue());
+
+        // 已经安排在启用酒店上的一天：改成停用酒店被拒，原样保留则放行。
+        Hotel active = hotel();
+        String dayId = createDayWithHotel(id, 1, "第一天", active.id);
+        mvc.perform(put("/api/admin/itinerary-days/" + dayId).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天\",\"hotelId\":\"" + disabled.id + "\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        assertEquals(active.id, days.selectById(dayId).hotelId, "422 时不得改动行程上的酒店");
+
+        // 把这一天正在使用的酒店停用之后，仍要能修改这一天的其它字段
+        // （把已停用酒店原样留在原地不算"重新安排"）。
+        active.status = 0;
+        hotels.updateById(active);
+        mvc.perform(put("/api/admin/itinerary-days/" + dayId).header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"dayNumber\":1,\"title\":\"第一天（改餐食）\",\"meals\":\"早、午餐\","
+                                + "\"hotelId\":\"" + active.id + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.meals").value("早、午餐"))
+                .andExpect(jsonPath("$.data.hotelName").value(active.name));
+    }
+
     @Test
     void managesItineraryItemsWithContractShape() throws Exception {
         String id = createRoute("行程项目线路-" + suffix(), 3);
@@ -485,6 +533,24 @@ class RouteAdminContractIntegrationTest {
         return hotel;
     }
 
+    /** 停用的酒店：资料仍在库内（status = 0），只是不能再被安排进新行程。 */
+    private Hotel disabledHotel() {
+        Hotel hotel = hotel();
+        hotel.status = 0;
+        hotels.updateById(hotel);
+        return hotel;
+    }
+
+    /** 通过接口创建一天行程并安排指定酒店，返回行程 id。 */
+    private String createDayWithHotel(String routeId, int dayNumber, String title, Long hotelId) throws Exception {
+        String body = "{\"dayNumber\":" + dayNumber + ",\"title\":\"" + title + "\",\"hotelId\":\"" + hotelId + "\"}";
+        String response = mvc.perform(post("/api/admin/routes/" + routeId + "/itinerary-days")
+                        .header("Authorization", staffToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        return json.readTree(response).get("data").get("id").asString();
+    }
+
     private Attraction attraction() {
         Attraction attraction = new Attraction();
         attraction.name = "契约测试景点-" + suffix();
@@ -511,6 +577,53 @@ class RouteAdminContractIntegrationTest {
         departure.guideId = null;
         departure.version = 0;
         departures.insert(departure);
+    }
+
+    @Test
+    void orderOwnerCanReadOfflineRouteItineraryButOthersCannot() throws Exception {
+        String routeId = createRoute("订单行程测试", 1);
+        createDay(routeId, 1, "每日游览安排");
+        TravelRoute route = routes.selectById(Long.valueOf(routeId));
+        route.status = "OFFLINE";
+        routes.updateById(route);
+        insertDepartureWithoutGuide(routeId);
+        Departure departure = departures.selectOne(new QueryWrapper<Departure>().eq("route_id", routeId));
+        SysUser owner = account();
+        TravelOrder order = new TravelOrder();
+        order.orderNo = "ITINERARY-" + suffix();
+        order.userId = owner.id;
+        order.routeId = route.id;
+        order.departureId = departure.id;
+        order.contactName = "测试联系人";
+        order.contactPhone = "13800000000";
+        order.adultCount = 1;
+        order.childCount = 0;
+        order.adultUnitPrice = new BigDecimal("100.00");
+        order.childUnitPrice = BigDecimal.ZERO;
+        order.totalAmount = order.adultUnitPrice;
+        order.status = "CONFIRMED";
+        order.paymentStatus = "PAID";
+        orders.insert(order);
+        String path = "/api/orders/" + order.orderNo + "/itinerary";
+        mvc.perform(get("/api/routes/" + routeId)).andExpect(status().isNotFound());
+        for (String state : List.of("CONFIRMED", "TRAVELLING", "COMPLETED")) {
+            order.status = state;
+            orders.updateById(order);
+            mvc.perform(get(path).header("Authorization", bearer(owner, "USER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].id").isString())
+                    .andExpect(jsonPath("$.data[0].title").value("每日游览安排"))
+                    .andExpect(jsonPath("$.data[0].items").isArray());
+        }
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(get(path).header("Authorization", userToken)).andExpect(status().isForbidden());
+        mvc.perform(get(path).header("Authorization", staffToken)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/orders/MISSING/itinerary").header("Authorization", bearer(owner, "USER")))
+                .andExpect(status().isNotFound());
+        order.status = "REFUNDED";
+        orders.updateById(order);
+        mvc.perform(get(path).header("Authorization", bearer(owner, "USER")))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_STATE_CONFLICT"));
     }
 
     private SysUser account() {

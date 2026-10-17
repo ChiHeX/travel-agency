@@ -3,6 +3,7 @@ package com.travelagency.web.controller;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.security.CurrentUser;
+import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.ItineraryDayRequest;
 import com.travelagency.domain.dto.ItineraryDayView;
 import com.travelagency.domain.dto.ItineraryItemRequest;
@@ -14,8 +15,10 @@ import com.travelagency.domain.dto.RouteUpsertRequest;
 import com.travelagency.domain.dto.RouteView;
 import com.travelagency.domain.service.AdminRouteService;
 import jakarta.validation.Valid;
+import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -50,6 +53,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/admin")
 @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+@Validated
 public class AdminRouteController {
 
     private final AdminRouteService adminRouteService;
@@ -62,12 +66,19 @@ public class AdminRouteController {
     // 线路管理
     // ------------------------------------------------------------------
 
-    /** 分页查询全部线路，对齐契约 GET /admin/routes（keyword + status 筛选）。 */
+    /**
+     * 分页查询全部线路，对齐契约 GET /admin/routes（keyword + status 筛选）。
+     *
+     * <p>{@code keyword} 的契约上限由 {@link KeywordRules} 统一提供；同组的 {@code status} 不在这里
+     * 加校验注解：契约枚举已由 {@code AdminRouteService.page} 拒绝并返回同一种 422 形状，
+     * 控制器再叠一套只会让同一个参数出现两种错误口径。</p>
+     */
     @GetMapping("/routes")
     public ApiResponse<PageResponse<RouteSummaryView>> routes(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String status) {
         return ApiResponse.ok(adminRouteService.page(page, size, keyword, status));
     }

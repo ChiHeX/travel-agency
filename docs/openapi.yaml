@@ -134,10 +134,10 @@ paths:
           schema: { type: string, maxLength: 128 }
         - name: minPrice
           in: query
-          schema: { $ref: '#/components/schemas/Money' }
+          schema: { $ref: '#/components/schemas/PriceFilter' }
         - name: maxPrice
           in: query
-          schema: { $ref: '#/components/schemas/Money' }
+          schema: { $ref: '#/components/schemas/PriceFilter' }
         - name: durationDays
           in: query
           schema: { type: integer, minimum: 1 }
@@ -149,7 +149,10 @@ paths:
           schema: { type: boolean }
         - name: sort
           in: query
-          description: 允许 minAdultPrice、validBookingCount、ratingAvg
+          description: >-
+            允许 minAdultPrice、validBookingCount、ratingAvg。validBookingCount,desc 就是 PRD §15.4 的
+            「报名人数」排序，其来源按 PRD §27 是「系统有效订单」：线路的 validBookingCount 是
+            **有效报名订单条数**（不是游客人数）。
           schema:
             type: string
             enum: ['minAdultPrice,asc', 'minAdultPrice,desc', 'validBookingCount,desc', 'ratingAvg,desc']
@@ -196,6 +199,44 @@ paths:
               schema: { $ref: '#/components/schemas/ReviewPageEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /routes/{routeId}/hotels/{hotelId}:
+    parameters:
+      - { $ref: '#/components/parameters/RouteId' }
+      - { $ref: '#/components/parameters/HotelId' }
+    get:
+      tags: [Routes]
+      operationId: getPublicRouteHotel
+      summary: 查询线路行程中安排的酒店公开资料
+      description: |
+        返回某条**已发布**线路的每日行程里确实安排过的酒店的公开资料：名称、城市、地址、
+        图片、官方星级、简介、设施、通常的入住/退房时间、坐标与数据来源说明。
+
+        酒店资料挂在**线路之下**而不是做成公开的 `/hotels/{hotelId}`：酒店在本项目里只是
+        线路行程资源（`docs/PRD.md` §10），把它整表对外开放等于把后台维护的、可能尚未合作的
+        酒店资料一起公开。以「这条线路确实安排了这家酒店」为门槛，才能既支撑用户端的酒店详情页，
+        又不暴露与当前线路无关的资料。
+
+        **查询条件（不满足时统一返回 404 `RESOURCE_NOT_FOUND`，不区分具体原因）**：
+
+        - 线路必须存在、`status = PUBLISHED` 且未删除；
+        - 酒店必须存在且处于启用状态（`status = ACTIVE`）；
+        - 该线路的每日行程（`route_itinerary_day`）中必须至少有一天安排了这家酒店。
+
+        **不返回的内容**：后台上传/维护用的 `version`、`status`、`createdAt` / `updatedAt`
+        等内部字段；`hotel.contactPhone`（后台「联系方式」是内部对接人号码，当前没有
+        「公开客服电话」的标记字段，因此一律不外发，见 `docs/API.md` §10）。
+
+        用户端线路详情只在每日行程里内嵌酒店**摘要**（`ItineraryDay.hotel`），
+        图片、完整简介与设施按需调用本端点获取，避免一次行程请求把每家酒店的图片全部带出来。
+      security: []
+      responses:
+        '200':
+          description: 酒店公开资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicHotelDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /attractions:
     get:
       tags: [Content]
@@ -218,6 +259,23 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AttractionPageEnvelope' }
 
+  /attractions/{attractionId}:
+    parameters:
+      - { $ref: '#/components/parameters/AttractionId' }
+    get:
+      tags: [Content]
+      operationId: getPublicAttraction
+      summary: 查询公开地点详情及该地点关联线路的全部未来开放团期
+      description: 仅通过行程项的 attractionId 关联已发布线路；团期限定为未过期且状态为 OPEN，已满团期仍返回并以 availableSeats=0 表示。
+      security: []
+      responses:
+        '200':
+          description: 地点与团期详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttractionDetailEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /articles:
     get:
       tags: [Content]
@@ -239,6 +297,67 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ArticlePageEnvelope' }
+
+  /place-guides:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuides
+      summary: 查询已发布的多地点指南
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: city, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: destination, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: authorId, in: query, schema: { $ref: '#/components/schemas/Id' } }
+      responses:
+        '200':
+          description: 指南分页结果，按发布时间倒序
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePageEnvelope' }
+
+  /place-guides/cities:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuideCities
+      summary: 查询有已发布指南的城市
+      security: []
+      responses:
+        '200':
+          description: 城市与指南数量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideCitiesEnvelope' }
+
+  /place-guides/publishers:
+    get:
+      tags: [Content]
+      operationId: listPlaceGuidePublishers
+      summary: 查询有已发布指南的发布者
+      security: []
+      responses:
+        '200':
+          description: 发布者与指南数量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePublishersEnvelope' }
+
+  /place-guides/{guideId}:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    get:
+      tags: [Content]
+      operationId: getPlaceGuide
+      summary: 查询已发布指南及其按顺序排列的地点
+      security: []
+      responses:
+        '200':
+          description: 指南详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /articles/{articleId}:
     parameters:
@@ -391,6 +510,7 @@ paths:
               schema: { $ref: '#/components/schemas/FavoriteEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /favorites/{routeId}:
     parameters:
@@ -457,6 +577,28 @@ paths:
               schema: { $ref: '#/components/schemas/OrderDetailEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /orders/{orderNo}/itinerary:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    get:
+      tags: [Orders]
+      operationId: getMyOrderItinerary
+      summary: 查看本人已报名订单的每日行程
+      description: |
+        仅订单所有者可访问，订单必须为 CONFIRMED、TRAVELLING 或 COMPLETED。
+        返回该订单关联线路的当前每日行程（不是下单时快照）；线路下架不影响访问。
+        不提供酒店公开详情的额外权限，不返回酒店内部联系方式。
+      responses:
+        '200':
+          description: 按天排序的当前行程，没有安排时返回空数组
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /orders/{orderNo}/pay:
     parameters:
       - { $ref: '#/components/parameters/OrderNo' }
@@ -497,6 +639,7 @@ paths:
       tags: [Orders]
       operationId: createRefund
       summary: 为已支付订单申请退款
+      description: LOCAL_SIMULATION 渠道不发生资金交易，返回 409 LOCAL_PAYMENT_REFUND_UNSUPPORTED；退款联调使用支付宝沙箱订单。
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
@@ -537,6 +680,46 @@ paths:
               schema: { $ref: '#/components/schemas/ReviewEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /payments/options:
+    get:
+      tags: [Orders]
+      operationId: getPaymentOptions
+      summary: 查询当前环境支持的支付方式
+      description: 需要登录。只有 local-payment profile 且无 prod/production profile 时 localSimulationEnabled 为 true，默认 false。
+      responses:
+        '200':
+          description: 支付方式配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentOptionsEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payments/local/{orderNo}:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    post:
+      tags: [Orders]
+      operationId: simulateLocalPayment
+      summary: 本地开发环境模拟支付成功
+      description: >-
+        仅 local-payment profile 且无 prod/production profile 时注册，其他环境返回 404。
+        必须登录且是订单所有者。无请求体，金额取数据库订单快照。
+        仅 WAIT_PAY + UNPAID 且未发起支付宝支付的订单可模拟；标记支付渠道 LOCAL_SIMULATION、
+        交易号 LOCAL- 前缀，通过服务层入账并推进 PAID_WAIT_CONFIRM。
+        以订单号为幂等单位，串行/并发重试不重复入账和发通知；已模拟支付的订单返回当前 Payment。
+        不允许代付他人订单（403 ACCESS_DENIED），订单/支付状态不适用返回 409 ORDER_STATE_CONFLICT，
+        金额不一致返回 409 PAYMENT_AMOUNT_MISMATCH。普通支付宝接口不自动降级。
+      responses:
+        '200':
+          description: 已记录的本地模拟支付
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /payments/alipay/notify:
     post:
@@ -648,6 +831,16 @@ paths:
   /consultations/{consultationId}:
     parameters:
       - { $ref: '#/components/parameters/ConsultationId' }
+    delete:
+      tags: [Consultations]
+      operationId: deleteMyConsultation
+      summary: 删除自己的已关闭咨询
+      description: 仅允许删除本人 CLOSED 状态的咨询，在同一事务内永久删除咨询及全部回复。不存在或不属于本人返回 404，未关闭返回 409 CONSULTATION_STATE_CONFLICT。
+      responses:
+        '204': { description: 咨询及回复已删除，无响应体 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
     get:
       tags: [Consultations]
       operationId: getMyConsultation
@@ -685,6 +878,7 @@ paths:
       parameters:
         - name: days
           in: query
+          description: orderTrend 的窗口天数（按自然日补零，序列长度恒等于 days）
           schema: { type: integer, enum: [7, 30], default: 7 }
       responses:
         '200':
@@ -693,6 +887,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DashboardEnvelope' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/routes:
     get:
@@ -847,6 +1042,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ItineraryDayEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Routes]
       operationId: deleteItineraryDay
@@ -910,6 +1106,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ItineraryItemEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Routes]
       operationId: deleteItineraryItem
@@ -947,7 +1144,7 @@ paths:
           description: 团期分页结果
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DeparturePageEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDeparturePageEnvelope' }
     post:
       tags: [Admin Departures]
       operationId: createDeparture
@@ -957,7 +1154,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+            schema: { $ref: '#/components/schemas/DepartureCreateRequest' }
       responses:
         '201':
           description: 团期创建成功
@@ -965,7 +1162,7 @@ paths:
             Location: { $ref: '#/components/headers/Location' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
@@ -982,7 +1179,7 @@ paths:
           description: 团期详情
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Admin Departures]
@@ -993,15 +1190,25 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DepartureUpsertRequest' }
+            schema: { $ref: '#/components/schemas/DepartureUpdateRequest' }
       responses:
         '200':
           description: 修改后的团期
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: |
+            状态冲突。**`DEPARTURE_VERSION_CONFLICT` 优先级最高**：只要提交的 `version`
+            与库内当前版本不一致就直接返回它，不会被后面的名额 / 改挂 / 导游冲突抢先解释 ——
+            版本过期意味着调用方基于旧数据提交，其余冲突的提示对旧表单都是误导；
+            调用方应重新读取团期后再决定是否覆盖。
+            版本一致时才按顺序返回：`DEPARTURE_CAPACITY_CONFLICT`（名额已被占满）、
+            `DEPARTURE_STATE_CONFLICT`（改挂线路受限，或团期在修改期间被并发改动）。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/departures/{departureId}/status:
@@ -1022,8 +1229,9 @@ paths:
           description: 更新后的团期
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DepartureEnvelope' }
+              schema: { $ref: '#/components/schemas/AdminDepartureEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/attractions:
     get:
@@ -1083,6 +1291,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AttractionEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
       operationId: deleteAttraction
@@ -1104,6 +1313,10 @@ paths:
         - name: keyword
           in: query
           schema: { type: string, maxLength: 100 }
+        - name: city
+          in: query
+          description: 按城市精确筛选（与公开景点列表的 `city` 参数同口径，不做模糊匹配）。
+          schema: { type: string, maxLength: 64 }
       responses:
         '200':
           description: 酒店分页结果
@@ -1119,7 +1332,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+            schema: { $ref: '#/components/schemas/HotelCreateRequest' }
       responses:
         '201':
           description: 酒店创建成功
@@ -1133,6 +1346,23 @@ paths:
   /admin/hotels/{hotelId}:
     parameters:
       - { $ref: '#/components/parameters/HotelId' }
+    get:
+      tags: [Admin Resources]
+      operationId: getAdminHotel
+      summary: 获取酒店资料详情
+      description: |
+        按主键读取单条酒店资料（含最新 `version`）。乐观锁冲突（`PUT` 返回 409）之后，
+        调用方必须拿到服务器最新版本才能决定"载入最新数据"或"保留我的修改并覆盖"；
+        用列表端点按名称检索做不到这一点 —— 对方可能已经改名（旧名称检索不到）、
+        同名资料也可能超过一页。
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 酒店资料详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HotelEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [Admin Resources]
       operationId: updateHotel
@@ -1142,7 +1372,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/HotelUpsertRequest' }
+            schema: { $ref: '#/components/schemas/HotelUpdateRequest' }
       responses:
         '200':
           description: 修改后的酒店
@@ -1150,6 +1380,15 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/HotelEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            版本冲突 `HOTEL_VERSION_CONFLICT`：提交的 `version` 与库内当前版本不一致，
+            说明这份资料在本次编辑期间已被他人修改，为避免覆盖对方的改动，本次修改不生效。
+            调用方应重新读取酒店资料（含最新 `version`）后再决定是否覆盖。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Resources]
       operationId: deleteHotel
@@ -1168,6 +1407,12 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/Size' }
+        - name: keyword
+          in: query
+          description: >-
+            可选筛选，匹配导游姓名、电话与简介。实现此前已接受该参数（用 name/phone/intro 做筛选），
+            本次仅把它补进契约并校验长度上限，属向后兼容的补充：不传时行为不变。
+          schema: { type: string, maxLength: 100 }
         - name: status
           in: query
           schema: { $ref: '#/components/schemas/AccountStatus' }
@@ -1230,6 +1475,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/guides/{guideId}/status:
     parameters:
@@ -1251,6 +1497,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/GuideEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/orders:
     get:
@@ -1298,7 +1545,13 @@ paths:
       tags: [Admin Orders]
       operationId: confirmOrder
       summary: 确认已支付订单报名
-      description: 再次检查团期状态、容量和实名信息后执行状态变化。
+      description: >-
+        复核团期状态与容量、订单支付状态、出行人快照数量与实名字段完整性后推进状态，
+        并迁移名额、回填线路有效报名数、给用户发一条「报名已确认」通知。
+        复核不通过返回 409 ORDER_AUDIT_ANOMALY：订单留在 PAID_WAIT_CONFIRM，
+        不占用名额、不写统计，同时留下一条审计记录并向用户发送一条「报名审核异常」站内通知
+        （同一订单 + 同一异常原因只发一条，正文不含姓名与证件号）。
+        同一订单并发确认只有一次生效，其余请求返回 409 ORDER_STATE_CONFLICT。
       x-roles: [STAFF, ADMIN]
       responses:
         '200':
@@ -1306,7 +1559,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrderEnvelope' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            订单不处于待确认状态或已被其他工作人员确认（ORDER_STATE_CONFLICT）、
+            团期不可用（ORDER_STATE_CONFLICT）、名额不足（DEPARTURE_CAPACITY_INSUFFICIENT）、
+            报名审核异常（ORDER_AUDIT_ANOMALY，具体原因见 message）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/refunds:
@@ -1352,6 +1612,8 @@ paths:
       operationId: approveRefund
       summary: 同意退款申请
       description: |
+        LOCAL_SIMULATION 渠道的测试订单返回 409 LOCAL_PAYMENT_REFUND_UNSUPPORTED，不调用支付宝出款。
+
         审核通过时**必须先真正完成出款，再落退款状态**：实现按
         「抢占 APPLYING→PROCESSING → 校验出款配置 → 调支付宝 `alipay.trade.refund`
         → 成功后才释放名额、回退线路有效报名数、把退款单 / 订单 / 支付单落成 `REFUNDED`」
@@ -1392,6 +1654,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RefundEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /admin/refunds/{refundId}/reject:
@@ -1466,6 +1729,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReviewEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/users:
     get:
@@ -1526,6 +1790,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UserEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff:
     get:
@@ -1589,6 +1854,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/staff/{staffId}/status:
     parameters:
@@ -1610,6 +1876,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StaffEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations:
     get:
@@ -1668,6 +1935,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/consultations/{consultationId}/close:
     parameters:
@@ -1684,6 +1952,97 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ConsultationEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/place-guides:
+    get:
+      tags: [Admin Content]
+      operationId: listAdminPlaceGuides
+      summary: 分页查询全部地点指南
+      x-roles: [STAFF, ADMIN]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: 指南分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuidePageEnvelope' }
+    post:
+      tags: [Admin Content]
+      operationId: createPlaceGuide
+      summary: 创建至少包含两个景点的指南草稿
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideUpsertRequest' }
+      responses:
+        '201':
+          description: 已创建草稿
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/place-guides/{guideId}:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    get:
+      tags: [Admin Content]
+      operationId: getAdminPlaceGuide
+      summary: 查询指南草稿或已发布指南
+      x-roles: [STAFF, ADMIN]
+      responses:
+        '200':
+          description: 指南详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Admin Content]
+      operationId: updatePlaceGuide
+      summary: 替换指南内容和地点
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideUpsertRequest' }
+      responses:
+        '200':
+          description: 更新后的指南
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /admin/place-guides/{guideId}/status:
+    parameters:
+      - { $ref: '#/components/parameters/GuideId' }
+    patch:
+      tags: [Admin Content]
+      operationId: updatePlaceGuideStatus
+      summary: 发布或下线指南
+      x-roles: [STAFF, ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlaceGuideStatusRequest' }
+      responses:
+        '200':
+          description: 更新后的指南
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlaceGuideEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/articles:
     get:
@@ -1755,6 +2114,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Admin Content]
       operationId: deleteArticle
@@ -1784,6 +2144,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ArticleEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /admin/logs:
     get:
@@ -1833,6 +2194,10 @@ paths:
         - { $ref: '#/components/parameters/Size' }
         - name: scope
           in: query
+          description: >-
+            筛选本人在各阶段的团期。UPCOMING=尚未出发（排除草稿、行程中、已完成、已取消，
+            且出发日期不早于当天，与工作台 upcoming 一致；其结果恰好等于可以「开始行程」的团期）；
+            CURRENT=行程中；HISTORY=已完成。
           schema: { type: string, enum: [UPCOMING, CURRENT, HISTORY] }
       responses:
         '200':
@@ -2060,6 +2425,16 @@ components:
       type: string
       pattern: '^(0|[1-9][0-9]*)\.[0-9]{2}$'
       example: '2999.00'
+    # 查询参数专用的价格规则，与响应里的金额（Money）刻意分开。
+    PriceFilter:
+      type: string
+      description: >-
+        价格筛选（元）。只接受 ASCII 半角数字与最多两位小数（不接受全角数字 `１２３`、科学计数法 `1e3`、
+        带符号 `+100`）；不满足 pattern 的值一律按 422 `VALIDATION_ERROR` 拒绝。与 Money 的四处差异
+        都是为了兼容既有分享链接与浏览器数字输入框的原始取值：① 允许省略小数部分，`100` 等价于 `100.00`；
+        ② 整数部分不限位数；③ 允许前导零（`0100`，`<input type="number">` 会原样给出）；④ 空串等价于未提供。
+      pattern: '^$|^[0-9]+(\.[0-9]{1,2})?$'
+      example: '2999.00'
     Date:
       type: string
       format: date
@@ -2078,6 +2453,41 @@ components:
       minimum: -90
       maximum: 90
       example: 24.8800950
+    ClockTime:
+      type: string
+      description: >-
+        一天中的时刻，24 小时制 `HH:mm`（`00:00`～`23:59`）。不接受 `24:00`、`9:00` 这类写法，
+        也不接受秒或时区后缀：它是酒店"通常几点可以入住 / 几点前退房"的说明文字，
+        不是时间戳，因此不做时区换算。
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      example: '14:00'
+    ImageUrl:
+      type: string
+      description: >-
+        图片地址，必须是 `http` / `https` 开头的绝对 URL（最多 500 字符）。第一版由后台填写外部
+        图片地址，项目不提供图片上传服务；删除图片只删除记录，不会删除外部图片文件。
+      maxLength: 500
+      pattern: '^https?://\S+$'
+      example: 'https://example.com/hotel-1.jpg'
+    CoordinatePairRule:
+      description: |
+        经纬度必须成对提供：只给其中一个（另一个缺失或为 `null`，两者在这里等价）时按
+        422 `VALIDATION_ERROR` 拒绝 —— 用户端地图只在经纬度都非空时落点，只填一个的坐标
+        会被静默丢弃，运营以为录入了位置、地图上却什么都没有。两个都不提供（都缺失或都为
+        `null`）是合法的，表示未录入坐标。
+      allOf:
+        - if:
+            properties: { longitude: { type: number } }
+            required: [longitude]
+          then:
+            properties: { latitude: { type: number } }
+            required: [latitude]
+        - if:
+            properties: { latitude: { type: number } }
+            required: [latitude]
+          then:
+            properties: { longitude: { type: number } }
+            required: [longitude]
     AccountStatus:
       type: string
       enum: [ACTIVE, DISABLED]
@@ -2122,6 +2532,45 @@ components:
       type: string
       enum: [DRAFT, PUBLISHED, OFFLINE]
       example: PUBLISHED
+    AccommodationType:
+      type: string
+      description: |
+        当天行程的住宿安排类型：
+
+        - `HOTEL`：已指定具体酒店，`hotelId` 非空；
+        - `STANDARD`：只确定了住宿标准（例如「市区舒适型酒店」），不指定酒店，`hotelId` 必须为空；
+        - `NONE`：当天不含住宿；
+        - `PENDING`：尚未确认住宿安排。
+
+        `hotelId` 为空**不能**被解释成 `NONE`：那可能是 `STANDARD` 或 `PENDING`。
+      enum: [HOTEL, STANDARD, NONE, PENDING]
+      example: HOTEL
+    HotelFacility:
+      type: string
+      description: |
+        酒店设施标签的固定枚举（用户端按此渲染设施图标与名称，未知取值无法展示）：
+
+        - `WIFI`：Wi-Fi
+        - `PARKING`：停车场
+        - `RESTAURANT`：餐厅
+        - `BREAKFAST_SERVICE`：酒店提供早餐服务（**与当天行程的 `breakfastIncluded` 无关**，
+          不能据此推断本线路含早餐，反之亦然）
+        - `AIR_CONDITIONING`：空调
+        - `FRONT_DESK_24H`：24 小时前台
+        - `LUGGAGE_STORAGE`：行李寄存
+        - `ELEVATOR`：电梯
+        - `LAUNDRY`：洗衣服务
+        - `GYM`：健身房
+        - `SWIMMING_POOL`：游泳池
+        - `AIRPORT_SHUTTLE`：接送机
+        - `NON_SMOKING_ROOM`：无烟房
+        - `ACCESSIBLE_FACILITIES`：无障碍设施
+
+        未收录的设施不要用自由文本塞进这个字段：它会被按枚举校验拒收（422）。
+      enum: [WIFI, PARKING, RESTAURANT, BREAKFAST_SERVICE, AIR_CONDITIONING, FRONT_DESK_24H,
+             LUGGAGE_STORAGE, ELEVATOR, LAUNDRY, GYM, SWIMMING_POOL, AIRPORT_SHUTTLE,
+             NON_SMOKING_ROOM, ACCESSIBLE_FACILITIES]
+      example: WIFI
     Gender:
       type: string
       enum: [MALE, FEMALE, OTHER]
@@ -2190,7 +2639,7 @@ components:
       required: [username, password]
       properties:
         username: { type: string, minLength: 3, maxLength: 32, example: demo_user }
-        password: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422', example: DemoPass123! }
+        password: { type: string, minLength: 1, maxLength: 72, format: password, description: '登录口令，只做哈希匹配：不设 8 字符下限（历史口令按 UTF-16 码元口径创建，可能不足 8 个字符），所有不匹配与不足一律 401 AUTHENTICATION_REQUIRED（登录场景不暴露"该账号存在、只是口令长度不对"）。超过 72 UTF-8 字节时按 422 拒绝，见 docs/API.md §4.2', example: DemoPass123! }
     RegisterRequest:
       type: object
       additionalProperties: false
@@ -2216,8 +2665,8 @@ components:
       additionalProperties: false
       required: [currentPassword, newPassword]
       properties:
-        currentPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
-        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '密码 8-72 字符，且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
+        currentPassword: { type: string, minLength: 1, maxLength: 72, format: password, description: '当前口令，只做哈希匹配：不套用 8 字符下限（历史口令按 UTF-16 码元口径创建，例如 4 个 emoji 只有 4 个字符却有 8 个码元），仍需非空且 UTF-8 编码不超过 72 字节；不匹配返回 422 VALIDATION_ERROR（不是 401，避免前端把"打错原密码"当成登录失效）。见 docs/API.md §4.2' }
+        newPassword: { type: string, minLength: 8, maxLength: 72, format: password, description: '新口令，套用完整设置规则：8-72 字符（按 Unicode 码点计，与后端 @CodePointLength 同口径），且 UTF-8 编码不超过 72 字节（中文/emoji 每字符 3-4 字节），超限返回 422' }
     User:
       type: object
       additionalProperties: false
@@ -2294,7 +2743,15 @@ components:
         availableSeats: { type: [integer, 'null'], minimum: 0, example: 18 }
         ratingAvg: { type: string, pattern: '^[0-5]\.[0-9]{2}$', example: '4.80' }
         ratingCount: { type: integer, minimum: 0, example: 26 }
-        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        validBookingCount:
+          type: integer
+          minimum: 0
+          description: >-
+            该线路「有效报名」的**订单条数**：已确认（含出行中 / 已完成），或退款申请中但由已确认发起的
+            订单（退款完成才回退）。热门线路（GET /home、GET /admin/dashboard 的 popularRoutes）即按此
+            值实时聚合 travel_order 排行。注意与 DestinationStatistic.validBookingCount（**游客人数**）
+            同名不同度量，展示时单位应为「单」而不是「人」。
+          example: 132
         status: { $ref: '#/components/schemas/RouteStatus' }
         favorite: { type: boolean, example: false }
     Route:
@@ -2355,9 +2812,49 @@ components:
         status: { $ref: '#/components/schemas/DepartureStatus' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
-    DepartureUpsertRequest:
+    AdminDeparture:
       type: object
       additionalProperties: false
+      description: |
+        后台团期管理视图 = 契约 `Departure` 的全部字段 + 乐观锁版本号 `version`。
+        `version` 只对会执行 `PUT /admin/departures/{departureId}` 的后台编辑器有意义，
+        因此不出现在公开线路详情、导游端和订单详情共用的 `Departure` 里 ——
+        那些场景既不会提交修改，也没有可用的版本语义。
+      required: [id, routeId, startDate, endDate, adultPrice, childPrice, maxPeople, reservedPeople, confirmedPeople, availableSeats, status, version, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: [string, 'null'], example: 昆明·大理·丽江 6 日跟团游 }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1, example: 30 }
+        reservedPeople: { type: integer, minimum: 0, example: 4 }
+        confirmedPeople: { type: integer, minimum: 0, example: 8 }
+        availableSeats: { type: integer, minimum: 0, example: 18 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        guideName: { type: [string, 'null'], example: 李导 }
+        status: { $ref: '#/components/schemas/DepartureStatus' }
+        version:
+          type: integer
+          minimum: 0
+          description: |
+            乐观锁版本号，每次成功修改（`PUT /admin/departures/{departureId}`）递增 1。
+            修改请求必须回传读取时的版本；版本不一致说明团期已被他人修改，接口返回
+            `409 DEPARTURE_VERSION_CONFLICT`，调用方应重新读取后再决定是否覆盖。
+            名额并发仍由数据库条件更新保证，版本号不能替代它。
+          example: 3
+        createdAt: { $ref: '#/components/schemas/DateTime' }
+        updatedAt: { $ref: '#/components/schemas/DateTime' }
+    DepartureCreateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        创建团期。**不含 `version`**：新建团期由服务端从 0 起算，客户端不参与版本决定。
       required: [routeId, startDate, endDate, adultPrice, childPrice, maxPeople]
       properties:
         routeId: { $ref: '#/components/schemas/Id' }
@@ -2370,6 +2867,30 @@ components:
           anyOf:
             - { $ref: '#/components/schemas/Id' }
             - { type: 'null' }
+    DepartureUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        修改团期。字段与 `DepartureCreateRequest` 相同，另需回传读取时的 `version`（乐观锁）。
+        `version` 不一致返回 `409 DEPARTURE_VERSION_CONFLICT`；名额校验仍由数据库条件更新执行，
+        版本号只负责发现"基于过期数据提交"，不替代名额校验。
+      required: [routeId, startDate, endDate, adultPrice, childPrice, maxPeople, version]
+      properties:
+        routeId: { $ref: '#/components/schemas/Id' }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        maxPeople: { type: integer, minimum: 1 }
+        guideId:
+          anyOf:
+            - { $ref: '#/components/schemas/Id' }
+            - { type: 'null' }
+        version:
+          type: integer
+          minimum: 0
+          description: 读取团期时拿到的 `version`；与库内当前值不一致即视为冲突。
+          example: 3
     DepartureStatusUpdateRequest:
       type: object
       additionalProperties: false
@@ -2402,7 +2923,31 @@ components:
     ItineraryDay:
       type: object
       additionalProperties: false
-      required: [id, routeId, dayNumber, title, items]
+      required: [id, routeId, dayNumber, title, accommodationType, items]
+      description: |
+        每日行程。`hotelId` / `hotelName` 是**当天安排的住宿**（旧字段，保留不动）；
+        `accommodationType` 起声明"当天到底怎么安排住宿"，两者必须一致：
+
+        - `HOTEL`：`hotelId` 非空，`hotel` 摘要在该酒店存在且启用时非空；
+        - `STANDARD`：`hotelId` / `hotelName` / `hotel` 均为 `null`，住宿标准写在
+          `accommodationStandard`；
+        - `NONE`：当天不含住宿，`hotelId` / `hotelName` / `hotel` 均为 `null`；
+        - `PENDING`：待确认，`hotelId` / `hotelName` / `hotel` 均为 `null`。
+
+        **`hotelId` 为空不等于"当天不含住宿"**：没有关联酒店可能是"只确定了住宿标准"（`STANDARD`）
+        或"还没确认"（`PENDING`）。只有 `accommodationType = NONE` 才表示不含住宿，
+        调用方不得用 `hotelId == null` 推断 `NONE`。
+
+        `hotelName` 是行程自身的事实，酒店之后被停用时它**不会**被改写（历史行程不追溯），
+        但 `hotel` 摘要与 `GET /routes/{routeId}/hotels/{hotelId}` 都只对启用中的酒店返回，
+        用户端因此不会给"已停止合作"的酒店提供详情入口。
+
+        `breakfastIncluded` 只表示**本线路当天的住宿是否含早餐**；酒店自身是否有早餐服务
+        由 `Hotel.facilities` 的 `BREAKFAST_SERVICE` 表达，两者互不推断。
+
+        `accommodationStandard` / `roomType` / `breakfastIncluded` 只要已填写就会返回，
+        与 `accommodationType` 无关（`PENDING` 下也常常已经确定了标准与房型）；
+        只有 `NONE`（当天不含住宿）时它们才没有意义。
       properties:
         id: { $ref: '#/components/schemas/Id' }
         routeId: { $ref: '#/components/schemas/Id' }
@@ -2411,11 +2956,36 @@ components:
         description: { type: [string, 'null'], example: 抵达昆明并入住酒店。 }
         transportation: { type: [string, 'null'], example: 飞机、旅游巴士 }
         meals: { type: [string, 'null'], example: 晚餐 }
+        accommodationType: { $ref: '#/components/schemas/AccommodationType' }
+        accommodationStandard:
+          type: [string, 'null']
+          maxLength: 500
+          description: 住宿标准的文字说明，例如「市区舒适型酒店」。有可靠依据时才写星级。
+          example: 市区舒适型酒店
+        roomType:
+          type: [string, 'null']
+          maxLength: 100
+          description: 本线路安排的房型，例如「双床房」。
+          example: 双床房
+        breakfastIncluded:
+          type: [boolean, 'null']
+          description: 本线路当天住宿是否含早餐。`true` 含、`false` 不含、`null` 尚未说明。
+        accommodationNote:
+          type: [string, 'null']
+          maxLength: 1000
+          description: 拼房、入住说明等住宿补充信息。
         hotelId:
           anyOf:
             - { $ref: '#/components/schemas/Id' }
             - { type: 'null' }
         hotelName: { type: [string, 'null'], example: 昆明测试酒店 }
+        hotel:
+          anyOf:
+            - { $ref: '#/components/schemas/HotelSummary' }
+            - { type: 'null' }
+          description: |
+            当天的酒店摘要（图片与完整简介按需调用 `GET /routes/{routeId}/hotels/{hotelId}`）。
+            `hotelId` 为空、酒店已被删除或已停用时为 `null`。
         items:
           type: array
           items: { $ref: '#/components/schemas/ItineraryItem' }
@@ -2423,20 +2993,64 @@ components:
       type: object
       additionalProperties: false
       required: [dayNumber, title]
+      description: |
+        新增 / 修改每日行程。请求体是**整体替换**：未提交的可空字段（`description`、
+        `transportation`、`meals`、`hotelId`、`accommodationStandard`、`roomType`、
+        `breakfastIncluded`、`accommodationNote`）会被清成 `null`，`false` 与"未提交"
+        因此是两种不同的结果（`breakfastIncluded` 必须显式提交）。
+
+        **住宿安排的类型与关联规则**（违反时返回 422 `VALIDATION_ERROR`）：
+
+        1. `HOTEL`：必须提供 `hotelId`；**新指向**的酒店必须存在且启用（`ACTIVE`）——
+           停用酒店不能再被安排进新行程。修改（`PUT`）时把该天**当前已有的** `hotelId` 原样提交回来
+           不算重新安排，即使这家酒店后来被停用了也允许通过：否则某天的酒店一旦停用，
+           这一天就再也改不动了（连标题、餐食都保存不了），只能先把酒店换掉。
+           指向一家**不存在**的酒店在任何情况下都按 422 拒绝。
+        2. `STANDARD`：必须提供非空的 `accommodationStandard`，且 `hotelId` 必须为空。
+        3. `NONE` / `PENDING`：`hotelId` 必须为空。
+        4. 未提交 `accommodationType` 时按关联酒店推断：`hotelId` 非空 → `HOTEL`，
+           `hotelId` 为空 → `PENDING`。这与存量数据的迁移规则一致（已有酒店的设为 `HOTEL`，
+           未关联酒店的设为 `PENDING`），**任何情况下都不会推断成 `NONE`** ——
+           "没填酒店"不等于"不含住宿"。
+
+        `accommodationStandard` / `roomType` / `breakfastIncluded` 与类型的关系：
+        `PENDING` 只表示"具体住哪一家还没定"，**标准、房型与早餐可能已经确定**，
+        因此这些字段在 `HOTEL` / `STANDARD` / `PENDING` 下都可以填写（例如"市区舒适型酒店、
+        双床房、含早餐，具体酒店待定"）。只有 `accommodationType = NONE`（当天不含住宿）时它们
+        不再有意义，调用方应一并清空；`accommodationNote` 在四种类型下都可以填写
+        （例如"当晚夜车返程，不含住宿"）。
+        编辑其它字段时不得自动清空 PENDING 下已填写的住宿资料。
       properties:
         dayNumber: { type: integer, minimum: 1 }
         title: { type: string, minLength: 1, maxLength: 200 }
         description: { type: [string, 'null'], maxLength: 10000 }
         transportation: { type: [string, 'null'], maxLength: 255 }
         meals: { type: [string, 'null'], maxLength: 255 }
+        accommodationType:
+          allOf:
+            - { $ref: '#/components/schemas/AccommodationType' }
+          description: 未提交时按上述第 4 条推断，不会推断成 `NONE`。
+        accommodationStandard: { type: [string, 'null'], maxLength: 500 }
+        roomType: { type: [string, 'null'], maxLength: 100 }
+        breakfastIncluded:
+          type: [boolean, 'null']
+          description: 本线路当天住宿是否含早餐，与酒店的早餐服务是两回事。
+        accommodationNote: { type: [string, 'null'], maxLength: 1000 }
         hotelId:
           anyOf:
             - { $ref: '#/components/schemas/Id' }
             - { type: 'null' }
+          description: 当天安排的酒店（可选）。必须是已存在且启用（ACTIVE）的酒店：停用（DISABLED）的酒店不能再被安排进新行程，按 docs/API.md 第 7 节以 422 拒绝；已引用它的行程不受影响，酒店停用后仍可修改该天的其它字段。
     ItineraryItemRequest:
       type: object
       additionalProperties: false
       required: [sortNo, itemType, name]
+      description: |
+        经纬度必须成对（见 `CoordinatePairRule`）。两个都不提供坐标时，行程项会整对继承
+        所关联景点的坐标（见 `AdminRouteService`）；景点坐标之后被修改不会回填已存在的行程项，
+        需要重新保存该行程项才会继承新坐标。
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         sortNo: { type: integer, minimum: 1 }
         itemType: { type: string, enum: [ATTRACTION, TRANSPORT, MEAL, ACTIVITY, OTHER] }
@@ -2570,10 +3184,38 @@ components:
         status: { $ref: '#/components/schemas/AccountStatus' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
+    AttractionTrip:
+      type: object
+      additionalProperties: false
+      required: [id, routeId, routeName, departureCity, startDate, endDate, adultPrice, childPrice, availableSeats]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: string }
+        departureCity: { type: string }
+        startDate: { $ref: '#/components/schemas/Date' }
+        endDate: { $ref: '#/components/schemas/Date' }
+        adultPrice: { $ref: '#/components/schemas/Money' }
+        childPrice: { $ref: '#/components/schemas/Money' }
+        availableSeats: { type: integer, minimum: 0 }
+    AttractionDetail:
+      type: object
+      additionalProperties: false
+      required: [attraction, departures]
+      properties:
+        attraction: { $ref: '#/components/schemas/Attraction' }
+        departures:
+          type: array
+          items: { $ref: '#/components/schemas/AttractionTrip' }
     AttractionUpsertRequest:
       type: object
       additionalProperties: false
       required: [name, city, dataSource]
+      description: |
+        经纬度必须成对（见 `CoordinatePairRule`）。两个都不提供表示未录入坐标，
+        此时该景点不会出现在用户端地图上。
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
         city: { type: string, minLength: 1, maxLength: 64 }
@@ -2592,12 +3234,67 @@ components:
     Hotel:
       type: object
       additionalProperties: false
-      required: [id, name, status, createdAt, updatedAt]
+      description: |
+        酒店资料（**后台**）。`version` 是乐观锁版本号：修改请求（`PUT /admin/hotels/{hotelId}`）
+        必须回传读取时拿到的值，版本不一致说明资料已被他人修改，接口返回 `409 HOTEL_VERSION_CONFLICT`。
+        `Hotel` 只服务于后台酒店资料端点，因此版本号直接列在这里（景点 / 团期等同时被公开页面
+        复用的 schema 不这么做）；用户端看到的是 `HotelSummary` 与 `PublicHotelDetail`。
+
+        `city` 是酒店的展示城市，同时是后台列表的筛选维度。**存量数据**由迁移脚本补成空串
+        （表示尚未录入城市），不编造城市名。
+      required: [id, name, city, status, version, images, facilities, createdAt, updatedAt]
       properties:
         id: { $ref: '#/components/schemas/Id' }
         name: { type: string, example: 昆明测试酒店 }
+        city:
+          type: string
+          maxLength: 64
+          description: |
+            酒店的展示城市，也是后台列表的筛选维度。**存量数据**由迁移脚本补成空串
+            （表示尚未录入城市），不编造城市名；写入（建档 / 修改）时该字段必填且不能为空，
+            因此后台打开一条存量资料并保存时，需要先把城市补录进去。
+          example: 杭州
         address: { type: [string, 'null'], example: 云南省昆明市测试路 1 号 }
-        contactPhone: { type: [string, 'null'], example: '087112345678' }
+        contactPhone:
+          type: [string, 'null']
+          description: 内部对接人 / 前台电话，只用于后台；公开端点（`GET /routes/{routeId}/hotels/{hotelId}`）不返回该字段。
+          example: '087112345678'
+        coverUrl:
+          anyOf:
+            - { $ref: '#/components/schemas/ImageUrl' }
+            - { type: 'null' }
+          description: |
+            行程中酒店卡片的封面图 URL。为 `null` 时用户端显示占位图；注意行程卡片拿到的是
+            `HotelSummary`（不含 `images`），因此**不会**回退到第一张详情图片 ——
+            回退只发生在详情页（`PublicHotelDetail`，那里同时返回 `images`）。
+          example: 'https://example.com/hotel-cover.jpg'
+        images:
+          type: array
+          description: 酒店详情图片，按 `sortOrder` 升序返回（`sortOrder` 相同时按插入顺序）。无图片时返回 `[]`。
+          items: { $ref: '#/components/schemas/HotelImage' }
+        starRating:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - { type: 'null' }
+          description: |
+            **官方星级**（1～5）。只填写有可靠依据的星级；没有依据时返回 `null`，
+            不得用网站评分、"几钻"或用户评价得分代替。
+        facilities:
+          type: array
+          description: 设施标签，取值见 `HotelFacility`。未录入时返回 `[]`。
+          items: { $ref: '#/components/schemas/HotelFacility' }
+        checkInTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+          description: 酒店通常允许入住的时间；不清楚时返回 `null`。
+        checkOutTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+          description: 酒店通常要求退房的时间；不清楚时返回 `null`。
         longitude:
           anyOf:
             - { $ref: '#/components/schemas/Longitude' }
@@ -2606,19 +3303,66 @@ components:
           anyOf:
             - { $ref: '#/components/schemas/Latitude' }
             - { type: 'null' }
-        intro: { type: [string, 'null'], example: 仅用于课程演示的酒店资料。 }
+        intro: { type: [string, 'null'], maxLength: 10000, example: 仅用于课程演示的酒店资料。 }
         dataSource: { type: [string, 'null'], example: 团队测试数据 }
         status: { $ref: '#/components/schemas/AccountStatus' }
+        version:
+          type: integer
+          minimum: 0
+          description: |
+            乐观锁版本号，新建时为 0，每次成功修改（`PUT /admin/hotels/{hotelId}`）递增 1。
+            修改请求必须回传读取时的版本；不一致时返回 `409 HOTEL_VERSION_CONFLICT`，
+            调用方应重新读取资料后再决定是否覆盖。
+          example: 3
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
-    HotelUpsertRequest:
+    HotelCreateRequest:
       type: object
       additionalProperties: false
-      required: [name, dataSource]
+      description: |
+        创建酒店资料。**不含 `version`**：新建由服务端从 0 起算，客户端不参与版本决定，
+        提交该字段会被严格反序列化拒绝（400）。经纬度必须成对（见 `CoordinatePairRule`）。
+
+        `images` 是整份资料的一部分：创建、修改都按**整体替换**处理，最多 10 张，
+        每张的 `url` 必须是 http/https 地址。删除图片只删除这里的图片记录，
+        不会去删除图片文件本身（第一版由后台填写外部图片 URL，项目不提供图片上传服务）。
+      required: [name, city, dataSource]
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
       properties:
         name: { type: string, minLength: 1, maxLength: 128 }
+        city: { type: string, minLength: 1, maxLength: 64 }
         address: { type: [string, 'null'], maxLength: 255 }
         contactPhone: { type: [string, 'null'], maxLength: 20 }
+        coverUrl:
+          anyOf:
+            - { $ref: '#/components/schemas/ImageUrl' }
+            - { type: 'null' }
+        images:
+          type: array
+          maxItems: 10
+          description: 酒店详情图片。省略或传 `[]` 表示没有图片。
+          items: { $ref: '#/components/schemas/HotelImageUpsert' }
+        starRating:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - { type: 'null' }
+          description: 官方星级，没有可靠依据时传 `null`，不得用网站评分或"几钻"代替。
+        facilities:
+          type: array
+          uniqueItems: true
+          description: 设施标签，取值见 `HotelFacility`；省略或传 `[]` 表示未录入。
+          items: { $ref: '#/components/schemas/HotelFacility' }
+        checkInTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+        checkOutTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
         longitude:
           anyOf:
             - { $ref: '#/components/schemas/Longitude' }
@@ -2629,7 +3373,317 @@ components:
             - { type: 'null' }
         intro: { type: [string, 'null'], maxLength: 10000 }
         dataSource: { type: string, minLength: 1, maxLength: 500 }
-        status: { $ref: '#/components/schemas/AccountStatus' }
+        status:
+          allOf:
+            - { $ref: '#/components/schemas/AccountStatus' }
+          description: |
+            未提交时按 `ACTIVE` 建档（与库内 `status TINYINT NOT NULL DEFAULT 1` 一致）。
+    HotelUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        修改酒店资料。字段与 `HotelCreateRequest` 相同，另需回传读取时的 `version`（乐观锁）：
+        后端执行 `UPDATE ... WHERE id = ? AND version = ?`，成功后版本加一；
+        版本不一致说明资料已被他人修改，返回 `409 HOTEL_VERSION_CONFLICT`，本次修改不生效。
+        缺 `version` 按字段语义校验失败处理（422），不会静默当成 0。
+        经纬度必须成对（见 `CoordinatePairRule`）。
+
+        **整体替换与清空规则**（与 `PUT /admin/itinerary-days/{dayId}` 同口径）：
+        `address`、`contactPhone`、`coverUrl`、`starRating`、`checkInTime`、`checkOutTime`、
+        `longitude`、`latitude`、`intro` 未提交或提交 `null` 都会被清成 `null`；
+        `images` 未提交或提交 `[]` 会**清空该酒店的全部图片记录**；`facilities` 同理清空。
+        这样"删掉一段旧资料"才有明确写法 —— 提交 `null` / `[]`，而不是只能靠猜。
+
+        修改的是酒店**基础资料**：历史订单保存的出行人与价格快照不受影响，不会被这次修改覆盖。
+      required: [name, city, dataSource, version]
+      allOf:
+        - { $ref: '#/components/schemas/CoordinatePairRule' }
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        city: { type: string, minLength: 1, maxLength: 64 }
+        address: { type: [string, 'null'], maxLength: 255 }
+        contactPhone: { type: [string, 'null'], maxLength: 20 }
+        coverUrl:
+          anyOf:
+            - { $ref: '#/components/schemas/ImageUrl' }
+            - { type: 'null' }
+        images:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/HotelImageUpsert' }
+        starRating:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - { type: 'null' }
+        facilities:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/HotelFacility' }
+        checkInTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+        checkOutTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'], maxLength: 10000 }
+        dataSource: { type: string, minLength: 1, maxLength: 500 }
+        status:
+          allOf:
+            - { $ref: '#/components/schemas/AccountStatus' }
+          description: |
+            **未提交（或提交 `null`）表示保持库内当前状态**，不会被这次编辑改写 ——
+            否则一次普通的资料编辑就会把别人刚做的停用 / 启用悄悄撤销。
+            注意 `DISABLED` 是用户可见的状态：停用后该酒店在每日行程里的摘要
+            （`ItineraryDay.hotel`）会变成 `null`，`GET /routes/{routeId}/hotels/{hotelId}`
+            也会返回 404，因此不要在只改文案 / 电话时顺带提交状态。
+        version:
+          type: integer
+          minimum: 0
+          description: 读取酒店资料时拿到的 `version`；与库内当前值不一致即视为冲突。
+          example: 3
+    HotelImageUpsert:
+      type: object
+      additionalProperties: false
+      description: |
+        提交的酒店图片。`sortOrder` 决定展示顺序（升序，最小 1）；同一酒店内允许重复，
+        顺序相同时按提交顺序排列。第一版只登记外部图片 URL，项目不提供图片上传服务，
+        删除图片记录也不会去删除外部图片文件。
+      required: [url, sortOrder]
+      properties:
+        url: { $ref: '#/components/schemas/ImageUrl' }
+        alt:
+          type: [string, 'null']
+          maxLength: 200
+          description: 图片替代文本，供无障碍读屏与图片加载失败时展示。
+        sortOrder: { type: integer, minimum: 1, example: 1 }
+    HotelImage:
+      type: object
+      additionalProperties: false
+      description: 酒店图片（响应）。按 `sortOrder` 升序返回。
+      required: [url, sortOrder]
+      properties:
+        url: { $ref: '#/components/schemas/ImageUrl' }
+        alt: { type: [string, 'null'], maxLength: 200 }
+        sortOrder: { type: integer, minimum: 1, example: 1 }
+    HotelSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        内嵌在每日行程里的酒店**摘要**：只带用户端酒店卡片需要的字段。
+        图片、完整简介、设施与坐标通过 `GET /routes/{routeId}/hotels/{hotelId}` 按需获取，
+        避免一次线路详情请求为每一天都拉取酒店的完整资料。
+      required: [id, name, city, address, coverUrl, starRating]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 示例酒店 }
+        city: { type: string, maxLength: 64, example: 杭州 }
+        address: { type: [string, 'null'], example: 酒店地址 }
+        coverUrl:
+          anyOf:
+            - { $ref: '#/components/schemas/ImageUrl' }
+            - { type: 'null' }
+          description: 行程卡片封面；为 `null` 时显示占位图（摘要不含 `images`，行程卡片不加载详情图片）。
+        starRating:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - { type: 'null' }
+    PublicHotelDetail:
+      type: object
+      additionalProperties: false
+      description: |
+        用户端酒店详情（`GET /routes/{routeId}/hotels/{hotelId}`）。刻意与后台 `Hotel` 分开：
+        **不含** `version` / `status` / `createdAt` / `updatedAt` 与内部联系方式，
+        避免把后台维护字段顺带公开出去。
+
+        不含任何评分、评价数量或销量字段：本项目没有酒店评价体系，
+        官方星级（`starRating`）与网站评分、"几钻"不是一回事。
+      required: [id, name, city, images, facilities, address, coverUrl, starRating, intro, checkInTime, checkOutTime, longitude, latitude, dataSource]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, example: 示例酒店 }
+        city: { type: string, maxLength: 64, example: 杭州 }
+        address: { type: [string, 'null'], example: 酒店地址 }
+        coverUrl:
+          anyOf:
+            - { $ref: '#/components/schemas/ImageUrl' }
+            - { type: 'null' }
+          description: 详情页封面；为 `null` 时可按 `images[0]` 回退，仍为空则显示占位图。
+        images:
+          type: array
+          description: 详情图片，按 `sortOrder` 升序；无图片时返回 `[]`。
+          items: { $ref: '#/components/schemas/HotelImage' }
+        starRating:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 5
+            - { type: 'null' }
+          description: 官方星级；资料未提供时返回 `null`，不用其它评分凑数。
+        intro: { type: [string, 'null'], maxLength: 10000 }
+        facilities:
+          type: array
+          description: 设施标签；未录入时返回 `[]`。
+          items: { $ref: '#/components/schemas/HotelFacility' }
+        checkInTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+        checkOutTime:
+          anyOf:
+            - { $ref: '#/components/schemas/ClockTime' }
+            - { type: 'null' }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+          description: 经度；酒店未录入坐标时为 `null`，前端不得自行编造位置。
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        dataSource:
+          type: [string, 'null']
+          description: 可公开的数据来源说明（后台 `dataSource` 字段，本身就是为了标注资料来源而设）。
+          example: 团队原创测试资料
+    PlaceGuidePlace:
+      type: object
+      additionalProperties: false
+      required: [attractionId, name, city, address, longitude, latitude, intro, note, sortOrder]
+      properties:
+        attractionId: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        city: { type: string }
+        address: { type: [string, 'null'] }
+        longitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Longitude' }
+            - { type: 'null' }
+        latitude:
+          anyOf:
+            - { $ref: '#/components/schemas/Latitude' }
+            - { type: 'null' }
+        intro: { type: [string, 'null'] }
+        note: { type: [string, 'null'] }
+        sortOrder: { type: integer, minimum: 1 }
+    PlaceGuide:
+      type: object
+      additionalProperties: false
+      required: [id, title, summary, city, destination, coverUrl, status, authorId, authorName, publishedAt, places]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        title: { type: string }
+        summary: { type: [string, 'null'] }
+        city: { type: string }
+        destination: { type: [string, 'null'] }
+        coverUrl: { type: [string, 'null'], format: uri }
+        status: { type: string, enum: [DRAFT, PUBLISHED, OFFLINE] }
+        authorId: { $ref: '#/components/schemas/Id' }
+        authorName: { type: string }
+        publishedAt:
+          anyOf:
+            - { $ref: '#/components/schemas/DateTime' }
+            - { type: 'null' }
+        places:
+          type: array
+          description: 列表页为空数组，详情页为按 sortOrder 排列的地点
+          items: { $ref: '#/components/schemas/PlaceGuidePlace' }
+    PlaceGuideUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [title, city, places]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 200 }
+        summary: { type: [string, 'null'], maxLength: 500 }
+        city: { type: string, minLength: 1, maxLength: 64 }
+        destination: { type: [string, 'null'], maxLength: 128 }
+        coverUrl: { type: [string, 'null'], format: uri, maxLength: 500 }
+        places:
+          type: array
+          minItems: 2
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [attractionId]
+            properties:
+              attractionId: { $ref: '#/components/schemas/Id' }
+              note: { type: [string, 'null'], maxLength: 500 }
+    PlaceGuideStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [PUBLISHED, OFFLINE] }
+    PlaceGuideCity:
+      type: object
+      additionalProperties: false
+      required: [city, destination, count, coverUrl]
+      properties:
+        city: { type: string }
+        destination: { type: [string, 'null'] }
+        count: { type: integer, minimum: 1 }
+        coverUrl: { type: [string, 'null'], format: uri }
+    PlaceGuidePublisher:
+      type: object
+      additionalProperties: false
+      required: [id, name, count]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        count: { type: integer, minimum: 1 }
+    PlaceGuidePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuide' }
+    PlaceGuideEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlaceGuide' }
+    PlaceGuidePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlaceGuidePage' }
+    PlaceGuideCitiesEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuideCity' }
+    PlaceGuidePublishersEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/PlaceGuidePublisher' }
+
     Article:
       type: object
       additionalProperties: false
@@ -2685,7 +3739,7 @@ components:
       required: [destination, validBookingCount]
       properties:
         destination: { type: string, example: 云南 }
-        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        validBookingCount: { type: integer, minimum: 0, description: 该目的地「有效报名」的游客数量（已确认且未完成退款的订单人数，不是订单条数）, example: 132 }
     HomeData:
       type: object
       additionalProperties: false
@@ -2743,6 +3797,12 @@ components:
         - type: object
           properties:
             data: { $ref: '#/components/schemas/Attraction' }
+    AttractionDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AttractionDetail' }
     AttractionPageEnvelope:
       allOf:
         - { $ref: '#/components/schemas/SuccessEnvelope' }
@@ -2755,6 +3815,12 @@ components:
         - type: object
           properties:
             data: { $ref: '#/components/schemas/Hotel' }
+    PublicHotelDetailEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PublicHotelDetail' }
     HotelPageEnvelope:
       allOf:
         - { $ref: '#/components/schemas/SuccessEnvelope' }
@@ -2961,7 +4027,7 @@ components:
         id: { $ref: '#/components/schemas/Id' }
         paymentNo: { type: string, example: PAY202609070001 }
         orderNo: { type: string, example: TA202609070001 }
-        channel: { type: string, enum: [ALIPAY_SANDBOX] }
+        channel: { type: string, enum: [ALIPAY_SANDBOX, LOCAL_SIMULATION] }
         amount: { $ref: '#/components/schemas/Money' }
         status: { $ref: '#/components/schemas/PaymentStatus' }
         thirdPartyTradeNo: { type: [string, 'null'] }
@@ -2971,6 +4037,23 @@ components:
             - { type: 'null' }
         createdAt: { $ref: '#/components/schemas/DateTime' }
         updatedAt: { $ref: '#/components/schemas/DateTime' }
+    PaymentOptionsEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [localSimulationEnabled]
+              properties:
+                localSimulationEnabled: { type: boolean }
+    PaymentEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Payment' }
     PaymentStart:
       type: object
       additionalProperties: false
@@ -3212,10 +4295,24 @@ components:
         orderCount: { type: integer, minimum: 0, example: 8 }
         participantCount: { type: integer, minimum: 0, example: 15 }
         orderAmount: { $ref: '#/components/schemas/Money' }
+    DepartureEnrollment:
+      type: object
+      additionalProperties: false
+      description: 团期报名情况的一行：尚未出发、仍在销售中的团期及其名额占用。
+      required: [departureId, routeId, routeName, startDate, maxPeople, reservedPeople, confirmedPeople, remainingSeats]
+      properties:
+        departureId: { $ref: '#/components/schemas/Id' }
+        routeId: { $ref: '#/components/schemas/Id' }
+        routeName: { type: string, example: 昆明大理丽江 6 日跟团游 }
+        startDate: { $ref: '#/components/schemas/Date' }
+        maxPeople: { type: integer, minimum: 0, example: 30 }
+        reservedPeople: { type: integer, minimum: 0, description: 已下单待工作人员确认、正在占用名额的人数, example: 2 }
+        confirmedPeople: { type: integer, minimum: 0, description: 已确认报名的人数, example: 18 }
+        remainingSeats: { type: integer, minimum: 0, description: maxPeople 减去 reservedPeople 与 confirmedPeople，下限为 0（不出现负数名额）, example: 10 }
     DashboardData:
       type: object
       additionalProperties: false
-      required: [userCount, publishedRouteCount, openDepartureCount, todayOrderCount, pendingConfirmCount, pendingRefundCount, participantCount, grossOrderAmount, orderTrend, popularRoutes, popularDestinations]
+      required: [userCount, publishedRouteCount, openDepartureCount, todayOrderCount, pendingConfirmCount, pendingRefundCount, participantCount, grossOrderAmount, orderTrend, popularRoutes, popularDestinations, departureEnrollment]
       properties:
         userCount: { type: integer, minimum: 0, example: 128 }
         publishedRouteCount: { type: integer, minimum: 0, example: 12 }
@@ -3234,6 +4331,10 @@ components:
         popularDestinations:
           type: array
           items: { $ref: '#/components/schemas/DestinationStatistic' }
+        departureEnrollment:
+          type: array
+          description: 未来最近 5 个尚未出发且仍在销售（OPEN/FULL）的团期报名情况，按出发日期升序；没有符合条件的团期时为空数组
+          items: { $ref: '#/components/schemas/DepartureEnrollment' }
 
     AccountStatusUpdateRequest:
       type: object
@@ -3375,6 +4476,15 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/Departure' }
+    AdminDeparturePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageFields' }
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AdminDeparture' }
     OperationLogPage:
       allOf:
         - { $ref: '#/components/schemas/PageFields' }
@@ -3427,6 +4537,18 @@ components:
         - type: object
           properties:
             data: { $ref: '#/components/schemas/DeparturePage' }
+    AdminDepartureEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AdminDeparture' }
+    AdminDeparturePageEnvelope:
+      allOf:
+        - { $ref: '#/components/schemas/SuccessEnvelope' }
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AdminDeparturePage' }
     ItineraryDayEnvelope:
       allOf:
         - { $ref: '#/components/schemas/SuccessEnvelope' }

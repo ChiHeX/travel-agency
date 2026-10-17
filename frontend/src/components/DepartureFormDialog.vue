@@ -1,0 +1,665 @@
+<script setup>
+import { computed, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { adminApi } from '@/api/modules'
+
+/**
+ * 团期新增 / 修改表单弹窗（对应契约 POST /admin/departures 与 PUT /admin/departures/{departureId}）。
+ *
+ * 只提交契约 DepartureUpsertRequest 允许的字段：`status`、`reservedPeople`、`confirmedPeople`
+ * 都不在前端提交范围内 —— 新建团期由后端固定为 DRAFT（先上架才能报名），
+ * 名额计数由下单 / 支付 / 退款链路维护。提交这些字段会被后端严格模式直接拒绝（400）。
+ *
+ * 金额按契约 Money 提交十进制字符串（固定 2 位小数）；主键按契约 Id 提交字符串，
+ * 避免 JavaScript 大整数精度丢失。页面校验只用于改善交互，最终由后端裁定。
+ *
+ * 线路 / 导游候选项由本组件分页加载：契约 Size 上限是 100，后端也会把 size 钳到 100，
+ * 固定只取第一页会让第 101 条之后的线路永远选不到。
+ */
+const props = defineProps({
+  modelValue: { type: Boolean, default: false },
+  departure: { type: Object, default: null }
+})
+const emit = defineEmits(['update:modelValue', 'saved'])
+
+/** 契约 Size 的取值上限（后端同样按 100 截断）。 */
+const OPTION_PAGE_SIZE = 100
+
+/** 已占用名额 = 已预留（待支付 / 待确认）+ 已确认，与后端 DepartureView.occupiedSeats 同口径。 */
+const occupiedSeats = computed(() => {
+  const source = props.departure
+  if (!source) return 0
+  return (Number(source.reservedPeople) || 0) + (Number(source.confirmedPeople) || 0)
+})
+
+const submitting = ref(false)
+const submitError = ref('')
+
+/**
+ * 乐观锁状态。
+ *
+ * <p>{@code baseVersion} 是<b>表单当前对应的团期版本</b>，提交修改时用它做乐观锁。
+ * 打开表单时取 {@code props.departure.version}；一旦通过冲突面板重新取回服务端数据
+ * （无论用户选择"载入最新数据"还是"保留我的修改并覆盖"），都必须把基准版本更新为那一份的
+ * 版本 —— 否则用户点了"载入服务器最新数据"之后再保存，提交的仍是旧版本，会再次撞上同一个冲突。</p>
+ */
+const conflictMessage = ref('')
+const conflictLatest = ref(null)
+const conflictLoading = ref(false)
+const baseVersion = ref(null)
+
+/**
+ * 冲突对比覆盖**全部可编辑字段**。
+ *
+ * <p>修改请求（{@link DepartureUpdateRequest}）会提交线路、导游、日期、价格、人数等所有可编辑字段，
+ * 因此对比必须逐项列出它们 —— 只对比日期 / 价格 / 人数的话，
+ * 别人改了线路或导游时，用户会在看不到差异的情况下把它覆盖掉。</p>
+ */
+const EDITABLE_FIELD_LABELS = {
+  routeId: '所属线路',
+  guideId: '带团导游',
+  dates: '日期',
+  prices: '价格',
+  maxPeople: '最大人数'
+}
+
+const routes = ref([])
+const routeTotal = ref(0)
+const routePageNo = ref(0)
+const routesLoading = ref(false)
+
+const guides = ref([])
+const guideTotal = ref(0)
+const guidePageNo = ref(0)
+const guidesLoading = ref(false)
+
+const hasMoreRoutes = computed(() => routes.value.length < routeTotal.value)
+const hasMoreGuides = computed(() => guides.value.length < guideTotal.value)
+
+/**
+ * 服务端最新数据与用户当前填写不一致的可编辑字段。
+ *
+ * <p>逐项比较，包括线路与导游 —— 它们同样在修改请求里提交，漏掉就会造成
+ * "看不到差异却被覆盖"。</p>
+ */
+const conflictDifferences = computed(() => {
+  const latest = conflictLatest.value
+  if (!latest) return []
+  const keys = []
+  if (String(latest.routeId ?? '') !== String(form.routeId ?? '')) keys.push('routeId')
+  if (String(latest.guideId ?? '') !== String(form.guideId ?? '')) keys.push('guideId')
+  if ((latest.startDate || '') !== (form.startDate || '')
+      || (latest.endDate || '') !== (form.endDate || '')) keys.push('dates')
+  if (money(latest.adultPrice) !== money(form.adultPrice)
+      || money(latest.childPrice) !== money(form.childPrice)) keys.push('prices')
+  if (Number(latest.maxPeople) !== Number(form.maxPeople)) keys.push('maxPeople')
+  return keys
+})
+
+const differs = (key) => conflictDifferences.value.includes(key)
+
+/** 表单里选中的线路名；选项列表里找不到时退回显示 id，避免显示空白。 */
+function routeNameOf(routeId) {
+  if (!routeId) return '未选择'
+  const found = routes.value.find((item) => String(item.id) === String(routeId))
+  return found ? found.name : `线路 #${routeId}`
+}
+
+/** 表单里选中的导游名；未分配时明确写出来，而不是留空。 */
+function guideNameOf(guideId) {
+  if (!guideId) return '暂不分配'
+  const found = guides.value.find((item) => String(item.id) === String(guideId))
+  return found ? found.name : `导游 #${guideId}`
+}
+
+const form = reactive({
+  routeId: '',
+  startDate: '',
+  endDate: '',
+  adultPrice: '',
+  childPrice: '',
+  maxPeople: 20,
+  guideId: ''
+})
+
+/** 契约 Money：十进制字符串，固定两位小数。 */
+function money(value) {
+  if (value === null || value === undefined || value === '') return ''
+  const number = Number(value)
+  return Number.isFinite(number) ? number.toFixed(2) : ''
+}
+
+function reset() {
+  const source = props.departure || {}
+  Object.assign(form, {
+    routeId: source.routeId ? String(source.routeId) : '',
+    startDate: source.startDate || '',
+    endDate: source.endDate || '',
+    adultPrice: money(source.adultPrice),
+    childPrice: money(source.childPrice),
+    maxPeople: source.maxPeople || 20,
+    guideId: source.guideId ? String(source.guideId) : ''
+  })
+  submitError.value = ''
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  // 重置表单时一并把基准版本拉回当前这条团期的版本（新建时为 null，创建请求不带 version）。
+  baseVersion.value = source.version ?? null
+}
+
+/** 按 id 去重合并，避免"加载更多"把同一页重复追加进来。 */
+function mergeById(existing, incoming) {
+  const seen = new Set(existing.map((item) => String(item.id)))
+  return [...existing, ...incoming.filter((item) => !seen.has(String(item.id)))]
+}
+
+/**
+ * 加载线路候选项。
+ *
+ * @param {boolean} reset true 回到第一页并替换；false 追加下一页
+ */
+async function loadRoutes(reset) {
+  if (routesLoading.value) return
+  routesLoading.value = true
+  try {
+    const next = reset ? 1 : routePageNo.value + 1
+    const page = await adminApi.routes({ page: next, size: OPTION_PAGE_SIZE })
+    const items = page?.items || []
+    routes.value = reset ? items : mergeById(routes.value, items)
+    routeTotal.value = Number(page?.total ?? routes.value.length)
+    routePageNo.value = next
+  } catch {
+    // 候选项加载失败不阻断表单：编辑时当前线路由 ensureSelectionLoaded 单独取回。
+  } finally {
+    routesLoading.value = false
+  }
+}
+
+/** 加载导游候选项（契约没有 keyword 参数，只能按页追加）。 */
+async function loadGuides(reset) {
+  if (guidesLoading.value) return
+  guidesLoading.value = true
+  try {
+    const next = reset ? 1 : guidePageNo.value + 1
+    const page = await adminApi.guides({ page: next, size: OPTION_PAGE_SIZE })
+    const items = page?.items || []
+    guides.value = reset ? items : mergeById(guides.value, items)
+    guideTotal.value = Number(page?.total ?? guides.value.length)
+    guidePageNo.value = next
+  } catch {
+    // 同 loadRoutes。
+  } finally {
+    guidesLoading.value = false
+  }
+}
+
+/**
+ * 保证当前团期的线路 / 导游出现在候选项里。
+ *
+ * <p>编辑一条挂在"第 150 条线路"上的团期时，它不在第一页候选项里，下拉会显示成空白，
+ * 运营看不到这条团期到底挂在哪个线路 / 导游上。这里按 id 单独取回并置顶。</p>
+ */
+async function ensureSelectionLoaded() {
+  const current = props.departure
+  if (!current) return
+
+  const routeId = current.routeId ? String(current.routeId) : ''
+  if (routeId && !routes.value.some((item) => String(item.id) === routeId)) {
+    try {
+      // 契约 GET /admin/routes/{routeId} 返回 { route, departures, itinerary, ... }。
+      const detail = await adminApi.route(routeId)
+      if (detail?.route) routes.value = [detail.route, ...routes.value]
+    } catch {
+      // 线路已被删除时保持原样：保存仍会提交原 id，由后端判定。
+    }
+  }
+
+  const guideId = current.guideId ? String(current.guideId) : ''
+  if (guideId && !guides.value.some((item) => String(item.id) === guideId)) {
+    try {
+      const guide = await adminApi.guide(guideId)
+      if (guide) guides.value = [guide, ...guides.value]
+    } catch {
+      // 同线路。
+    }
+  }
+}
+
+async function loadOptions() {
+  routePageNo.value = 0
+  guidePageNo.value = 0
+  routes.value = []
+  guides.value = []
+  routeTotal.value = 0
+  guideTotal.value = 0
+  await Promise.all([loadRoutes(true), loadGuides(true)])
+  await ensureSelectionLoaded()
+}
+
+watch(() => [props.modelValue, props.departure], () => {
+  if (props.modelValue) {
+    reset()
+    loadOptions()
+  }
+}, { immediate: true })
+
+function close() {
+  emit('update:modelValue', false)
+}
+
+/**
+ * 页面侧校验：与后端 DepartureUpsertRequest 的约束保持一致（必填、非负、2 位小数、最多 10 位整数）。
+ * 目的是让运营在提交前就看到问题，而不是等接口回一个 422。
+ */
+function validate() {
+  if (!form.routeId) return '请选择所属线路'
+  if (!form.startDate || !form.endDate) return '请填写出发与返程日期'
+  if (form.endDate < form.startDate) return '返程日期不能早于出发日期'
+
+  const prices = [
+    ['成人价格', form.adultPrice],
+    ['儿童价格', form.childPrice]
+  ]
+  for (const [label, raw] of prices) {
+    const text = String(raw).trim()
+    if (!text) return `请填写${label}`
+    if (!/^\d{1,10}(\.\d{1,2})?$/.test(text)) return `${label}应为非负数，最多 10 位整数与 2 位小数`
+  }
+
+  const maxPeople = Number(form.maxPeople)
+  if (!Number.isInteger(maxPeople) || maxPeople < 1) return '最大人数应为大于 0 的整数'
+  // 与后端同一规则：上限不能小于已占用名额。后端也会拦（422），这里提前说明避免白跑一次请求。
+  if (maxPeople < occupiedSeats.value) {
+    return `最大人数不能小于已占用的 ${occupiedSeats.value} 人（已预留 + 已确认），如需缩减请先处理相关订单`
+  }
+  return ''
+}
+
+async function save() {
+  if (submitting.value) return
+  submitError.value = ''
+  const invalid = validate()
+  if (invalid) return ElMessage.warning(invalid)
+
+  // 主键按契约 Id 提交字符串；金额提交固定两位小数的字符串。
+  const editable = {
+    routeId: String(form.routeId),
+    startDate: form.startDate,
+    endDate: form.endDate,
+    adultPrice: money(form.adultPrice),
+    childPrice: money(form.childPrice),
+    maxPeople: Number(form.maxPeople),
+    guideId: form.guideId ? String(form.guideId) : null
+  }
+  // 创建请求（DepartureCreateRequest）不含 version；修改请求（DepartureUpdateRequest）必填，
+  // 用「表单当前对应的版本」提交，与库内不一致即视为基于过期数据提交。
+  const editing = Boolean(props.departure?.id)
+  const payload = editing
+    ? { ...editable, version: baseVersion.value ?? props.departure.version }
+    : editable
+
+  submitting.value = true
+  try {
+    const saved = editing
+      ? await adminApi.updateDeparture(props.departure.id, payload)
+      : await adminApi.createDeparture(payload)
+    ElMessage.success(editing ? '团期已更新' : '团期草稿已创建，请到列表里“开放报名”后才会对外售卖')
+    conflictLatest.value = null
+    emit('saved', saved)
+    close()
+  } catch (cause) {
+    if (editing && cause.status === 409 && cause.code === 'DEPARTURE_VERSION_CONFLICT') {
+      // 乐观锁冲突：保留用户已填写的内容，把服务端最新数据取回来并排展示，
+      // 由用户决定"改用最新数据"还是"保留我的修改并覆盖"，不擅自丢弃任何一方。
+      submitError.value = ''
+      conflictMessage.value = cause.message || '团期已被他人修改'
+      await loadLatestForConflict()
+    } else {
+      // 其余 409（名额 / 状态 / 导游）与 422（字段语义）由后端给出可读 message，就地展示。
+      submitError.value = cause.message || '保存失败，请稍后重试'
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
+/** 拉取服务端最新团期，用于冲突面板的对比展示。 */
+async function loadLatestForConflict() {
+  conflictLoading.value = true
+  try {
+    conflictLatest.value = await adminApi.departure(props.departure.id)
+  } catch {
+    // 取不到最新数据时仍保留提示与用户输入，用户可关闭后重开表单再试。
+    conflictLatest.value = null
+  } finally {
+    conflictLoading.value = false
+  }
+}
+
+/**
+ * 采用服务端最新数据：用最新值覆盖表单，并把基准版本推进到那一份的版本。
+ *
+ * <p>基准版本必须一起更新：表单内容已经等于服务端最新数据，之后再保存应当基于这个版本，
+ * 而不是表单打开时那个已过期的版本。</p>
+ */
+function adoptLatest() {
+  if (!conflictLatest.value) return
+  Object.assign(form, {
+    routeId: conflictLatest.value.routeId ? String(conflictLatest.value.routeId) : '',
+    startDate: conflictLatest.value.startDate || '',
+    endDate: conflictLatest.value.endDate || '',
+    adultPrice: money(conflictLatest.value.adultPrice),
+    childPrice: money(conflictLatest.value.childPrice),
+    maxPeople: conflictLatest.value.maxPeople || 20,
+    guideId: conflictLatest.value.guideId ? String(conflictLatest.value.guideId) : ''
+  })
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
+  conflictMessage.value = ''
+  conflictLatest.value = null
+}
+
+/**
+ * 保留我的修改并覆盖：先取回最新版本作为基准，再重试一次。
+ *
+ * <p>这次的覆盖是用户明确选择的结果：服务端要求提交的版本等于库内当前版本，
+ * 因此必须用刚取回的版本重试，而不是继续用表单打开时的旧版本。</p>
+ */
+async function overwriteLatest() {
+  if (!conflictLatest.value) return
+  baseVersion.value = conflictLatest.value.version ?? baseVersion.value
+  conflictMessage.value = ''
+  conflictLatest.value = null
+  await save()
+}
+</script>
+
+<template>
+  <el-dialog
+    append-to-body
+    class="departure-form-dialog"
+    :model-value="modelValue"
+    :title="departure?.id ? '编辑团期' : '新增团期'"
+    width="min(680px, calc(100vw - 32px))"
+    :close-on-click-modal="!submitting"
+    :show-close="!submitting"
+    @update:model-value="emit('update:modelValue', $event)"
+  >
+    <div class="dialog-form-grid">
+      <p v-if="submitError" class="form-error wide" role="alert">{{ submitError }}</p>
+
+      <!-- 乐观锁冲突：用户填写的内容原样保留，同时把服务端最新数据并排摆出来，由用户决定 -->
+      <div v-if="conflictMessage" class="conflict-panel wide" role="alert">
+        <p class="conflict-title">{{ conflictMessage }}</p>
+        <p class="conflict-note">你填写的内容已保留，没有被丢弃。</p>
+        <el-skeleton v-if="conflictLoading" :rows="3" animated />
+        <template v-else-if="conflictLatest">
+          <!-- 先点明会被覆盖的字段：修改请求会提交全部可编辑字段（含线路与导游），
+               只对比日期 / 价格 / 人数会让用户在看不到差异的情况下覆盖他人的改动。 -->
+          <p v-if="conflictDifferences.length" class="conflict-note conflict-diff">
+            以下字段服务器与你填写的不一致，
+            <strong>{{ conflictDifferences.map((key) => EDITABLE_FIELD_LABELS[key]).join('、') }}</strong>；
+            选择「保留我的修改并覆盖」会用你填写的值覆盖它们。
+          </p>
+          <p v-else class="conflict-note conflict-diff">你填写的各项与服务器当前值一致。</p>
+
+          <dl class="conflict-grid">
+            <div :class="{ 'conflict-row-differs': differs('routeId') }">
+              <dt>所属线路{{ differs('routeId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.routeName || `线路 #${conflictLatest.routeId}` }}</span>
+                <span class="conflict-mine">你填写：{{ routeNameOf(form.routeId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('guideId') }">
+              <dt>带团导游{{ differs('guideId') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.guideName || '未分配' }}</span>
+                <span class="conflict-mine">你填写：{{ guideNameOf(form.guideId) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('dates') }">
+              <dt>日期{{ differs('dates') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.startDate }} ~ {{ conflictLatest.endDate }}</span>
+                <span class="conflict-mine">你填写：{{ form.startDate }} ~ {{ form.endDate }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('prices') }">
+              <dt>价格（成人 / 儿童）{{ differs('prices') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：¥{{ conflictLatest.adultPrice }} / ¥{{ conflictLatest.childPrice }}</span>
+                <span class="conflict-mine">你填写：¥{{ money(form.adultPrice) }} / ¥{{ money(form.childPrice) }}</span>
+              </dd>
+            </div>
+            <div :class="{ 'conflict-row-differs': differs('maxPeople') }">
+              <dt>最大人数{{ differs('maxPeople') ? '（有差异）' : '' }}</dt>
+              <dd>
+                <span class="conflict-server">服务器：{{ conflictLatest.maxPeople }} 人</span>
+                <span class="conflict-mine">你填写：{{ form.maxPeople }} 人</span>
+              </dd>
+            </div>
+          </dl>
+        </template>
+        <p v-else class="conflict-note">暂时取不到服务器最新数据，可关闭后重新打开表单再试。</p>
+        <div class="conflict-actions">
+          <button type="button" class="secondary-button" :disabled="!conflictLatest" @click="adoptLatest">
+            载入服务器最新数据（放弃我的修改）
+          </button>
+          <button type="button" class="primary-button" :disabled="!conflictLatest || submitting" @click="overwriteLatest">
+            保留我的修改并覆盖
+          </button>
+        </div>
+      </div>
+
+      <div class="form-field wide">
+        <label>所属线路 <span class="req">*</span></label>
+        <select v-model="form.routeId">
+          <option value="">请选择线路</option>
+          <option v-for="route in routes" :key="route.id" :value="String(route.id)">
+            {{ route.name }}（{{ route.departureCity }} → {{ route.destination }}）
+          </option>
+        </select>
+        <p class="option-hint">
+          已加载 {{ routes.length }} / 共 {{ routeTotal || routes.length }} 条
+          <button
+            v-if="hasMoreRoutes"
+            type="button"
+            class="option-more"
+            :disabled="routesLoading"
+            @click="loadRoutes(false)"
+          >
+            {{ routesLoading ? '加载中…' : '加载更多' }}
+          </button>
+        </p>
+      </div>
+
+      <div class="form-field">
+        <label>出发日期 <span class="req">*</span></label>
+        <input v-model="form.startDate" type="date" />
+      </div>
+
+      <div class="form-field">
+        <label>返程日期 <span class="req">*</span></label>
+        <input v-model="form.endDate" type="date" />
+      </div>
+
+      <div class="form-field">
+        <label>成人价格 <span class="req">*</span></label>
+        <input v-model="form.adultPrice" inputmode="decimal" placeholder="例如：2999.00" />
+      </div>
+
+      <div class="form-field">
+        <label>儿童价格 <span class="req">*</span></label>
+        <input v-model="form.childPrice" inputmode="decimal" placeholder="例如：1999.00" />
+      </div>
+
+      <div class="form-field">
+        <label>最大人数 <span class="req">*</span></label>
+        <input v-model.number="form.maxPeople" type="number" min="1" />
+        <p v-if="occupiedSeats > 0" class="option-hint">
+          已占用 {{ occupiedSeats }} 人（已预留 + 已确认），上限不能低于该值
+        </p>
+      </div>
+
+      <div class="form-field">
+        <label>带团导游</label>
+        <select v-model="form.guideId">
+          <option value="">暂不分配</option>
+          <option v-for="guide in guides" :key="guide.id" :value="String(guide.id)">{{ guide.name }}</option>
+        </select>
+        <p class="option-hint">
+          已加载 {{ guides.length }} / 共 {{ guideTotal || guides.length }} 条
+          <button
+            v-if="hasMoreGuides"
+            type="button"
+            class="option-more"
+            :disabled="guidesLoading"
+            @click="loadGuides(false)"
+          >
+            {{ guidesLoading ? '加载中…' : '加载更多' }}
+          </button>
+        </p>
+      </div>
+
+      <p class="form-hint wide">
+        新建团期为“草稿”状态，需要在列表中改为“报名中”才会对用户开放报名。
+        同一导游在同一时间范围内不允许带两个团（后端返回 409）；只有草稿状态的团期可以改挂线路；
+        已完成 / 已取消的团期不能再改回其它状态，已经出发的团期也不能再开放报名。
+      </p>
+    </div>
+
+    <template #footer>
+      <button class="secondary-button" :disabled="submitting" @click="close">取消</button>
+      <button class="primary-button" :disabled="submitting" @click="save">
+        {{ submitting ? '保存中…' : '保存团期' }}
+      </button>
+    </template>
+  </el-dialog>
+</template>
+
+<style scoped>
+.dialog-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.dialog-form-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.req {
+  color: var(--danger-red);
+}
+
+.form-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.option-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.option-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--brand-primary, #2563eb);
+  cursor: pointer;
+}
+
+.option-more:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.conflict-panel {
+  border: 1px solid var(--status-orange, #f59e0b);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--bg-warning-subtle, #fffbeb);
+}
+
+.conflict-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--status-orange-strong, #b45309);
+}
+
+.conflict-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.conflict-grid {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.conflict-grid dt {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.conflict-grid dd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+/* 有差异的字段整行加重，避免用户在长列表里漏看 */
+.conflict-row-differs {
+  border-left: 3px solid var(--status-orange, #f59e0b);
+  padding-left: 8px;
+}
+
+.conflict-row-differs dt {
+  color: var(--status-orange-strong, #b45309);
+  font-weight: 600;
+}
+
+.conflict-diff {
+  margin-bottom: 10px;
+}
+
+.conflict-server {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.conflict-mine {
+  color: var(--text-secondary);
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .dialog-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<style>
+@media (max-width: 640px) {
+  .departure-form-dialog { margin-top: 5dvh; }
+  .departure-form-dialog .el-dialog__body { max-height: 65dvh; overflow-y: auto; }
+}
+</style>

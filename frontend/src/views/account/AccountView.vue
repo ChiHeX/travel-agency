@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/modules'
 import { useAuthStore } from '@/stores/auth'
 import RequestState from '@/components/RequestState.vue'
+import { codePointLength } from '@/utils/text'
 
 const auth = useAuthStore()
 const loading = ref(false)
@@ -33,7 +34,9 @@ onMounted(load)
 async function submit() {
   if (loading.value) return
   submitError.value = ''
-  if (!form.nickname.trim() || form.nickname.length > 32) { submitError.value = '昵称应为 1–32 个字符'; return }
+  // 契约 ProfileUpdateRequest.nickname 是 minLength 1 / maxLength 32，数的是字符（码点）；
+  // JS 的 String#length 数的是 UTF-16 码元（一个 emoji 记 2），会把契约允许的昵称判成超长。
+  if (!form.nickname.trim() || codePointLength(form.nickname) > 32) { submitError.value = '昵称应为 1–32 个字符'; return }
   if (form.phone && !/^1[3-9]\d{9}$/.test(form.phone)) { submitError.value = '请输入有效手机号'; return }
   loading.value = true
   try {
@@ -97,7 +100,8 @@ async function submit() {
               <div class="setting-row">
                 <div class="setting-label"><label for="profile-nickname">显示昵称</label></div>
                 <div class="setting-control">
-                  <input id="profile-nickname" v-model="form.nickname" maxlength="32" autocomplete="nickname" placeholder="输入显示昵称" required />
+                  <!-- 去掉 maxlength：它按 UTF-16 码元截断，会把 32 个 emoji 的合法昵称静默砍成 16 个；改为提交时按码点校验 -->
+                  <input id="profile-nickname" v-model="form.nickname" autocomplete="nickname" placeholder="输入显示昵称" required />
                   <p>展示在个人中心等位置。</p>
                 </div>
               </div>

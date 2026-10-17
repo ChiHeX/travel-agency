@@ -1,10 +1,14 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi } from '@/api/modules'
 import RequestState from '@/components/RequestState.vue'
 import RouteFormDialog from '@/components/RouteFormDialog.vue'
+import PanelIconButton from '@/components/PanelIconButton.vue'
+import { fetchAllPages } from '@/utils/paging'
+import { codePointLength } from '@/utils/text'
+import { ACCOMMODATION_TYPES, accommodationSummary, accommodationTypeOf } from '@/utils/hotel'
 
 /**
  * 线路管理详情页：线路资料、团期概览、每日行程与行程项目管理。
@@ -13,7 +17,6 @@ import RouteFormDialog from '@/components/RouteFormDialog.vue'
  * 所有写操作都走契约中的 Admin Routes 接口，不在前端伪造或缓存业务数据。
  */
 const vRoute = useRoute()
-const router = useRouter()
 const routeId = vRoute.params.id
 
 const detail = ref(null)
@@ -43,7 +46,12 @@ const dayForm = reactive({
   description: '',
   transportation: '',
   meals: '',
-  hotelId: ''
+  hotelId: '',
+  accommodationType: 'PENDING',
+  accommodationStandard: '',
+  roomType: '',
+  breakfastIncluded: '',
+  accommodationNote: ''
 })
 
 const itemForm = reactive({
@@ -85,22 +93,37 @@ async function load() {
   }
 }
 
-/** 行程表单需要的酒店 / 景点候选项，全部来自后端真实数据。 */
+/**
+ * 行程表单需要的酒店 / 景点候选项，全部来自后端真实数据。
+ *
+ * 逐页取全量（契约 size 上限 100）：只取第一页时，第 101 条之后的酒店 / 景点在界面上永远
+ * 选不到，使用者只会以为这条数据不存在。
+ */
 async function loadOptions() {
   if (optionsLoaded.value) return
   optionsLoaded.value = true
   try {
-    const [hotelPage, attractionPage] = await Promise.all([
-      adminApi.hotels({ page: 1, size: 100 }),
-      adminApi.attractions({ page: 1, size: 100 })
+    const [hotelList, attractionList] = await Promise.all([
+      fetchAllPages(adminApi.hotels),
+      fetchAllPages(adminApi.attractions)
     ])
-    hotels.value = hotelPage?.items || []
-    attractions.value = attractionPage?.items || []
+    hotels.value = hotelList
+    attractions.value = attractionList
   } catch {
     // 候选项加载失败不影响手写行程文本，用户仍可正常保存行程。
     hotels.value = []
     attractions.value = []
   }
+}
+
+/**
+ * 停用的酒店不能再被安排进新行程（后端会以 422 拒绝），下拉里直接禁掉并标注。
+ *
+ * 例外是"这一天原本就指向它"：那种情况下必须保持可选。若一并禁掉，
+ * 编辑这条行程时下拉会显示成空的，连带改个餐食说明都会保存失败（后端会拦新指向停用酒店）。
+ */
+function isHotelDisabledOption(hotel) {
+  return hotel.status !== 'ACTIVE' && String(hotel.id) !== String(dayForm.hotelId)
 }
 
 async function toggleStatus() {
@@ -131,10 +154,36 @@ function openDayDialog(day) {
     description: day?.description || '',
     transportation: day?.transportation || '',
     meals: day?.meals || '',
-    hotelId: day?.hotelId || ''
+    hotelId: day?.hotelId || '',
+    accommodationType: day ? accommodationTypeOf(day) : 'PENDING',
+    accommodationStandard: day?.accommodationStandard || '',
+    roomType: day?.roomType || '',
+    breakfastIncluded: breakfastSelectValue(day?.breakfastIncluded),
+    accommodationNote: day?.accommodationNote || ''
   })
   dayDialogVisible.value = true
 }
+
+function breakfastSelectValue(value) {
+  if (value === true) return 'true'
+  if (value === false) return 'false'
+  return ''
+}
+
+function breakfastPayloadValue() {
+  if (dayForm.breakfastIncluded === 'true') return true
+  if (dayForm.breakfastIncluded === 'false') return false
+  return null
+}
+
+watch(() => dayForm.hotelId, (value) => {
+  if (value) dayForm.accommodationType = 'HOTEL'
+})
+
+/** watch 在 v-model 更新后清理酒店关联，避免读取旧类型。 */
+watch(() => dayForm.accommodationType, (value) => {
+  if (value !== 'HOTEL') dayForm.hotelId = ''
+})
 
 function nextDayNumber() {
   return days.value.reduce((max, day) => Math.max(max, day.dayNumber || 0), 0) + 1
@@ -152,14 +201,50 @@ async function saveDay() {
   const title = dayForm.title.trim()
   if (!Number.isInteger(dayNumber) || dayNumber < 1) return ElMessage.warning('行程天数序号应为大于 0 的整数')
   if (!title) return ElMessage.warning('请填写当日行程标题')
+  // 契约 ItineraryDayRequest 的长度上限（title 200、description 10000、transportation/meals 255）
+  // 数的是字符（码点），与后端 @CodePointLength 同口径；JS 的 String#length 数的是 UTF-16 码元
+  // （一个 emoji 记 2），会把契约允许的文案判成超长。这里校验即将提交的值（已 trim），
+  // 与 optional() 送出的内容一致，避免尾随空格造成误判。
+  if (codePointLength(title) > 200) return ElMessage.warning('行程标题最多 200 个字符')
+  const description = optional(dayForm.description)
+  const transportation = optional(dayForm.transportation)
+  const meals = optional(dayForm.meals)
+  if (codePointLength(description) > 10000) return ElMessage.warning('行程说明最多 10000 个字符')
+  if (codePointLength(transportation) > 255) return ElMessage.warning('交通说明最多 255 个字符')
+  if (codePointLength(meals) > 255) return ElMessage.warning('餐食说明最多 255 个字符')
+
+  const accommodationType = dayForm.accommodationType
+  if (!ACCOMMODATION_TYPES.includes(accommodationType)) return ElMessage.warning('请选择住宿安排类型')
+  let hotelId = optional(dayForm.hotelId)
+  const accommodationStandard = optional(dayForm.accommodationStandard)
+  if (accommodationType === 'HOTEL' && !hotelId) {
+    return ElMessage.warning('住宿安排为「指定酒店」时，请选择具体酒店')
+  }
+  if (accommodationType === 'STANDARD' && !accommodationStandard) {
+    return ElMessage.warning('住宿安排为「只确定住宿标准」时，请填写住宿标准')
+  }
+  if (accommodationType !== 'HOTEL') hotelId = null
+  const hasAccommodation = accommodationType !== 'NONE'
+  const standard = hasAccommodation ? accommodationStandard : null
+  const roomType = hasAccommodation ? optional(dayForm.roomType) : null
+  const breakfastIncluded = hasAccommodation ? breakfastPayloadValue() : null
+  const accommodationNote = optional(dayForm.accommodationNote)
+  if (codePointLength(standard) > 500) return ElMessage.warning('住宿标准最多 500 个字符')
+  if (codePointLength(roomType) > 100) return ElMessage.warning('房型最多 100 个字符')
+  if (codePointLength(accommodationNote) > 1000) return ElMessage.warning('住宿说明最多 1000 个字符')
 
   const payload = {
     dayNumber,
     title,
-    description: optional(dayForm.description),
-    transportation: optional(dayForm.transportation),
-    meals: optional(dayForm.meals),
-    hotelId: optional(dayForm.hotelId)
+    description,
+    transportation,
+    meals,
+    hotelId,
+    accommodationType,
+    accommodationStandard: standard,
+    roomType,
+    breakfastIncluded,
+    accommodationNote
   }
 
   daySaving.value = true
@@ -240,15 +325,28 @@ async function saveItem() {
   const name = itemForm.name.trim()
   if (!Number.isInteger(sortNo) || sortNo < 1) return ElMessage.warning('排序号应为大于 0 的整数')
   if (!name) return ElMessage.warning('请填写行程项目名称')
+  // 契约 ItineraryItemRequest 的 name 上限 200、description 上限 10000，单位是字符（码点）而不是
+  // UTF-16 码元：一个 emoji 在 String#length 里记 2，会把契约允许的名称误判成超长。
+  if (codePointLength(name) > 200) return ElMessage.warning('行程项目名称最多 200 个字符')
+  const description = optional(itemForm.description)
+  if (codePointLength(description) > 10000) return ElMessage.warning('行程项目说明最多 10000 个字符')
+
+  // 经纬度必须成对（契约 CoordinatePairRule / 后端 @CoordinatePairComplete）：
+  // 只填一个的点在用户端地图上会被静默丢弃。两个都留空是允许的，此时后端会整对继承关联景点的坐标。
+  const longitude = coordinate(itemForm.longitude)
+  const latitude = coordinate(itemForm.latitude)
+  if ((longitude == null) !== (latitude == null)) {
+    return ElMessage.warning('经度和纬度需要同时填写，或同时留空')
+  }
 
   const payload = {
     sortNo,
     itemType: itemForm.itemType,
     name,
-    description: optional(itemForm.description),
+    description,
     attractionId: optional(itemForm.attractionId),
-    longitude: coordinate(itemForm.longitude),
-    latitude: coordinate(itemForm.latitude)
+    longitude,
+    latitude
   }
 
   itemSaving.value = true
@@ -289,9 +387,7 @@ onMounted(load)
   <div class="admin-route-detail">
     <div class="admin-page-head">
       <div>
-        <button type="button" class="text-button back-link" @click="router.push({ name: 'admin-routes' })">
-          ← 返回线路列表
-        </button>
+        <PanelIconButton class="back-link" action="back" label="返回上一页" :fallback-to="{ name: 'admin-routes' }" />
         <h2>
           {{ routeInfo?.name || '线路详情' }}
           <span v-if="routeInfo" class="tag" :class="statusClasses[routeInfo.status] || ''">
@@ -325,7 +421,7 @@ onMounted(load)
           <div><dt>最近出发</dt><dd>{{ routeInfo.nextDepartureDate || '暂无可售团期' }}</dd></div>
           <div><dt>可报名余位</dt><dd>{{ routeInfo.availableSeats == null ? '—' : `${routeInfo.availableSeats} 人` }}</dd></div>
           <div><dt>综合评分</dt><dd>{{ routeInfo.ratingCount ? `${routeInfo.ratingAvg}（${routeInfo.ratingCount} 条）` : '暂无评价' }}</dd></div>
-          <div><dt>有效报名人次</dt><dd>{{ routeInfo.validBookingCount }} 人</dd></div>
+          <div><dt>有效报名订单数</dt><dd>{{ routeInfo.validBookingCount }} 单</dd></div>
         </dl>
         <div class="text-blocks">
           <div><strong>线路简介</strong><p>{{ routeInfo.description || '未填写' }}</p></div>
@@ -381,7 +477,8 @@ onMounted(load)
                 <div class="day-meta">
                   <span>交通：{{ day.transportation || '未填写' }}</span>
                   <span>餐食：{{ day.meals || '未填写' }}</span>
-                  <span>酒店：{{ day.hotelName || '未安排' }}</span>
+
+                  <span>住宿：{{ accommodationSummary(day) }}</span>
                 </div>
               </div>
               <div class="day-actions">
@@ -474,28 +571,76 @@ onMounted(load)
           <label>第几天 <span class="req">*</span></label>
           <input v-model.number="dayForm.dayNumber" type="number" min="1" />
         </div>
+
+        <div class="form-field">
+          <label>住宿安排 <span class="req">*</span></label>
+          <select v-model="dayForm.accommodationType">
+            <option value="HOTEL">指定酒店</option>
+            <option value="STANDARD">只确定住宿标准</option>
+            <option value="NONE">当天不含住宿</option>
+            <option value="PENDING">住宿待确认</option>
+          </select>
+        </div>
         <div class="form-field">
           <label>所属酒店</label>
           <select v-model="dayForm.hotelId">
             <option value="">不指定</option>
-            <option v-for="hotel in hotels" :key="hotel.id" :value="hotel.id">{{ hotel.name }}</option>
+            <option
+              v-for="hotel in hotels"
+              :key="hotel.id"
+              :value="hotel.id"
+              :disabled="isHotelDisabledOption(hotel)"
+            >
+              {{ hotel.name }}{{ isHotelDisabledOption(hotel) ? '（已停用）' : '' }}
+            </option>
           </select>
+          <p class="form-hint">选择酒店会把当天设为「指定酒店」；改成其它住宿安排时这里会被清空。</p>
         </div>
+        <!-- 本弹窗所有文本框都不设 maxlength：它按 UTF-16 码元截断，会把契约允许的 emoji 文案静默砍短
+             （ItineraryDayRequest：title 200 / description 10000 / transportation、meals 255），上限由 saveDay() 按码点校验 -->
         <div class="form-field wide">
           <label>行程标题 <span class="req">*</span></label>
-          <input v-model="dayForm.title" maxlength="200" placeholder="例如：上海 → 昆明" />
+          <input v-model="dayForm.title" placeholder="例如：上海 → 昆明" />
         </div>
         <div class="form-field wide">
           <label>行程说明</label>
-          <textarea v-model="dayForm.description" rows="3" maxlength="10000" placeholder="当天安排说明"></textarea>
+          <textarea v-model="dayForm.description" rows="3" placeholder="当天安排说明"></textarea>
         </div>
         <div class="form-field">
           <label>交通说明</label>
-          <input v-model="dayForm.transportation" maxlength="255" placeholder="例如：飞机 / 旅游大巴" />
+          <input v-model="dayForm.transportation" placeholder="例如：飞机 / 旅游大巴" />
         </div>
         <div class="form-field">
           <label>餐食说明</label>
-          <input v-model="dayForm.meals" maxlength="255" placeholder="例如：早、午餐" />
+          <input v-model="dayForm.meals" placeholder="例如：早、午餐" />
+        </div>
+
+        <div v-if="dayForm.accommodationType !== 'NONE'" class="form-field wide">
+          <label>住宿标准<template v-if="dayForm.accommodationType === 'STANDARD'"> <span class="req">*</span></template></label>
+          <input v-model="dayForm.accommodationStandard" placeholder="例如：市区舒适型酒店（有可靠依据时才写星级）" />
+          <p class="form-hint">
+            指定酒店与只确定标准时都可以填写；「住宿待确认」下也可以先记录已经谈定的标准。
+          </p>
+        </div>
+
+        <template v-if="dayForm.accommodationType !== 'NONE'">
+          <div class="form-field">
+            <label>房型</label>
+            <input v-model="dayForm.roomType" placeholder="例如：双床房" />
+          </div>
+          <div class="form-field">
+            <label>早餐</label>
+            <select v-model="dayForm.breakfastIncluded">
+              <option value="">未说明</option>
+              <option value="true">含早餐</option>
+              <option value="false">不含早餐</option>
+            </select>
+            <p class="form-hint">这里指本线路当天的住宿是否含早餐，与酒店自身的早餐服务无关。</p>
+          </div>
+        </template>
+        <div class="form-field wide">
+          <label>住宿说明</label>
+          <textarea v-model="dayForm.accommodationNote" rows="2" placeholder="例如：拼房安排、夜车返程不含住宿、入住说明等"></textarea>
         </div>
       </div>
       <template #footer>
@@ -530,9 +675,10 @@ onMounted(load)
             <option value="OTHER">其他</option>
           </select>
         </div>
+        <!-- 同样不设 maxlength（ItineraryItemRequest：name 200 / description 10000），由 saveItem() 按码点校验 -->
         <div class="form-field wide">
           <label>项目名称 <span class="req">*</span></label>
-          <input v-model="itemForm.name" maxlength="200" placeholder="例如：大理古城" />
+          <input v-model="itemForm.name" placeholder="例如：大理古城" />
         </div>
         <div class="form-field wide">
           <label>关联景点</label>
@@ -553,7 +699,7 @@ onMounted(load)
         </div>
         <div class="form-field wide">
           <label>项目说明</label>
-          <textarea v-model="itemForm.description" rows="2" maxlength="10000" placeholder="游览安排说明"></textarea>
+          <textarea v-model="itemForm.description" rows="2" placeholder="游览安排说明"></textarea>
         </div>
       </div>
       <template #footer>
@@ -590,8 +736,7 @@ onMounted(load)
 }
 
 .back-link {
-  color: var(--text-secondary);
-  padding: 0;
+  margin-bottom: 8px;
 }
 
 .head-actions {
@@ -731,6 +876,12 @@ onMounted(load)
 
 .req {
   color: var(--danger-red);
+}
+
+.form-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 640px) {

@@ -1,8 +1,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { orderApi } from '@/api/modules'
+import CancelOrderButton from '@/components/CancelOrderButton.vue'
 import { orderStatusLabels, paymentStatusLabels } from '@/utils/order'
 
 const router = useRouter()
@@ -30,7 +31,10 @@ const statusTags = {
   REFUND_REJECTED: 'danger'
 }
 
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   errorMessage.value = ''
   try {
@@ -39,30 +43,27 @@ async function load() {
       page: page.value,
       size: pageSize
     })
+    if (requestId !== latestRequest) return
     orders.value = data?.items || []
     total.value = data?.total || 0
   } catch (error) {
+    if (requestId !== latestRequest) return
     orders.value = []
     total.value = 0
     errorMessage.value = error.message || '订单列表加载失败'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 
 async function cancel(order) {
   try {
-    await ElMessageBox.confirm('确认取消这个待支付订单吗？已支付订单需要申请退款。', '取消订单', {
-      type: 'warning',
-      confirmButtonText: '确认取消',
-      cancelButtonText: '再想想'
-    })
     cancellingOrderNo.value = order.orderNo
     await orderApi.cancel(order.orderNo)
     ElMessage.success('订单已成功取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') errorMessage.value = error.message || '取消失败，请重试'
+    errorMessage.value = error.message || '取消失败，请重试'
   } finally {
     cancellingOrderNo.value = ''
   }
@@ -107,7 +108,7 @@ onMounted(load)
           全部订单
         </button>
         <button
-          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_REJECTED', 'CANCELLED']"
+          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUNDED', 'CANCELLED']"
           :key="status"
           type="button"
           class="status-tab-btn"
@@ -182,15 +183,12 @@ onMounted(load)
                 >
                   去支付
                 </button>
-                <button
+                <CancelOrderButton
                   v-if="order.status === 'WAIT_PAY'"
-                  type="button"
-                  class="danger-button action-btn"
-                  :disabled="cancellingOrderNo === order.orderNo"
-                  @click="cancel(order)"
-                >
-                  {{ cancellingOrderNo === order.orderNo ? '取消中...' : '取消订单' }}
-                </button>
+                  size="small"
+                  :pending="cancellingOrderNo === order.orderNo"
+                  @confirm="cancel(order)"
+                />
               </div>
             </div>
           </article>

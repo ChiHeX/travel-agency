@@ -45,6 +45,26 @@ DEALLOCATE PREPARE stmt;
 |---|---|
 | `001-add-idempotency-record.sql` | 新增 `idempotency_record` 表，支撑下单与退款的 `Idempotency-Key` 幂等 |
 | `002-repair-demo-text-encoding.sql` | 仅修复与原始演示文字精确匹配的乱码，保留线路、景点、酒店和行程的主键及关联；执行前备份这些内容表 |
+| `003-add-kunming-demo-waypoint.sql` | 为已有的彩云之南演示线路补充昆明抵达示意点，避免地图只显示大理至丽江 |
+| `004-add-single-location-demo-route.sql` | 新增只有大理古城一个地图地点的演示线路和测试团期，用于检查单点地图展示 |
+| `005-add-order-created-at-index.sql` | 为 `travel_order.created_at` 补索引，支撑后台工作台的今日订单数与订单趋势查询 |
+| `006-add-order-traveler-type.sql` | 补齐存量库的出行人类型快照列，恢复历史儿童类型，修复下单时的 500 错误 |
+| `007-add-place-guides.sql` | 新增多地点指南及景点关联表 |
+| `008-add-hotel-version.sql` | 补齐存量库的 `hotel.version` 乐观锁版本号列。**升级应用前必须先执行**：`Hotel` 实体的列清单包含该列，未执行时酒店列表、详情、创建、修改全部报 `Unknown column 'version' in 'field list'`（已实测复现 —— 不只是修改接口受影响）。执行两次安全（幂等） |
+| `009-harden-coordinate-data.sql` | 地图坐标数据加固：把"半截坐标"（只填经度或只填纬度）统一清成 NULL —— 这类坐标在用户端地图上无法落点、会被静默丢弃，保留只会让运营以为已经录入。只清"半截"的行，成对坐标与两列都为空的行不受影响。**不写入任何坐标值**：演示酒店的坐标只定义在种子数据 `test-data.sql` 里，而它对已存在的同名酒店整条跳过（`WHERE NOT EXISTS`），重复导入补不了存量酒店的坐标 —— 存量酒店请在后台「酒店合作资料」页补录（早先按名称补演示酒店坐标的写法已删除：`hotel.name` 没有唯一约束，同名多条时重跑会逐条补下去，既不幂等也不保证补的是演示线路引用的那家）。执行两次安全（幂等） |
+| `010-add-hotel-accommodation.sql` | 酒店展示资料与每日行程的住宿安排：`hotel` 补 `city` / `cover_url` / `star_rating` / `facilities` / `check_in_time` / `check_out_time` 与 `idx_hotel_city`，新建 `hotel_image` 表，`route_itinerary_day` 补 `accommodation_type` / `accommodation_standard` / `room_type` / `breakfast_included` / `accommodation_note` 与 `idx_day_hotel`。**升级应用前必须先执行**：`Hotel` 与 `RouteItineraryDay` 实体的列清单已包含这些新列，未执行时酒店与每日行程接口会报 `Unknown column`。回填只做一件事：`hotel_id` 非空的当天行程设为 `HOTEL`，未关联酒店的保持默认 `PENDING` —— **不会回填成 `NONE`**（"缺少酒店关联"不等于"当天不含住宿"），也不改动任何行程内容。最后再加约束 `ck_day_accommodation`（住宿类型必须与酒店关联/住宿标准自洽；在回填之后添加，因此存量行不会被拦下）—— 它挡的是绕过服务层的写入，因为 `accommodation_type` 有默认值，只写 `hotel_id` 而不写类型会静默产出自相矛盾的一行；MySQL 8.0.16 之前只解析 CHECK 而不执行，此时退化为服务层保证。存量酒店的 `city` 补成空串（表示尚未录入城市），不按名称猜城市，请在后台补录。执行两次安全（幂等） |
+| `011-add-departure-reminder.sql` | 新增 `departure_reminder` 表，支撑 PRD §29「即将出发」站内消息提醒的幂等：唯一键 `(order_id, remind_type)` 保证每个订单每类提醒只发一次，定时任务被重复调度或多实例并发执行时不会重复发消息。**升级应用前必须先执行**：`DepartureReminderService` 依赖该表，未执行时提醒任务会报 `Table 'travel_agency.departure_reminder' doesn't exist`（其它接口不受影响，服务仍可启动）。纯增量，不改动任何已有表或数据。执行两次安全（`CREATE TABLE IF NOT EXISTS`，幂等） |
+| `012-add-message-audit-dedup-index.sql` | 为 `sys_message` 补 `idx_message_user_type_title (user_id, type, title)`，支撑报名审核异常通知的去重查询（`user_id + type + title` 精确匹配）。**只加普通索引，不加唯一键**：去重是业务判据而不是库约束 —— 判重查询跑在 `confirm` 的订单行锁之内（同一订单的确认已被串行化），不需要唯一键当并发闸门；唯一键也必须包含 `title`，而标题里带订单号与原因短标签，不同订单、不同原因本就不同，加了也不会互相冲突。不执行只会让这条查询多扫描该用户的消息行，不影响正确性；执行两次安全（幂等） |
+| `013-align-valid-booking-count.sql` | 把存量库的 `travel_route.valid_booking_count` 一次性对齐为真实「有效报名」订单条数。该列是可维护的物化计数，早期演示数据在 `test-data.sql` 里把它预置成与订单无关的大数（42/81/106…），导致按它展示/排序的入口长期偏离真实订单且不收敛。**热门线路与首页已改为直接聚合 `travel_order` 实时统计**（`TravelRouteMapper#popularRouteCounts`，见 docs/API.md §12.5），不依赖该列；但仍有三个入口读它：后台线路列表与线路详情的「有效报名订单数」、公开线路列表的「报名人数」排序（PRD §15.4，来源见 PRD §27「系统有效订单」）。**因此存量演示库升级到本次变更时应执行一次**，否则这三处会继续显示 42/81/106 这类预置值（最新初始化的库由 `test-data.sql` 在订单导入后自行重算，无需执行）。口径与 `popularRouteCounts` / `popularDestinations` 完全一致（含退款申请中但由已确认发起的订单）。**纯数据更新，不改结构、不改订单**；执行两次安全（幂等） |
 
 中文 SQL 文件须以 UTF-8 保存并原样传给客户端。`test-data.sql` 显式使用 `SET NAMES utf8mb4`，避免客户端默认字符集将 UTF-8 字节误当成 latin1；它不能修复在文件传输之前已被错误转码的文本。
 存量乱码使用 `002` 定向修复，不要重新导入整套演示数据。脚本不会改动订单、游客快照、账号或正常中文；第二次执行不会再次转换已修复内容。
+
+
+## 酒店功能升级检查
+
+1. 对存量库按序执行尚未应用的迁移，启动新版应用前必须完成 `010`。
+2. 在管理端补录存量酒店的城市，城市不能为空；迁移不会猜测或生成城市。
+3. 检查线路详情与关联酒店详情接口，确认新增字段可以正常查询。
+
+更新结构使用增量迁移，不通过重复导入 `test-data.sql` 修复存量库。

@@ -1,6 +1,7 @@
 package com.travelagency.domain.service;
 
 import com.travelagency.common.alipay.AlipayGatewayClient;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.ReviewRequest;
@@ -37,6 +38,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -75,6 +78,8 @@ class OrderServiceReviewTest {
     /** 支付宝沙箱适配器：仅在生成收银台地址时用到，测试中给默认 mock（未配置 → 回退占位地址）。 */
     @Mock
     private AlipayGatewayClient alipayGatewayClient;
+    @Mock
+    private OperationLogRecorder operationLog;
 
     private OrderService orderService;
 
@@ -82,7 +87,7 @@ class OrderServiceReviewTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+                idempotencyRecordMapper, travelerMapper, alipayGatewayClient, operationLog);
     }
 
     private static TravelOrder order(long id, String status) {
@@ -205,5 +210,50 @@ class OrderServiceReviewTest {
         assertEquals(2, travelRoute.ratingCount);
         assertEquals(new BigDecimal("4.00"), travelRoute.ratingAvg);
         verify(routeMapper).update(any(), any());
+    }
+
+    // ---------------------------------------------------------------- 后台可见状态
+
+    @Test
+    @DisplayName("后台隐藏评价：改状态并重算线路评分，同时写入审计留痕")
+    void updateStatusHidesReviewAndWritesAudit() {
+        Review review = existingReview(90L, 55L, 100L, 5);
+        when(reviewMapper.selectById(90L)).thenReturn(review);
+        // 这条评价被隐藏后，该线路已没有可见评价
+        when(reviewMapper.selectList(any())).thenReturn(List.of());
+        TravelRoute travelRoute = route(100L);
+        when(routeMapper.selectById(100L)).thenReturn(travelRoute);
+        when(orderMapper.selectById(55L)).thenReturn(order(55L, OrderStatus.COMPLETED));
+        SysUser user = new SysUser();
+        user.id = 9L;
+        user.nickname = "宣阳";
+        when(sysUserMapper.selectById(9L)).thenReturn(user);
+
+        ReviewView view = orderService.updateReviewStatus(90L, "HIDDEN", 77L);
+
+        assertEquals("HIDDEN", review.status);
+        assertEquals("HIDDEN", view.status());
+        assertEquals("TA20270301000001ABCD1234", view.orderNo());
+        verify(reviewMapper).updateById(any(Review.class));
+        assertEquals(0, travelRoute.ratingCount, "隐藏后可见评价数应归零");
+        assertEquals(BigDecimal.ZERO, travelRoute.ratingAvg);
+        verify(routeMapper).update(any(), any());
+        // 审计留痕：谁把哪条评价改成了什么状态，必须可追溯
+        // （objectId 传的是主键本身，字符串化由 OperationLogRecorder 负责，因此这里断言 90L）
+        verify(operationLog).record(eq(77L), anyString(), eq("STATUS"), eq("REVIEW"), eq(90L),
+                eq(OperationLogRecorder.SUCCESS), anyString());
+    }
+
+    @Test
+    @DisplayName("非法评价状态被拒绝，且不写审计留痕、不改数据")
+    void updateStatusRejectsUnknownStatus() {
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.updateReviewStatus(90L, "DELETED", 77L));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(reviewMapper, never()).updateById(any(Review.class));
+        verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(),
+                anyString(), anyString());
     }
 }

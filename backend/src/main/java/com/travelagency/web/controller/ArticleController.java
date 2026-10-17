@@ -5,11 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.exception.BusinessException;
+import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.ArticleView;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.TravelGuideArticle;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.TravelGuideArticleMapper;
+import org.hibernate.validator.constraints.CodePointLength;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,6 +38,7 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/api/articles")
+@Validated
 public class ArticleController {
 
     private final TravelGuideArticleMapper articleMapper;
@@ -53,8 +57,10 @@ public class ArticleController {
     public ApiResponse<PageResponse<ArticleView>> publicList(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String destination) {
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = 128, message = "destination 长度不能超过 128 个字符") String destination) {
         QueryWrapper<TravelGuideArticle> query = new QueryWrapper<TravelGuideArticle>()
                 .eq("status", "PUBLISHED");
         if (keyword != null && !keyword.isBlank()) {

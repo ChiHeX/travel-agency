@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -63,21 +64,6 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/**
- * 成员 C 线路管理模块：{@link AdminRouteService} 业务规则单元测试。
- *
- * <p>不启动 Spring、不连接数据库，全部依赖用 Mockito 替身，因此随普通 {@code mvn test} 执行。
- * 覆盖 docs/openapi.yaml 中 Admin Routes 的契约语义（状态码、字段、视图结构）与
- * 服务端必须保证的业务规则：</p>
- * <ul>
- *   <li>新建线路一律 DRAFT，客户端字段不参与状态决定；</li>
- *   <li>没有每日行程不允许上架（409）；已上架线路的行程结构冻结（409），文案仍可修改；</li>
- *   <li>同一线路 dayNumber 唯一、同一日 sortNo 唯一，非法值返回 422 而不是数据库报错 500；</li>
- *   <li>行程引用的酒店/景点必须存在（422）；项目未填坐标时继承景点坐标；</li>
- *   <li>删除每日行程必须先删行程项目（外键与级联语义）；</li>
- *   <li>视图映射与契约一致（实体字段不外泄、可空联查键不触发 NPE）。</li>
- * </ul>
- */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class AdminRouteServiceTest {
@@ -371,6 +357,9 @@ class AdminRouteServiceTest {
         assertEquals(1, days.size());
         assertNull(days.get(0).hotelId());
         assertNull(days.get(0).hotelName(), "没有酒店时应返回 null，而不是抛 NullPointerException");
+        assertEquals("PENDING", days.get(0).accommodationType(),
+                "未记录住宿类型的存量行按「待确认」处理，不得推断成 NONE（没填酒店不等于不含住宿）");
+        assertNull(days.get(0).hotel(), "没有酒店就没有摘要");
         assertTrue(days.get(0).items().isEmpty());
     }
 
@@ -378,9 +367,7 @@ class AdminRouteServiceTest {
     @DisplayName("行程查询：带上酒店名与按排序的行程项目")
     void itineraryDaysCarriesHotelNameAndItems() {
         RouteItineraryDay day = day(11L, 21L, 1, "上海 → 昆明", 5L);
-        Hotel hotel = new Hotel();
-        hotel.id = 5L;
-        hotel.name = "昆明测试酒店";
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
         RouteItineraryItem item = item(31L, 11L, 1, "ATTRACTION", "大理古城");
         when(dayMapper.selectList(any())).thenReturn(List.of(day));
         when(itemMapper.selectList(any())).thenReturn(List.of(item));
@@ -394,12 +381,35 @@ class AdminRouteServiceTest {
     }
 
     @Test
+    @DisplayName("行程查询：住宿安排字段照旧透出，停用酒店只回 hotelName 不给摘要")
+    void itineraryDaysCarriesAccommodationFieldsAndHidesSummaryForDisabledHotel() {
+        RouteItineraryDay day = day(11L, 21L, 1, "上海 → 昆明", 6L);
+        day.accommodationType = "HOTEL";
+        day.roomType = "标准双床房";
+        day.breakfastIncluded = 0;
+        day.accommodationNote = "含双早，如遇满房换同级酒店";
+        when(dayMapper.selectList(any())).thenReturn(List.of(day));
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+        when(hotelMapper.selectByIds(any())).thenReturn(List.of(hotel(6L, "已停用酒店", 0)));
+
+        ItineraryDayView view = service.itineraryDays(21L).get(0);
+
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals("标准双床房", view.roomType());
+        assertEquals(Boolean.FALSE, view.breakfastIncluded(), "库内 0 要还原成契约的 false，而不是 null");
+        assertEquals("含双早，如遇满房换同级酒店", view.accommodationNote());
+        assertEquals(6L, view.hotelId());
+        assertEquals("已停用酒店", view.hotelName(), "停用不改写历史：酒店名仍要返回");
+        assertNull(view.hotel(), "停用酒店没有公开详情，摘要必须为 null，避免给出必然 404 的入口");
+    }
+
+    @Test
     @DisplayName("新增行程：已上架线路的行程结构冻结（409），且不写库")
     void createDayOnPublishedRouteIsRejected() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "已上架", "PUBLISHED"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR));
+                () -> service.createDay(21L, dayRequest(2, "第二天", null), ACTOR));
 
         assertEquals(409, ex.getStatus());
         assertEquals("ROUTE_STATE_CONFLICT", ex.getCode());
@@ -410,26 +420,76 @@ class AdminRouteServiceTest {
     @DisplayName("新增行程：酒店不存在返回 422，天数序号重复返回 409")
     void createDayValidatesHotelAndDayNumber() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
-        when(hotelMapper.selectById(999L)).thenReturn(null);
+        when(hotelMapper.selectOne(any())).thenReturn(null);
         BusinessException hotelMissing = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, 999L), ACTOR));
+                () -> service.createDay(21L, dayRequest(1, "第一天", 999L), ACTOR));
         assertEquals(422, hotelMissing.getStatus());
 
         when(dayMapper.selectCount(any())).thenReturn(1L);
         BusinessException duplicated = assertThrows(BusinessException.class,
-                () -> service.createDay(21L, new ItineraryDayRequest(1, "第一天", null, null, null, null), ACTOR));
+                () -> service.createDay(21L, dayRequest(1, "第一天", null), ACTOR));
         assertEquals(409, duplicated.getStatus());
         verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
+    }
+
+    /**
+     * 停用是"这家酒店不再使用"的唯一手段：被行程引用的酒店不允许删除
+     * （见 {@code HotelService#delete}）。若停用不拦新安排，它就只是一个没有任何效果的标记
+     * —— 后台写着"停止使用"，工作人员却仍能把这家酒店排进新行程。
+     */
+    @Test
+    @DisplayName("新增行程：已停用的酒店不能安排进新行程（422），且不写库")
+    void createDayRejectsDisabledHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.createDay(21L, dayRequest(1, "第一天", 6L), ACTOR));
+
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        assertTrue(ex.getMessage().contains("已停用"), "错误信息要点明是被「停用」挡住的：" + ex.getMessage());
+        verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
+    }
+
+    /**
+     * 修改行程时只有"换成另一家酒店"才拦：把已停用酒店原样留在原地必须放行，
+     * 否则某天的酒店被停用后，这条行程连改个餐食说明都要先把酒店换掉。
+     */
+    @Test
+    @DisplayName("修改行程：新指向停用酒店返回 422；已停用酒店原样保留则放行")
+    void updateDayOnlyRejectsNewlyAssigningDisabledHotel() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", 5L));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.updateDay(11L, dayRequest(1, "第一天", 6L), ACTOR));
+        assertEquals(422, ex.getStatus());
+        assertEquals("VALIDATION_ERROR", ex.getCode());
+        verify(dayMapper, never()).update(any(), any());
+
+        // 同样的停用酒店，本来就挂在这一天上：只改文案必须成功，并回填酒店名。
+        when(dayMapper.selectById(12L)).thenReturn(day(12L, 21L, 1, "第一天", 6L));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(12L,
+                dayRequest(1, "第一天（改文案）", 6L), ACTOR);
+
+        // 回查走的是 Mapper 替身，标题仍是打桩时的旧值；这里断言的是"写入没有被拦下"与酒店名回填。
+        assertEquals("已停用酒店", view.hotelName(), "保留停用酒店时仍要回填酒店名");
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(6L), "酒店原样保留时应写入同一个 hotel_id");
     }
 
     @Test
     @DisplayName("新增行程：成功时落库线路归属与文案，并回填酒店名")
     void createDayPersistsRouteBinding() {
         when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
-        Hotel hotel = new Hotel();
-        hotel.id = 5L;
-        hotel.name = "昆明测试酒店";
-        when(hotelMapper.selectById(5L)).thenReturn(hotel);
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
+        when(hotelMapper.selectOne(any())).thenReturn(hotel);
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
             RouteItineraryDay inserted = invocation.getArgument(0);
@@ -439,7 +499,8 @@ class AdminRouteServiceTest {
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, " 上海 → 昆明 ", 5L));
 
         ItineraryDayView view = service.createDay(21L,
-                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ", 5L), ACTOR);
+                new ItineraryDayRequest(1, " 上海 → 昆明 ", " 抵达入住 ", " 飞机 ", " 晚餐 ",
+                        null, null, null, null, null, 5L), ACTOR);
 
         ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
         verify(dayMapper).insert(captor.capture());
@@ -458,7 +519,7 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(1L);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> service.updateDay(11L, new ItineraryDayRequest(2, "冲突", null, null, null, null), ACTOR));
+                () -> service.updateDay(11L, dayRequest(2, "冲突", null), ACTOR));
 
         assertEquals(422, ex.getStatus());
         assertEquals("VALIDATION_ERROR", ex.getCode());
@@ -472,13 +533,198 @@ class AdminRouteServiceTest {
         when(dayMapper.selectCount(any())).thenReturn(0L);
         when(itemMapper.selectList(any())).thenReturn(List.of());
 
-        service.updateDay(11L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
+        service.updateDay(11L, dayRequest(2, "第二天", null), ACTOR);
 
         ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(dayMapper).update(isNull(), captor.capture());
         UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
         assertTrue(wrapper.getSqlSet().contains("hotel_id"), "允许把酒店清空");
         assertTrue(wrapper.getParamNameValuePairs().containsValue(null), "可空字段应写入 NULL");
+    }
+
+    // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("新增行程：HOTEL 落库类型/房型/早餐/说明，并回填酒店名与非空摘要")
+    void createDayPersistsHotelAccommodationFields() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        Hotel hotel = hotel(5L, "昆明测试酒店", 1);
+        hotel.starRating = 5;
+        when(hotelMapper.selectOne(any())).thenReturn(hotel);
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(1, "第 1 天", "HOTEL",
+                null, "标准双床房", Boolean.TRUE, "含双早，满房换同级酒店", 5L), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("HOTEL", saved.accommodationType, "类型必须与酒店关联一起落库");
+        assertEquals(5L, saved.hotelId);
+        assertEquals("标准双床房", saved.roomType);
+        assertEquals(1, saved.breakfastIncluded, "契约的 true 落库为 1");
+        assertEquals("含双早，满房换同级酒店", saved.accommodationNote);
+        assertNull(saved.accommodationStandard, "指定了具体酒店时住宿标准不是必填");
+
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals(5L, view.hotelId());
+        assertEquals("昆明测试酒店", view.hotelName());
+        assertNotNull(view.hotel(), "启用中的酒店必须给出摘要，用户端据此进入酒店详情");
+        assertEquals(5L, view.hotel().id());
+        assertEquals("昆明", view.hotel().city(), "摘要要带城市，卡片上直接展示");
+        assertEquals(Integer.valueOf(5), view.hotel().starRating());
+        assertEquals(Boolean.TRUE, view.breakfastIncluded());
+    }
+
+    @Test
+    @DisplayName("新增行程：STANDARD 落库住宿标准且不查、不写酒店")
+    void createDayPersistsStandardAccommodationWithoutHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(2, "第二天", "STANDARD",
+                " 当地四星标准 ", null, null, null, null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("STANDARD", saved.accommodationType);
+        assertEquals("当地四星标准", saved.accommodationStandard, "住宿标准首尾空白应被去除");
+        assertNull(saved.hotelId, "STANDARD 不得关联酒店");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("STANDARD", view.accommodationType());
+        assertNull(view.hotelId());
+        assertNull(view.hotelName(), "没有酒店就没有名称，不得用住宿标准冒充酒店名");
+        assertNull(view.hotel(), "没有酒店就没有摘要");
+    }
+
+    @Test
+    @DisplayName("修改行程：STANDARD 写入类型与住宿标准，并把原酒店清空")
+    void updateDayPersistsStandardAccommodationWithoutHotel() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", 5L),
+                standardDay(11L, 21L, 1, "第一天", "当地四星标准"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(11L, accommodationRequest(1, "第一天", "STANDARD",
+                "当地四星标准", null, null, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getSqlSet().contains("accommodation_type"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("STANDARD"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("当地四星标准"));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(null),
+                "从「指定酒店」改成「只定标准」必须把 hotel_id 清空，否则类型与关联自相矛盾");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("STANDARD", view.accommodationType());
+        assertNull(view.hotelId());
+        assertNull(view.hotel());
+    }
+
+    @Test
+    @DisplayName("新增行程：NONE 是合法安排（当天不含住宿），不查酒店也不被当成错误")
+    void createDayAcceptsNoneWithoutHotel() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        RouteItineraryDay[] persisted = new RouteItineraryDay[1];
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L;
+            persisted[0] = inserted;
+            return 1;
+        });
+        when(dayMapper.selectById(11L)).thenAnswer(invocation -> persisted[0]);
+
+        ItineraryDayView view = service.createDay(21L, accommodationRequest(1, "第一天", "NONE",
+                null, null, null, "当晚夜车返程，不含住宿", null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryDay> captor = ArgumentCaptor.forClass(RouteItineraryDay.class);
+        verify(dayMapper).insert(captor.capture());
+        RouteItineraryDay saved = captor.getValue();
+        assertEquals("NONE", saved.accommodationType, "NONE 必须原样落库，不能被改写成 PENDING");
+        assertNull(saved.hotelId);
+        assertEquals("当晚夜车返程，不含住宿", saved.accommodationNote, "不含住宿时补充说明仍可填写");
+        verify(hotelMapper, never()).selectOne(any());
+
+        assertEquals("NONE", view.accommodationType());
+        assertNull(view.hotelName());
+        assertNull(view.hotel());
+    }
+
+    @Test
+    @DisplayName("修改行程：原样保留已停用酒店时仍写入 HOTEL 与同一个 hotel_id")
+    void updateDayKeepsDisabledHotelAndPersistsHotelType() {
+        RouteItineraryDay before = day(11L, 21L, 1, "第一天", 6L);
+        RouteItineraryDay after = day(11L, 21L, 1, "第一天（改文案）", 6L);
+        after.accommodationType = "HOTEL";
+        when(dayMapper.selectById(11L)).thenReturn(before, after);
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(6L, "已停用酒店", 0));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.selectList(any())).thenReturn(List.of());
+
+        ItineraryDayView view = service.updateDay(11L, accommodationRequest(1, "第一天（改文案）", "HOTEL",
+                null, null, null, null, 6L), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryDay>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(dayMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryDay> wrapper = (UpdateWrapper<RouteItineraryDay>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue("HOTEL"),
+                "类型必须与酒店关联一起写入，不能只保留 hotel_id");
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(6L),
+                "酒店原样保留时应写入同一个 hotel_id");
+        assertEquals("HOTEL", view.accommodationType());
+        assertEquals("已停用酒店", view.hotelName(), "停用不改写历史：酒店名仍要回填");
+        assertNull(view.hotel(), "停用酒店不给摘要");
+    }
+
+    @Test
+    @DisplayName("新增行程：breakfastIncluded=false 落库为 0（与未提交的 NULL 可区分），视图回 false")
+    void createDayDistinguishesFalseBreakfastFromUnsubmitted() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿线路", "DRAFT"));
+        when(hotelMapper.selectOne(any())).thenReturn(hotel(5L, "昆明测试酒店", 1));
+        when(dayMapper.selectCount(any())).thenReturn(0L);
+        Map<Long, RouteItineraryDay> persisted = new LinkedHashMap<>();
+        when(dayMapper.insert(any(RouteItineraryDay.class))).thenAnswer(invocation -> {
+            RouteItineraryDay inserted = invocation.getArgument(0);
+            inserted.id = 11L + persisted.size();
+            persisted.put(inserted.id, inserted);
+            return 1;
+        });
+        when(dayMapper.selectById(any())).thenAnswer(invocation -> persisted.get(invocation.getArgument(0)));
+
+        ItineraryDayView explicitFalse = service.createDay(21L, accommodationRequest(1, "第一天", "HOTEL",
+                null, "标准双床房", Boolean.FALSE, null, 5L), ACTOR);
+
+        assertEquals(0, persisted.get(11L).breakfastIncluded, "false 必须落库成 0，不能写成 NULL");
+        assertEquals(Boolean.FALSE, explicitFalse.breakfastIncluded(), "库内 0 要还原成契约的 false");
+        assertFalse(explicitFalse.breakfastIncluded());
+
+        ItineraryDayView unsubmitted = service.createDay(21L, accommodationRequest(2, "第二天", "HOTEL",
+                null, "标准双床房", null, null, 5L), ACTOR);
+
+        assertNull(persisted.get(12L).breakfastIncluded, "未提交时落 NULL，而不是默认成 0（不含早）");
+        assertNull(unsubmitted.breakfastIncluded(), "未提交时视图回 null，与 false 是两种结果");
     }
 
     @Test
@@ -577,6 +823,75 @@ class AdminRouteServiceTest {
         assertEquals(0, captor.getValue().longitude.compareTo(new BigDecimal("100.1645720")));
         assertEquals(0, captor.getValue().latitude.compareTo(new BigDecimal("25.6064850")));
         assertEquals(11L, captor.getValue().dayId, "所属每日行程由 URL 决定");
+    }
+
+    @Test
+    @DisplayName("新增项目：所关联景点的坐标不成对（历史数据）时不继承，保持两个坐标都为空")
+    void createItemDoesNotInheritHalfCoordinatePair() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
+        Attraction attraction = new Attraction();
+        attraction.id = 6L;
+        attraction.name = "只有经度的历史景点";
+        attraction.longitude = new BigDecimal("100.1645720");
+        attraction.latitude = null;
+        when(attractionMapper.selectById(6L)).thenReturn(attraction);
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+        when(itemMapper.insert(any(RouteItineraryItem.class))).thenAnswer(invocation -> {
+            RouteItineraryItem inserted = invocation.getArgument(0);
+            inserted.id = 33L;
+            return 1;
+        });
+        when(itemMapper.selectById(33L)).thenReturn(item(33L, 11L, 1, "ATTRACTION", "只有经度的历史景点"));
+
+        service.createItem(11L, itemRequest(1, "ATTRACTION", "只有经度的历史景点", 6L, null, null), ACTOR);
+
+        ArgumentCaptor<RouteItineraryItem> captor = ArgumentCaptor.forClass(RouteItineraryItem.class);
+        verify(itemMapper).insert(captor.capture());
+        assertNull(captor.getValue().longitude, "景点坐标不成对时不继承经度");
+        assertNull(captor.getValue().latitude, "景点坐标不成对时不继承纬度");
+    }
+
+    @Test
+    @DisplayName("修改项目：未提供坐标时整对继承景点坐标")
+    void updateItemInheritsWholeCoordinatePair() {
+        when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "ATTRACTION", "大理古城"));
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+
+        Attraction pair = new Attraction();
+        pair.id = 5L;
+        pair.longitude = new BigDecimal("100.1645720");
+        pair.latitude = new BigDecimal("25.6064850");
+        when(attractionMapper.selectById(5L)).thenReturn(pair);
+
+        service.updateItem(31L, itemRequest(1, "ATTRACTION", "大理古城", 5L, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryItem>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(itemMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryItem> wrapper = (UpdateWrapper<RouteItineraryItem>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("100.1645720")));
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("25.6064850")));
+    }
+
+    @Test
+    @DisplayName("修改项目：景点坐标不成对（历史数据）时不继承，避免把半截坐标复制进行程项")
+    void updateItemDoesNotInheritHalfCoordinatePair() {
+        when(itemMapper.selectById(31L)).thenReturn(item(31L, 11L, 1, "ATTRACTION", "只有经度的历史景点"));
+        when(itemMapper.selectCount(any())).thenReturn(0L);
+
+        Attraction half = new Attraction();
+        half.id = 6L;
+        half.longitude = new BigDecimal("100.1645720");
+        half.latitude = null;
+        when(attractionMapper.selectById(6L)).thenReturn(half);
+
+        service.updateItem(31L, itemRequest(1, "ATTRACTION", "只有经度的历史景点", 6L, null, null), ACTOR);
+
+        ArgumentCaptor<Wrapper<RouteItineraryItem>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(itemMapper).update(isNull(), captor.capture());
+        UpdateWrapper<RouteItineraryItem> wrapper = (UpdateWrapper<RouteItineraryItem>) captor.getValue();
+        assertTrue(wrapper.getParamNameValuePairs().containsValue(null), "半截坐标不继承，写入 NULL");
+        assertFalse(wrapper.getParamNameValuePairs().containsValue(new BigDecimal("100.1645720")),
+                "不能把景点的半截经度复制进行程项");
     }
 
     @Test
@@ -728,7 +1043,7 @@ class AdminRouteServiceTest {
             return 1;
         });
         when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 2, "第二天", null));
-        service.createDay(21L, new ItineraryDayRequest(2, "第二天", null, null, null, null), ACTOR);
+        service.createDay(21L, dayRequest(2, "第二天", null), ACTOR);
         verify(operationLog).record(ACTOR, "行程", "CREATE", "ITINERARY_DAY", 11L,
                 "线路 21 新增第 2 天行程");
 
@@ -806,6 +1121,37 @@ class AdminRouteServiceTest {
         return day;
     }
 
+    private static ItineraryDayRequest dayRequest(int dayNumber, String title, Long hotelId) {
+        return new ItineraryDayRequest(dayNumber, title, null, null, null,
+                null, null, null, null, null, hotelId);
+    }
+
+    private static ItineraryDayRequest accommodationRequest(int dayNumber, String title, String accommodationType,
+                                                            String accommodationStandard, String roomType,
+                                                            Boolean breakfastIncluded, String accommodationNote,
+                                                            Long hotelId) {
+        return new ItineraryDayRequest(dayNumber, title, null, null, null, accommodationType,
+                accommodationStandard, roomType, breakfastIncluded, accommodationNote, hotelId);
+    }
+
+    private static RouteItineraryDay standardDay(Long id, Long routeId, int dayNumber, String title,
+                                                 String standard) {
+        RouteItineraryDay day = day(id, routeId, dayNumber, title, null);
+        day.accommodationType = "STANDARD";
+        day.accommodationStandard = standard;
+        return day;
+    }
+
+    private static Hotel hotel(Long id, String name, int status) {
+        Hotel hotel = new Hotel();
+        hotel.id = id;
+        hotel.name = name;
+        hotel.city = "昆明";
+        hotel.address = "云南省昆明市测试路 1 号";
+        hotel.status = status;
+        return hotel;
+    }
+
     private static RouteItineraryItem item(Long id, Long dayId, int sortNo, String type, String name) {
         RouteItineraryItem item = new RouteItineraryItem();
         item.id = id;
@@ -855,5 +1201,37 @@ class AdminRouteServiceTest {
     @SuppressWarnings("unused")
     private static int availableSeats(int max, int reserved, int confirmed) {
         return Math.max(max - reserved - confirmed, 0);
+    }
+
+    @Test
+    @DisplayName("新增行程：绕过请求校验的调用方也写不进自相矛盾的住宿安排（422，不落库）")
+    void createDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {
+        when(routeMapper.selectById(21L)).thenReturn(route(21L, "草稿", "DRAFT"));
+
+        for (ItineraryDayRequest inconsistent : List.of(
+                new ItineraryDayRequest(1, "第一天", null, null, null, "HOTEL", null, null, null, null, null),
+                new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD", "  ", null, null, null, null),
+                new ItineraryDayRequest(1, "第一天", null, null, null, "NONE", null, null, null, null, 5L))) {
+            BusinessException error = assertThrows(BusinessException.class,
+                    () -> service.createDay(21L, inconsistent, ACTOR));
+            assertEquals(422, error.getStatus(), "不一致的住宿安排必须按字段语义失败处理");
+            assertEquals("VALIDATION_ERROR", error.getCode());
+        }
+
+        verify(dayMapper, never()).insert(any(RouteItineraryDay.class));
+    }
+
+    @Test
+    @DisplayName("修改行程：绕过请求校验的调用方同样改不出自相矛盾的住宿安排（422，不写库）")
+    void updateDayRejectsInconsistentAccommodationEvenWithoutRequestValidation() {
+        when(dayMapper.selectById(11L)).thenReturn(day(11L, 21L, 1, "第一天", null));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.updateDay(11L,
+                new ItineraryDayRequest(1, "第一天", null, null, null, "STANDARD", null, null, null, null, null),
+                ACTOR));
+
+        assertEquals(422, error.getStatus());
+        assertEquals("VALIDATION_ERROR", error.getCode());
+        verify(dayMapper, never()).update(any(), any());
     }
 }

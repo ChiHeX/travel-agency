@@ -1,0 +1,77 @@
+package com.travelagency.domain.dto;
+
+import com.travelagency.common.enums.HotelFacility;
+import com.travelagency.common.validation.CoordinatePairComplete;
+import com.travelagency.common.validation.HasCoordinatePair;
+import com.travelagency.common.validation.HotelProfileRules;
+import com.travelagency.common.validation.UniqueElements;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
+import org.hibernate.validator.constraints.CodePointLength;
+
+import java.util.List;
+
+@CoordinatePairComplete
+public record HotelCreateRequest(
+        @NotBlank(message = "酒店名称不能为空")
+        @CodePointLength(max = 128, message = "酒店名称最多 128 个字符") String name,
+
+        @NotBlank(message = "酒店城市不能为空")
+        @CodePointLength(max = HotelProfileRules.CITY_MAX_CHARS,
+                message = HotelProfileRules.CITY_LENGTH_MESSAGE) String city,
+
+        @CodePointLength(max = 255, message = "酒店地址最多 255 个字符") String address,
+
+        @CodePointLength(max = 20, message = "联系电话最多 20 个字符") String contactPhone,
+
+        @CodePointLength(max = HotelProfileRules.IMAGE_URL_MAX_CHARS,
+                message = HotelProfileRules.IMAGE_URL_LENGTH_MESSAGE)
+        @Pattern(regexp = HotelProfileRules.IMAGE_URL_PATTERN,
+                message = HotelProfileRules.IMAGE_URL_MESSAGE) String coverUrl,
+
+        @Size(max = HotelProfileRules.MAX_IMAGES, message = HotelProfileRules.IMAGE_COUNT_MESSAGE)
+        List<@NotNull(message = "图片不能为空") @Valid HotelImageRequest> images,
+
+        @Min(value = 1, message = "官方星级只能是 1 到 5")
+        @Max(value = 5, message = "官方星级只能是 1 到 5") Integer starRating,
+
+        @UniqueElements
+        List<@Pattern(regexp = HotelFacility.PATTERN, message = HotelFacility.MESSAGE) String> facilities,
+
+        @Pattern(regexp = HotelProfileRules.CLOCK_TIME_PATTERN,
+                message = HotelProfileRules.CHECK_IN_TIME_MESSAGE) String checkInTime,
+
+        @Pattern(regexp = HotelProfileRules.CLOCK_TIME_PATTERN,
+                message = HotelProfileRules.CHECK_OUT_TIME_MESSAGE) String checkOutTime,
+
+        @DecimalMin(value = "-180", message = "经度应在 -180 到 180 之间")
+        @DecimalMax(value = "180", message = "经度应在 -180 到 180 之间") Double longitude,
+
+        @DecimalMin(value = "-90", message = "纬度应在 -90 到 90 之间")
+        @DecimalMax(value = "90", message = "纬度应在 -90 到 90 之间") Double latitude,
+
+        @CodePointLength(max = 10000, message = "酒店简介最多 10000 个字符") String intro,
+
+        @NotBlank(message = "数据来源说明不能为空")
+        @CodePointLength(max = 500, message = "数据来源说明最多 500 个字符") String dataSource,
+
+        @Pattern(regexp = "ACTIVE|DISABLED", message = "酒店状态只能是 ACTIVE 或 DISABLED") String status)
+        implements HasCoordinatePair {
+
+    /**
+     * 判断本次请求是否显式提交了状态。
+     *
+     * <p>{@code status} 为 {@code null} 表示客户端没有提交该字段（契约里它不是必填），
+     * 修改时应当保留库内现值；空串由 {@code @Pattern} 拒绝，不会走到这里。</p>
+     */
+    public boolean hasStatus() {
+        return status != null;
+    }
+}

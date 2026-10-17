@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import PublicLayout from '@/layouts/PublicLayout.vue'
+import PaymentLayout from '@/layouts/PaymentLayout.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
 import HomeView from '@/views/public/HomeView.vue'
 import SearchView from '@/views/public/SearchView.vue'
@@ -10,8 +11,14 @@ import LoginView from '@/views/public/LoginView.vue'
 import RegisterView from '@/views/public/RegisterView.vue'
 import ArticlesView from '@/views/public/ArticlesView.vue'
 import GuidesView from '@/views/public/GuidesView.vue'
+import LatestGuidesView from '@/views/public/LatestGuidesView.vue'
+import CityGuidesView from '@/views/public/CityGuidesView.vue'
+import GuidePublishersView from '@/views/public/GuidePublishersView.vue'
+import PublisherGuidesView from '@/views/public/PublisherGuidesView.vue'
+import PlaceGuideDetailView from '@/views/public/PlaceGuideDetailView.vue'
 import ArticleDetailView from '@/views/public/ArticleDetailView.vue'
 import AttractionDetailView from '@/views/public/AttractionDetailView.vue'
+import HotelDetailView from '@/views/public/HotelDetailView.vue'
 import OrderCreateView from '@/views/public/OrderCreateView.vue'
 import OrdersView from '@/views/account/OrdersView.vue'
 import OrderDetailView from '@/views/account/OrderDetailView.vue'
@@ -28,13 +35,35 @@ import AdminDashboardView from '@/views/admin/AdminDashboardView.vue'
 import AdminRoutesView from '@/views/admin/AdminRoutesView.vue'
 import AdminRouteDetailView from '@/views/admin/AdminRouteDetailView.vue'
 import AdminOrdersView from '@/views/admin/AdminOrdersView.vue'
+import AdminPlaceGuidesView from '@/views/admin/AdminPlaceGuidesView.vue'
 import AdminResourcesView from '@/views/admin/AdminResourcesView.vue'
 import AdminUsersView from '@/views/admin/AdminUsersView.vue'
+// 新增：后台内容管理四页
+import AdminReviewsView from '@/views/admin/AdminReviewsView.vue'
+import AdminConsultationsView from '@/views/admin/AdminConsultationsView.vue'
+import AdminArticlesView from '@/views/admin/AdminArticlesView.vue'
+import AdminLogsView from '@/views/admin/AdminLogsView.vue'
 import GuideDashboardView from '@/views/guide/GuideDashboardView.vue'
 import GuideTripsView from '@/views/guide/GuideTripsView.vue'
 import ComingSoonView from '@/views/ComingSoonView.vue'
+import { getScrollEntryId, restoreScrollPosition, saveScrollPosition } from '@/utils/scrollRestoration'
 
 const routes = [
+  {
+    path: '/orders/:orderNo',
+    component: PaymentLayout,
+    meta: { requiresAuth: true },
+    children: [{ path: '', name: 'order-detail', component: OrderDetailView }]
+  },
+  {
+    path: '/payment/:orderNo',
+    component: PaymentLayout,
+    meta: { requiresAuth: true },
+    children: [
+      { path: '', name: 'order-payment', component: PaymentView },
+      { path: 'result', name: 'order-payment-result', component: PaymentResultView }
+    ]
+  },
   {
     path: '/',
     component: PublicLayout,
@@ -43,7 +72,13 @@ const routes = [
       { path: 'search', name: 'search', component: SearchView },
       { path: 'routes', name: 'routes', component: RouteListView },
       { path: 'routes/:id', name: 'route-detail', component: RouteDetailView },
+      { path: 'routes/:routeId/hotels/:hotelId', name: 'hotel-detail', component: HotelDetailView },
       { path: 'guides', name: 'guides', component: GuidesView },
+      { path: 'guides/latest', name: 'latest-guides', component: LatestGuidesView },
+      { path: 'guides/cities/:city', name: 'city-guides', component: CityGuidesView },
+      { path: 'guides/publishers', name: 'guide-publishers', component: GuidePublishersView },
+      { path: 'guides/publishers/:id', name: 'publisher-guides', component: PublisherGuidesView },
+      { path: 'guides/:id', name: 'guide-detail', component: PlaceGuideDetailView },
       { path: 'articles', name: 'articles', component: ArticlesView },
       { path: 'articles/latest', redirect: { name: 'articles' } },
       { path: 'articles/cities/:city', redirect: (to) => ({ name: 'articles', query: { destination: to.params.city } }) },
@@ -66,9 +101,9 @@ const routes = [
       { path: 'reviews', name: 'account-reviews', component: ReviewsView },
       { path: 'security', name: 'account-security', component: SecurityView },
       { path: 'orders', name: 'account-orders', component: OrdersView },
-      { path: 'orders/:orderNo/payment', name: 'order-payment', component: PaymentView },
-      { path: 'orders/:orderNo/payment/result', name: 'order-payment-result', component: PaymentResultView },
-      { path: 'orders/:orderNo', name: 'order-detail', component: OrderDetailView },
+      { path: 'orders/:orderNo/payment', redirect: (to) => ({ name: 'order-payment', params: to.params, query: to.query }) },
+      { path: 'orders/:orderNo/payment/result', redirect: (to) => ({ name: 'order-payment-result', params: to.params, query: to.query }) },
+      { path: 'orders/:orderNo', redirect: (to) => ({ name: 'order-detail', params: to.params, query: to.query, hash: to.hash }) },
       { path: 'order/create', redirect: (to) => ({ name: 'order-create', query: to.query }) },
       { path: 'travelers', name: 'account-travelers', component: TravelersView },
       { path: 'favorites', name: 'account-favorites', component: FavoritesView },
@@ -89,14 +124,17 @@ const routes = [
       { path: 'attractions', name: 'admin-attractions', component: AdminResourcesView, props: { title: '景点管理', resource: 'attractions' } },
       { path: 'hotels', name: 'admin-hotels', component: AdminResourcesView, props: { title: '酒店资料', resource: 'hotels' } },
       { path: 'guides', name: 'admin-guides', component: AdminResourcesView, props: { title: '导游管理', resource: 'guides' } },
+      { path: 'place-guides', name: 'admin-place-guides', component: AdminPlaceGuidesView },
       { path: 'orders', name: 'admin-orders', component: AdminOrdersView },
       { path: 'refunds', name: 'admin-refunds', component: AdminResourcesView, props: { title: '退款审核', resource: 'refunds' } },
-      { path: 'users', name: 'admin-users', component: AdminUsersView },
-      { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' } },
-      { path: 'reviews', name: 'admin-reviews', component: ComingSoonView, props: { title: '评价管理' } },
-      { path: 'consultations', name: 'admin-consultations', component: ComingSoonView, props: { title: '在线咨询' } },
-      { path: 'articles', name: 'admin-articles', component: ComingSoonView, props: { title: '旅游攻略管理' } },
-      { path: 'logs', name: 'admin-logs', component: ComingSoonView, props: { title: '操作日志' } }
+      // E-06：以下三个页面仅 ADMIN 可访问（覆盖父级的 ['ADMIN', 'STAFF']）
+      { path: 'users', name: 'admin-users', component: AdminUsersView, meta: { roles: ['ADMIN'] } },
+      { path: 'staff', name: 'admin-staff', component: AdminUsersView, props: { mode: 'staff' }, meta: { roles: ['ADMIN'] } },
+      // 后台内容管理四页
+      { path: 'reviews', name: 'admin-reviews', component: AdminReviewsView },
+      { path: 'consultations', name: 'admin-consultations', component: AdminConsultationsView },
+      { path: 'articles', name: 'admin-articles', component: AdminArticlesView },
+      { path: 'logs', name: 'admin-logs', component: AdminLogsView, meta: { roles: ['ADMIN'] } }
     ]
   },
   {
@@ -116,7 +154,19 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
-  scrollBehavior: () => ({ top: 0 })
+  scrollBehavior: (_to, _from, savedPosition) => savedPosition || { top: 0 }
+})
+
+let activeScrollEntryId = getScrollEntryId()
+
+router.beforeEach(() => {
+  saveScrollPosition(activeScrollEntryId)
+})
+
+router.afterEach((_to, _from, failure) => {
+  if (failure) return
+  activeScrollEntryId = getScrollEntryId()
+  restoreScrollPosition(activeScrollEntryId)
 })
 
 router.beforeEach(async (to) => {

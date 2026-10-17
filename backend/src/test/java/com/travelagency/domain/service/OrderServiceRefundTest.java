@@ -1,6 +1,7 @@
 package com.travelagency.domain.service;
 
 import com.travelagency.common.alipay.AlipayGatewayClient;
+import com.travelagency.common.audit.OperationLogRecorder;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.common.enums.RefundStatus;
@@ -41,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -81,6 +83,8 @@ class OrderServiceRefundTest {
     /** 支付宝沙箱适配器：收银台与退款出款都经它，用例按需桩「配置齐备」与出款结果。 */
     @Mock
     private AlipayGatewayClient alipayGatewayClient;
+    @Mock
+    private OperationLogRecorder operationLog;
 
     private OrderService orderService;
 
@@ -88,7 +92,7 @@ class OrderServiceRefundTest {
     void setUp() {
         orderService = new OrderService(orderMapper, departureMapper, routeMapper, guideMapper,
                 orderTravelerMapper, paymentMapper, refundMapper, reviewMapper, messageMapper, sysUserMapper,
-                idempotencyRecordMapper, travelerMapper, alipayGatewayClient);
+                idempotencyRecordMapper, travelerMapper, alipayGatewayClient, operationLog);
     }
 
     /**
@@ -101,6 +105,24 @@ class OrderServiceRefundTest {
         when(alipayGatewayClient.isRefundConfigurationComplete()).thenReturn(true);
         when(alipayGatewayClient.refund(any(), any(), any(), any()))
                 .thenReturn(AlipayGatewayClient.RefundResult.succeeded("2027030122001400000000000001", orderNo));
+    }
+
+    /**
+     * 审计留痕断言：按操作类型确认「确实写过一条」。
+     *
+     * <p>结果态用 {@code anyString()} 而不是写死 SUCCESS —— 契约 {@code OperationLog.result} 只有
+     * SUCCESS / FAILURE 两个值，而本模块用不同的 {@code operationType} 区分场景
+     * （APPROVE / REJECT / APPROVE_UNCONFIRMED），用例该锁的是那个类型，不是结果态。</p>
+     */
+    private void verifyAudit(String operationType) {
+        verify(operationLog).record(any(), anyString(), eq(operationType), anyString(), any(),
+                anyString(), anyString());
+    }
+
+    /** 审计留痕必须跟着真正的状态推进走：没抢到闸门的那次什么都不该写。 */
+    private void verifyNoAudit() {
+        verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(),
+                anyString(), anyString());
     }
 
     private static TravelOrder order(long id, String status, String originalStatus) {
@@ -175,6 +197,8 @@ class OrderServiceRefundTest {
         // CONFIRMED 订单退款要回退线路的有效报名数
         verify(routeMapper).update(any(), any());
         verify(messageMapper).insert(any(Message.class));
+        // 审核通过的留痕必须落在同一个业务事务里（出款成功之后、通知之前）
+        verifyAudit("APPROVE");
     }
 
     @Test
@@ -285,6 +309,8 @@ class OrderServiceRefundTest {
         // 待确认状态是留给事务提交的：这里绝不能再把它写回 APPLYING ——
         // 一旦退回待审核，管理员就能「拒绝」，而拒绝会把已退款的订单恢复成已支付。
         verify(refundMapper, never()).updateById(any(Refund.class));
+        // 留痕必须先于抛异常写出：noRollbackFor 只保证异常不回滚，不会替我们补一条日志
+        verifyAudit("APPROVE_UNCONFIRMED");
     }
 
     @Test
@@ -353,6 +379,7 @@ class OrderServiceRefundTest {
         verify(orderMapper, never()).updateById(any(TravelOrder.class));
         verify(paymentMapper, never()).updateById(any(Payment.class));
         verify(messageMapper, never()).insert(any(Message.class));
+        verifyNoAudit();
     }
 
     @Test
@@ -400,6 +427,8 @@ class OrderServiceRefundTest {
         verify(departureMapper, never()).update(any(), any());
         verify(paymentMapper, never()).updateById(any(Payment.class));
         verify(messageMapper).insert(any(Message.class));
+        // 拒绝也要留痕：否则「谁在什么时候驳回了这笔退款」事后无法追溯
+        verifyAudit("REJECT");
     }
 
     // ---------------------------------------------------------------- 状态机守卫

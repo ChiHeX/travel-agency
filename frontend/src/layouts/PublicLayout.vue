@@ -1,5 +1,5 @@
 <script setup>
-import { computed, provide, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { accountApi } from '@/api/modules'
@@ -17,31 +17,55 @@ const loginLocation = computed(() => ({
 const unreadCount = ref(0)
 const mapItinerary = ref([])
 provide('setMapItinerary', (itinerary) => { mapItinerary.value = itinerary })
-const sheetSize = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half')
+const mapPlaces = ref([])
+const mapFocus = ref(null)
+provide('setMapPlaces', (places) => { mapPlaces.value = places })
+provide('setMapFocus', (place) => { mapFocus.value = place })
+const layoutShell = ref(null)
+const mobileNavigation = ref(null)
+const viewportHeight = ref(window.innerHeight)
+const navigationHeight = ref(52)
+const sheetRatio = ref(['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 1 : .55)
+const maxSheetHeight = computed(() => Math.max(0, viewportHeight.value - navigationHeight.value))
+const minSheetHeight = computed(() => Math.min(64, maxSheetHeight.value))
+const sheetHeight = computed(() => Math.min(maxSheetHeight.value, Math.max(minSheetHeight.value, viewportHeight.value * sheetRatio.value)))
 let dragStart = null
-let sheetDragged = false
+let sizeObserver
+
+function measureViewport() {
+  viewportHeight.value = layoutShell.value.clientHeight
+  navigationHeight.value = mobileNavigation.value.getBoundingClientRect().height
+}
+
+function setSheetHeight(height) {
+  if (!viewportHeight.value) return
+  sheetRatio.value = Math.min(maxSheetHeight.value, Math.max(minSheetHeight.value, height)) / viewportHeight.value
+}
 
 function startSheetDrag(event) {
-  sheetDragged = false
-  dragStart = event.clientY
+  if (!event.isPrimary || event.button !== 0 || dragStart) return
+  measureViewport()
+  dragStart = { pointerId: event.pointerId, y: event.clientY, height: sheetHeight.value }
   event.currentTarget.setPointerCapture(event.pointerId)
 }
+function moveSheetDrag(event) {
+  if (!dragStart || event.pointerId !== dragStart.pointerId) return
+  setSheetHeight(dragStart.height + dragStart.y - event.clientY)
+}
 function endSheetDrag(event) {
-  if (dragStart == null) return
-  const delta = event.clientY - dragStart
+  if (!dragStart || event.pointerId !== dragStart.pointerId) return
+  moveSheetDrag(event)
   dragStart = null
-  if (Math.abs(delta) < 30) return
-  sheetDragged = true
-  const levels = ['collapsed', 'half', 'full']
-  sheetSize.value = levels[Math.max(0, Math.min(2, levels.indexOf(sheetSize.value) + (delta < 0 ? 1 : -1)))]
+  if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
 }
-function toggleSheet() {
-  if (sheetDragged) {
-    sheetDragged = false
-    return
-  }
-  sheetSize.value = sheetSize.value === 'full' ? 'half' : 'full'
-}
+
+onMounted(() => {
+  measureViewport()
+  sizeObserver = new ResizeObserver(measureViewport)
+  sizeObserver.observe(layoutShell.value)
+  sizeObserver.observe(mobileNavigation.value)
+})
+onBeforeUnmount(() => sizeObserver?.disconnect())
 
 // Sidebar expanded state: true = 180px with text, false = 56px with icon only
 const isSidebarExpanded = ref(true)
@@ -64,13 +88,16 @@ provide('openDrawer', openDrawer)
 provide('isDrawerOpen', isDrawerOpen)
 
 const isBackoffice = computed(() => auth.hasRole('ADMIN') || auth.hasRole('STAFF') || auth.hasRole('GUIDE'))
-const guideViews = ['guides']
-const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', ...guideViews].includes(route.name))
+const guideViews = ['guides', 'latest-guides', 'city-guides', 'guide-publishers', 'publisher-guides', 'guide-detail']
+const isMapActiveView = computed(() => ['home', 'search', 'routes', 'route-detail', 'articles', 'article-detail', 'attraction-detail', 'hotel-detail', ...guideViews].includes(route.name))
 
+let unreadRequest = 0
 async function refreshUnread() {
+  const requestId = ++unreadRequest
   if (auth.isLoggedIn) {
     try {
-      unreadCount.value = (await accountApi.unreadCount())?.count || 0
+      const result = await accountApi.unreadCount()
+      if (requestId === unreadRequest && auth.isLoggedIn) unreadCount.value = result?.count || 0
     } catch (_) {}
   } else unreadCount.value = 0
 }
@@ -78,7 +105,8 @@ provide('refreshUnread', refreshUnread)
 watch(() => auth.isLoggedIn, refreshUnread, { immediate: true })
 watch(() => route.path, () => {
   isDrawerOpen.value = route.name !== 'home'
-  sheetSize.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 'full' : 'half'
+  dragStart = null
+  sheetRatio.value = ['articles', 'article-detail', 'attraction-detail'].includes(route.name) ? 1 : .55
   refreshUnread()
 })
 
@@ -121,14 +149,14 @@ function logout() {
 
 <template>
   <div
+    ref="layoutShell"
     class="app-layout-shell"
     :class="{
       'sidebar-collapsed': !isSidebarExpanded,
       'drawer-closed': !isDrawerOpen && isMapActiveView
     }"
   >
-    <nav class="mobile-navigation" aria-label="主导航">
-      <RouterLink to="/" @click="goHome">行迹</RouterLink>
+    <nav ref="mobileNavigation" class="mobile-navigation" aria-label="主导航">
       <button @click="handleTabClick('search')">搜索</button>
       <button @click="handleTabClick('routes')">线路</button>
       <button @click="handleTabClick('guides')">指南</button>
@@ -138,9 +166,11 @@ function logout() {
     <MapPreview
       v-if="isMapActiveView"
       :itinerary="mapItinerary"
+      :places="mapPlaces"
+      :focused-place="mapFocus"
       :drawer-open="isDrawerOpen"
       :sidebar-expanded="isSidebarExpanded"
-      :sheet-size="sheetSize"
+      :sheet-height="sheetHeight"
     />
 
     <!-- ==========================================================================
@@ -151,7 +181,7 @@ function logout() {
       <div class="rail-top-bar">
         <a v-if="isSidebarExpanded" href="javascript:void(0)" class="project-brand-wrap" title="行迹旅行" @click="goHome">
           <div class="brand-badge-box">
-            <AppIcon name="brand" size="16" color="#ffffff" />
+            <AppIcon name="brand" size="16" />
           </div>
           <span class="brand-title">行迹</span>
         </a>
@@ -252,11 +282,6 @@ function logout() {
           <span v-if="isSidebarExpanded">登录 / 注册</span>
           <span v-else>登录</span>
         </RouterLink>
-
-        <!-- Copyright Notice at Bottom -->
-        <div v-if="isSidebarExpanded" class="rail-copyright-note">
-          <span>Copyright © 2026 行迹旅行. 保留所有权利.</span>
-        </div>
       </div>
     </aside>
 
@@ -265,11 +290,9 @@ function logout() {
          ========================================================================== -->
     <div
       class="drawer-track-wrapper"
+      :style="{ '--sheet-height': `${sheetHeight}px` }"
       :class="{
         'full-page-mode': !isMapActiveView,
-        'sheet-half': sheetSize === 'half',
-        'sheet-full': sheetSize === 'full',
-        'sheet-peek': sheetSize === 'collapsed',
         'drawer-collapsed': !isDrawerOpen && isMapActiveView
       }"
     >
@@ -280,8 +303,15 @@ function logout() {
         }"
       >
         <div v-if="isMapActiveView" class="sheet-handle">
-          <button type="button" :aria-expanded="sheetSize !== 'collapsed'" aria-label="切换抽屉高度" @pointerdown="startSheetDrag" @pointerup="endSheetDrag" @pointercancel="dragStart = null" @click="toggleSheet"><span></span></button>
-          <div class="sheet-size-actions"><button @click="sheetSize = 'collapsed'">收起</button><button @click="sheetSize = 'half'">半屏</button><button @click="sheetSize = 'full'">展开</button></div>
+          <div
+            class="sheet-resize-handle" role="slider" tabindex="0" aria-label="调整弹出栏高度"
+            aria-orientation="vertical" :aria-valuemin="Math.round(minSheetHeight)" :aria-valuemax="Math.round(maxSheetHeight)"
+            :aria-valuenow="Math.round(sheetHeight)" :aria-valuetext="`高度 ${Math.round(sheetHeight)} 像素`"
+            @pointerdown="startSheetDrag" @pointermove="moveSheetDrag" @pointerup="endSheetDrag"
+            @pointercancel="dragStart = null" @lostpointercapture="dragStart = null"
+            @keydown.up.prevent="setSheetHeight(sheetHeight + 24)" @keydown.down.prevent="setSheetHeight(sheetHeight - 24)"
+            @keydown.home.prevent="setSheetHeight(minSheetHeight)" @keydown.end.prevent="setSheetHeight(maxSheetHeight)"
+          ><span></span></div>
         </div>
         <AccountNav v-if="route.path.startsWith('/account/')" />
         <div class="route-view-body"><RouterView :key="route.path" /></div>
@@ -335,16 +365,15 @@ function logout() {
   width: 180px;
   height: 100%;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.76);
-  backdrop-filter: blur(28px) saturate(190%);
-  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border-right: 1px solid rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   padding: 14px 10px;
   gap: 16px;
   overflow: hidden;
-  box-shadow: 2px 0 16px rgba(0, 0, 0, 0.04);
   transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), padding 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -377,11 +406,8 @@ function logout() {
 .brand-badge-box {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #0071e3 0%, #0056b3 100%);
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.35);
   flex-shrink: 0;
 }
 
@@ -427,7 +453,7 @@ function logout() {
   border-radius: 10px;
   background: transparent;
   border: none;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -461,17 +487,15 @@ function logout() {
 }
 
 .rail-tab-item.active {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
 }
 
 .rail-tab-item.active .tab-icon-box {
-  background: var(--theme-blue);
-  color: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.35);
+  color: inherit;
 }
 
 .rail-tab-item.active .tab-title {
-  color: var(--theme-blue);
   font-weight: 600;
 }
 
@@ -512,7 +536,6 @@ function logout() {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
 }
 
@@ -604,13 +627,6 @@ function logout() {
   font-size: 10px;
 }
 
-.rail-copyright-note {
-  font-size: 10px;
-  color: #a1a1a6;
-  line-height: 1.3;
-  padding: 4px 4px 0;
-}
-
 /* ==========================================================================
    3. Middle Content Drawer Track & Container (Anchored to Sidebar Right Edge)
    ========================================================================== */
@@ -648,10 +664,8 @@ function logout() {
   border-right: 1px solid rgba(0, 0, 0, 0.08);
   overflow-y: auto;
   overflow-x: hidden;
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.05);
   transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1),
-              opacity 0.28s ease,
-              box-shadow 0.32s ease;
+              opacity 0.28s ease;
   transform: translateX(0);
   opacity: 1;
   will-change: transform, opacity;
@@ -660,7 +674,6 @@ function logout() {
 .drawer-track-wrapper.drawer-collapsed .drawer-container {
   transform: translateX(-100%);
   opacity: 0;
-  box-shadow: none;
 }
 
 .drawer-container.full-page-mode {
@@ -686,12 +699,10 @@ function logout() {
     position: absolute;
     bottom: 0;
     width: 100%;
-    height: 55%;
+    height: var(--sheet-height);
     border-radius: 20px 20px 0 0;
-    transition: height .25s ease;
+    transition: none;
   }
-  .drawer-track-wrapper.sheet-full { height: calc(100% - 52px - env(safe-area-inset-top)); }
-  .drawer-track-wrapper.sheet-peek { height: 96px; }
   .drawer-track-wrapper.drawer-collapsed { height: 0; }
   .drawer-track-wrapper.full-page-mode { position: relative; flex: 1; min-height: 0; width: 100%; height: auto; border-radius: 0; }
   .drawer-container {
@@ -700,10 +711,9 @@ function logout() {
     box-shadow: none;
   }
   .sheet-handle { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; touch-action: none; padding: 5px 12px; border-bottom: 1px solid var(--border-divider); }
-  .sheet-handle > button { width: 80px; min-height: 20px; display: grid; place-items: center; border: 0; background: none; }
+  .sheet-resize-handle { width: 100%; min-height: 28px; display: grid; place-items: center; touch-action: none; user-select: none; cursor: ns-resize; border-radius: 8px; }
+  .sheet-resize-handle:focus-visible { outline: 2px solid var(--theme-blue); outline-offset: -2px; }
   .sheet-handle span { width: 36px; height: 4px; background: #b8b8bd; border-radius: 4px; }
-  .sheet-size-actions { display: flex; gap: 20px; }
-  .sheet-size-actions button { padding: 4px 12px; border: 0; background: none; color: var(--theme-blue); font-size: 11px; }
   .route-view-body { overflow: auto; }
 }
 </style>

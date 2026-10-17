@@ -8,13 +8,15 @@ import com.travelagency.auth.service.AuthService;
 import com.travelagency.common.api.ApiResponse;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.enums.AccountStatus;
+import com.travelagency.common.enums.DepartureStatus;
 import com.travelagency.common.enums.OrderStatus;
 import com.travelagency.common.enums.RefundStatus;
 import com.travelagency.common.enums.RoleCode;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.common.security.CurrentUser;
+import com.travelagency.common.validation.KeywordRules;
 import com.travelagency.domain.dto.AccountStatusUpdateRequest;
-import com.travelagency.domain.dto.DepartureView;
+import com.travelagency.domain.dto.DashboardView;
 import com.travelagency.domain.dto.GuideAccountRequest;
 import com.travelagency.domain.dto.GuideView;
 import com.travelagency.domain.dto.GuideUpdateRequest;
@@ -26,14 +28,13 @@ import com.travelagency.domain.dto.RefundDecisionRequest;
 import com.travelagency.domain.dto.RefundView;
 import com.travelagency.domain.dto.ReviewStatusUpdateRequest;
 import com.travelagency.domain.dto.ReviewView;
+import com.travelagency.domain.dto.RouteSummaryView;
 import com.travelagency.domain.dto.StaffAccountRequest;
 import com.travelagency.domain.dto.StaffUpdateRequest;
 import com.travelagency.domain.dto.StaffView;
 import com.travelagency.domain.dto.StatusRequest;
-import com.travelagency.domain.entity.Attraction;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
-import com.travelagency.domain.entity.Hotel;
 import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Staff;
@@ -41,10 +42,8 @@ import com.travelagency.domain.entity.SysRole;
 import com.travelagency.domain.entity.SysUser;
 import com.travelagency.domain.entity.SysUserRole;
 import com.travelagency.domain.entity.TravelOrder;
-import com.travelagency.domain.mapper.AttractionMapper;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
-import com.travelagency.domain.mapper.HotelMapper;
 import com.travelagency.domain.mapper.OperationLogMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.StaffMapper;
@@ -52,17 +51,19 @@ import com.travelagency.domain.mapper.SysRoleMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
 import com.travelagency.domain.mapper.SysUserRoleMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
-import com.travelagency.domain.service.DepartureService;
+import com.travelagency.domain.mapper.TravelRouteMapper;
 import com.travelagency.domain.service.OrderService;
 import com.travelagency.domain.service.GuideService;
 import com.travelagency.domain.service.RouteService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
+import org.hibernate.validator.constraints.CodePointLength;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -77,6 +78,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -87,16 +89,15 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/admin")
 @PreAuthorize("hasAnyRole('ADMIN','STAFF')")
+@Validated
 public class AdminController {
 
     private final RouteService routeService;
-    private final DepartureService departureService;
     private final OrderService orderService;
     private final TravelOrderMapper orderMapper;
+    private final TravelRouteMapper routeMapper;
     private final DepartureMapper departureMapper;
     private final RefundMapper refundMapper;
-    private final AttractionMapper attractionMapper;
-    private final HotelMapper hotelMapper;
     private final GuideMapper guideMapper;
     private final OperationLogMapper operationLogMapper;
     private final SysUserMapper userMapper;
@@ -109,13 +110,11 @@ public class AdminController {
 
     public AdminController(
             RouteService routeService,
-            DepartureService departureService,
             OrderService orderService,
             TravelOrderMapper orderMapper,
+            TravelRouteMapper routeMapper,
             DepartureMapper departureMapper,
             RefundMapper refundMapper,
-            AttractionMapper attractionMapper,
-            HotelMapper hotelMapper,
             GuideMapper guideMapper,
             OperationLogMapper operationLogMapper,
             SysUserMapper userMapper,
@@ -125,13 +124,11 @@ public class AdminController {
             PasswordEncoder passwordEncoder,
             AuthService authService, GuideService guideService) {
         this.routeService = routeService;
-        this.departureService = departureService;
         this.orderService = orderService;
         this.orderMapper = orderMapper;
+        this.routeMapper = routeMapper;
         this.departureMapper = departureMapper;
         this.refundMapper = refundMapper;
-        this.attractionMapper = attractionMapper;
-        this.hotelMapper = hotelMapper;
         this.guideMapper = guideMapper;
         this.operationLogMapper = operationLogMapper;
         this.userMapper = userMapper;
@@ -143,154 +140,90 @@ public class AdminController {
         this.guideService = guideService;
     }
 
+    /**
+     * 后台工作台，对齐契约 {@code GET /admin/dashboard}（{@code DashboardData}）。
+     *
+     * <p>计数字段声明为 {@code int}：全局 JacksonConfig 把 {@code Long} 序列化成字符串（为了 ID 不被
+     * JS 精度截断），而契约给这些字段写的是 {@code integer} —— 用 {@code long} 会输出 {@code "15"}
+     * 这类字符串。{@code days} 只控制 {@code orderTrend} 的窗口长度，缺失的日期补零，保证前端拿到的
+     * 是一条连续序列而不是稀疏点。</p>
+     *
+     * <p>{@code openDepartureCount} 的口径是 PRD 的「可报名团期」——{@code OPEN} <b>且未过出发日期</b>，
+     * 与全站同一定义一致（{@code OrderService} 下单校验与占名额的条件 UPDATE、{@code RouteService}
+     * 的公开团期、{@code HomeService} 的近期团期都要求 {@code start_date >= 当天}，当天可报名）。
+     * 只看 {@code status = OPEN} 会把「已经出发、但工作人员尚未把它推进到 TRAVELLING/FINISHED」的团期
+     * 也算成可报名：库里没有任何定时任务会自动收口这类团期，所以过期的 OPEN 团期会一直留在计数里。</p>
+     */
     @GetMapping("/dashboard")
-    public ApiResponse<Map<String, Object>> dashboard() {
-        long users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0));
-        long routes = routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
-        long departures = departureMapper.selectCount(new QueryWrapper<Departure>().eq("status", "OPEN"));
-        long todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .ge("created_at", LocalDate.now().atStartOfDay()));
-        long pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .eq("status", OrderStatus.PAID_WAIT_CONFIRM));
-        long pendingRefund = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
-                .eq("status", OrderStatus.REFUND_APPLYING));
-        Object revenue = orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
+    public ApiResponse<DashboardView> dashboard(
+            @RequestParam(defaultValue = "7")
+            @Pattern(regexp = "7|30", message = "days 只能是 7 或 30") String days) {
+        // 当天日期以库内为准：todayOrderCount、orderTrend 与可报名团期都按自然日切分，
+        // 用 JVM 的 LocalDate.now() 会在 JVM 与库会话时区不一致时（CI 常见 UTC）错开一天。
+        LocalDate today = orderMapper.databaseToday();
+        int users = userMapper.selectCount(new QueryWrapper<SysUser>().eq("deleted", 0)).intValue();
+        int routes = (int) routeService.pageAll(1, 1, null, "PUBLISHED").getTotal();
+        int departures = departureMapper.selectCount(new QueryWrapper<Departure>()
+                .eq("status", DepartureStatus.OPEN)
+                .ge("start_date", today)).intValue();
+        int todayOrders = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .ge("created_at", today.atStartOfDay())).intValue();
+        int pendingConfirm = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .eq("status", OrderStatus.PAID_WAIT_CONFIRM)).intValue();
+        int pendingRefund = orderMapper.selectCount(new QueryWrapper<TravelOrder>()
+                .eq("status", OrderStatus.REFUND_APPLYING)).intValue();
+        BigDecimal revenue = (BigDecimal) orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
                 .select("COALESCE(SUM(total_amount), 0)").eq("payment_status", "PAID"))
                 .stream().findFirst().orElse(BigDecimal.ZERO);
-        Object participants = orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
+        int participants = ((Number) orderMapper.selectObjs(new QueryWrapper<TravelOrder>()
                 .select("COALESCE(SUM(adult_count + child_count), 0)")
                 .notIn("status", OrderStatus.CANCELLED, OrderStatus.REFUNDED))
-                .stream().findFirst().orElse(0);
-        return ApiResponse.ok(Map.of(
-                "userCount", users,
-                "publishedRouteCount", routes,
-                "openDepartureCount", departures,
-                "todayOrderCount", todayOrders,
-                "pendingConfirmCount", pendingConfirm,
-                "pendingRefundCount", pendingRefund,
-                "participantCount", participants,
-                "grossOrderAmount", revenue));
+                .stream().findFirst().orElse(0)).intValue();
+        return ApiResponse.ok(new DashboardView(users, routes, departures, todayOrders,
+                pendingConfirm, pendingRefund, participants, revenue,
+                orderTrend(Integer.parseInt(days), today), popularRoutes(), routeMapper.popularDestinations(),
+                departureMapper.upcomingEnrollment()));
     }
 
-    // 线路与行程管理端点已迁移到 AdminRouteController：此前这里的实现与契约不一致
-    // （返回实体、状态码不是 201/204、行程缺少 items/hotelName、删除不级联），
-    // 迁移后 AdminController 只保留其它后台模块的接口。
-
     /**
-     * 后台团期分页查询，对齐契约 GET /admin/departures（分页信封 + routeId/guideId/status/日期区间筛选）。
+     * 近 {@code days} 天的订单趋势。库里只返回有订单的日期，这里按日历补零。
+     *
+     * <p>{@code today} 由 {@link TravelOrderMapper#databaseToday()} 提供（库内日期），
+     * 保证窗口末位与 {@code GROUP BY DATE(created_at)} 的口径完全一致。</p>
      */
-    @GetMapping("/departures")
-    public ApiResponse<PageResponse<DepartureView>> departures(
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) Long routeId,
-            @RequestParam(required = false) Long guideId,
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateFrom,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDateTo) {
-        return ApiResponse.ok(departureService.page(routeId, guideId, status, startDateFrom, startDateTo, page, size));
+    private List<DashboardView.Metric> orderTrend(int days, LocalDate today) {
+        LocalDate from = today.minusDays(days - 1L);
+        Map<LocalDate, DashboardView.Metric> byDate = new LinkedHashMap<>();
+        orderMapper.dailyTrend(from.atStartOfDay()).forEach(metric -> byDate.put(metric.date(), metric));
+        List<DashboardView.Metric> series = new ArrayList<>(days);
+        for (int i = 0; i < days; i++) {
+            LocalDate date = from.plusDays(i);
+            series.add(byDate.getOrDefault(date, new DashboardView.Metric(date, 0, 0, BigDecimal.ZERO)));
+        }
+        return series;
     }
 
     /**
-     * 团期管理详情，对齐契约 GET /admin/departures/{departureId}。
-     * 此前缺少该映射，前端 api/modules.js 调用时会命中 PUT 的路径而返回 405。
+     * 热门线路：与 {@code HomeService} 的排行同口径 —— 已上架且有成交，按「有效报名订单条数」实时统计
+     * 取前 8 条（PRD §27）。
+     *
+     * <p>不再按 {@code travel_route.valid_booking_count} 这一物化计数列排序：该列可能被预置或被绕过业务
+     * 链路的写入污染，用它排行会与真实订单不符。现在与「热门目的地」共用同一套「有效报名」定义，只是
+     * 度量从游客人数换成订单条数，计数与排行都直接来自 {@code travel_order} 聚合。</p>
      */
-    @GetMapping("/departures/{id}")
-    public ApiResponse<DepartureView> departureDetail(@PathVariable Long id) {
-        return ApiResponse.ok(departureService.detail(id));
+    private List<RouteSummaryView> popularRoutes() {
+        return routeService.popularRoutes(8, null);
     }
 
-    @PostMapping("/departures")
-    public ApiResponse<DepartureView> createDeparture(@RequestBody Departure departure) {
-        Departure saved = departureService.save(departure);
-        log("团期", "CREATE", "DEPARTURE", saved.id, "SUCCESS", "创建团期");
-        // 回查以带回 created_at / updated_at 等数据库默认值，并返回契约 Departure 视图。
-        return ApiResponse.ok(departureService.detail(saved.id));
-    }
-
-    @PutMapping("/departures/{id}")
-    public ApiResponse<DepartureView> updateDeparture(@PathVariable Long id, @RequestBody Departure departure) {
-        departure.id = id;
-        Departure saved = departureService.save(departure);
-        log("团期", "UPDATE", "DEPARTURE", id, "SUCCESS", "编辑团期");
-        return ApiResponse.ok(departureService.detail(saved.id));
-    }
-
-    @PatchMapping("/departures/{id}/status")
-    public ApiResponse<Void> updateDepartureStatus(@PathVariable Long id, @Valid @RequestBody StatusRequest request) {
-        departureService.changeStatus(id, request.status());
-        log("团期", "STATUS", "DEPARTURE", id, "SUCCESS", "团期状态变更为 " + request.status());
-        return ApiResponse.ok();
-    }
+    // 线路与行程管理端点已迁移到 AdminRouteController，团期管理端点已迁移到
+    // AdminDepartureController，景点管理端点已迁移到 AdminAttractionController，
+    // 酒店资料管理端点已迁移到 AdminHotelController：
+    // 此前这些实现与契约不一致（返回实体、状态码不是 201/204、响应字段形状违约、
+    // 行程缺少 items/hotelName、删除不级联或直接撞外键报 500、团期状态接口返回 data:null
+    // 且允许客户端提交名额字段），迁移后 AdminController 只保留其它后台模块的接口。
 
     /**
-     * 后台景点分页查询，对齐契约 GET /admin/attractions（分页信封 + keyword 筛选）。
-     */
-    @GetMapping("/attractions")
-    public ApiResponse<PageResponse<Attraction>> attractions(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword) {
-        QueryWrapper<Attraction> query = new QueryWrapper<>();
-        appendKeyword(query, keyword, "name", "intro", "city");
-        return ApiResponse.ok(PageResponse.from(attractionMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
-    }
-
-    @PostMapping("/attractions")
-    public ApiResponse<Attraction> createAttraction(@RequestBody Attraction attraction) {
-        attractionMapper.insert(attraction);
-        return ApiResponse.ok(attraction);
-    }
-
-    @PutMapping("/attractions/{id}")
-    public ApiResponse<Attraction> updateAttraction(@PathVariable Long id, @RequestBody Attraction attraction) {
-        attraction.id = id;
-        attractionMapper.updateById(attraction);
-        return ApiResponse.ok(attraction);
-    }
-
-    @DeleteMapping("/attractions/{id}")
-    public ApiResponse<Void> deleteAttraction(@PathVariable Long id) {
-        attractionMapper.deleteById(id);
-        return ApiResponse.ok();
-    }
-
-    /**
-     * 后台酒店分页查询，对齐契约 GET /admin/hotels（分页信封 + keyword 筛选）。
-     */
-    @GetMapping("/hotels")
-    public ApiResponse<PageResponse<Hotel>> hotels(
-            @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword) {
-        QueryWrapper<Hotel> query = new QueryWrapper<>();
-        appendKeyword(query, keyword, "name", "address", "intro");
-        return ApiResponse.ok(PageResponse.from(hotelMapper.selectPage(pageOf(page, size),
-                query.orderByDesc("created_at"))));
-    }
-
-    @PostMapping("/hotels")
-    public ApiResponse<Hotel> createHotel(@RequestBody Hotel hotel) {
-        hotelMapper.insert(hotel);
-        return ApiResponse.ok(hotel);
-    }
-
-    @PutMapping("/hotels/{id}")
-    public ApiResponse<Hotel> updateHotel(@PathVariable Long id, @RequestBody Hotel hotel) {
-        hotel.id = id;
-        hotelMapper.updateById(hotel);
-        return ApiResponse.ok(hotel);
-    }
-
-    @DeleteMapping("/hotels/{id}")
-    public ApiResponse<Void> deleteHotel(@PathVariable Long id) {
-        hotelMapper.deleteById(id);
-        return ApiResponse.ok();
-    }
-
-    /**
-     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status 筛选）。
+     * 后台导游分页查询，对齐契约 GET /admin/guides（分页信封 + status/keyword 筛选）。
      *
      * <p>返回 {@link GuideView}：契约 Guide 把 {@code username} 列为 required，
      * 而实体只有 {@code userId}，直出实体拿不到账号名。</p>
@@ -299,7 +232,8 @@ public class AdminController {
     public ApiResponse<PageResponse<GuideView>> guides(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<Guide> query = new QueryWrapper<>();
         if (status != null && !status.isBlank()) {
@@ -351,7 +285,8 @@ public class AdminController {
     public ApiResponse<PageResponse<OrderSummaryView>> orders(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
             @RequestParam(required = false) String status) {
         QueryWrapper<TravelOrder> query = new QueryWrapper<>();
         if (status != null && !status.isBlank()) {
@@ -376,12 +311,13 @@ public class AdminController {
      * 确认已支付订单报名。
      *
      * <p>契约的 200 响应是 OrderEnvelope（data 为确认后的订单），此前返回 void 导致 data 为 null。</p>
+     *
+     * <p>操作日志由 {@link OrderService#confirm} 在业务事务内记录，不再在这里补写：写在 Controller
+     * 意味着业务事务已经提交，日志失败时无法回滚业务，会留下「报名已确认、却查不到操作记录」的账。</p>
      */
     @PostMapping("/orders/{orderNo}/confirm")
     public ApiResponse<OrderView> confirmOrder(@PathVariable String orderNo) {
-        OrderView order = orderService.confirm(orderNo, CurrentUser.required().userId());
-        log("订单", "CONFIRM", "ORDER", orderNo, "SUCCESS", "确认报名");
-        return ApiResponse.ok(order);
+        return ApiResponse.ok(orderService.confirm(orderNo, CurrentUser.required().userId()));
     }
 
     @GetMapping("/refunds")
@@ -403,27 +339,27 @@ public class AdminController {
      * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。
      * requestBody 是可选的，但一旦提供仍须校验，否则超长 comment 会绕过
      * RefundDecisionRequest 上的 @Size 约束（同文件 reject 端点原本就带 @Valid）。</p>
+     *
+     * <p>操作日志（含「出款结果待确认」这一支）由 {@link OrderService#approveRefund} 在业务事务内记录。</p>
      */
     @PostMapping("/refunds/{id}/approve")
     public ApiResponse<RefundView> approveRefund(
             @PathVariable Long id, @Valid @RequestBody(required = false) RefundDecisionRequest request) {
         String comment = request == null ? null : request.comment();
-        RefundView refund = orderService.approveRefund(id, comment, CurrentUser.required().userId());
-        log("退款", "APPROVE", "REFUND", id, "SUCCESS", comment);
-        return ApiResponse.ok(refund);
+        return ApiResponse.ok(orderService.approveRefund(id, comment, CurrentUser.required().userId()));
     }
 
     /**
      * 拒绝退款申请。
      *
      * <p>契约的 200 响应是 RefundEnvelope（data 为退款对象），此前返回 void 导致 data 为 null。</p>
+     *
+     * <p>操作日志由 {@link OrderService#rejectRefund} 在业务事务内记录。</p>
      */
     @PostMapping("/refunds/{id}/reject")
     public ApiResponse<RefundView> rejectRefund(
             @PathVariable Long id, @Valid @RequestBody RefundDecisionRequest request) {
-        RefundView refund = orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId());
-        log("退款", "REJECT", "REFUND", id, "SUCCESS", request.comment());
-        return ApiResponse.ok(refund);
+        return ApiResponse.ok(orderService.rejectRefund(id, request.comment(), CurrentUser.required().userId()));
     }
 
     @GetMapping("/reviews")
@@ -437,9 +373,7 @@ public class AdminController {
     @PatchMapping("/reviews/{id}/status")
     public ApiResponse<ReviewView> updateReviewStatus(
             @PathVariable Long id, @Valid @RequestBody ReviewStatusUpdateRequest request) {
-        ReviewView view = orderService.updateReviewStatus(id, request.status(), CurrentUser.required().userId());
-        log("评价", "STATUS", "REVIEW", id, "SUCCESS", "评价状态变更为 " + request.status());
-        return ApiResponse.ok(view);
+        return ApiResponse.ok(orderService.updateReviewStatus(id, request.status(), CurrentUser.required().userId()));
     }
 
     /**
@@ -449,14 +383,28 @@ public class AdminController {
      * 契约 required 的 {@code roles} 整个缺失、头像字段名还是 {@code avatar}（契约是 {@code avatarUrl}）。
      * 前端 {@code AdminUsersView} 用 {@code row.status === 'ACTIVE'} 判断状态，整数永远不相等，
      * 于是所有账号都被渲染成「已冻结」。这里改为复用 {@link UserView}（与契约 User 一一对应）。</p>
+     *
+     * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}；
+     * 早先的实现只接前两个，多传的筛选参数被 Spring 直接丢掉、既不报错也不生效（静默失效），
+     * 与本文件 {@code /admin/guides}、{@code AdminHotelController} 的 {@code /admin/hotels}
+     * 等同族端点的口径也不一致。
+     * {@code status} 走 {@link #statusValue(String)} 还原成 {@code sys_user.status} 的 1/0；
+     * 契约枚举之外的取值按请求校验规则回 422，不再静默落到「停用」。</p>
      */
     @GetMapping("/users")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<UserView>> users(
             @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size) {
-        Page<SysUser> result = userMapper.selectPage(pageOf(page, size),
-                new QueryWrapper<SysUser>().eq("deleted", 0).orderByDesc("created_at"));
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
+            @RequestParam(required = false) String status) {
+        QueryWrapper<SysUser> query = new QueryWrapper<SysUser>().eq("deleted", 0);
+        if (status != null && !status.isBlank()) {
+            query.eq("status", statusValue(status));
+        }
+        appendKeyword(query, keyword, "username", "nickname", "real_name", "phone");
+        Page<SysUser> result = userMapper.selectPage(pageOf(page, size), query.orderByDesc("created_at"));
         Map<Long, Set<String>> roles = authService.rolesOfAll(
                 result.getRecords().stream().map(user -> user.id).toList());
         List<UserView> records = result.getRecords().stream()
@@ -509,14 +457,24 @@ public class AdminController {
      * <p>此前直出 {@link Staff} 实体：契约 required 的 {@code username}、{@code realName}、
      * {@code status} 都取自 {@code sys_user}，实体里一个都没有 —— 既缺必填字段，
      * 也违反「Controller 不得直接暴露 Entity」（docs/API.md §14）。</p>
+     *
+     * <p>契约在 {@code page}/{@code size} 之外还声明了可选的 {@code keyword} 与 {@code status}，
+     * 早先只接前两个，多传的筛选参数被静默忽略。这里两个参数都<b>跨表</b>：
+     * {@code username}/{@code realName}/{@code status} 在 {@code sys_user}，
+     * {@code employeeNo}/{@code department}/{@code position} 在 {@code staff}。
+     * 跨表条件交给 {@link #staffFilter(String, String)} 里的 {@code EXISTS} 子查询在库内完成，
+     * 筛选与分页仍是同一条 SQL；{@code status} 与 {@code keyword} 同时给出时取交集。</p>
      */
     @GetMapping("/staff")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<PageResponse<StaffView>> staff(
             @RequestParam(defaultValue = "1") long page,
-            @RequestParam(defaultValue = "20") long size) {
+            @RequestParam(defaultValue = "20") long size,
+            @RequestParam(required = false)
+            @CodePointLength(max = KeywordRules.MAX_CHARS, message = KeywordRules.LENGTH_MESSAGE) String keyword,
+            @RequestParam(required = false) String status) {
         Page<Staff> result = staffMapper.selectPage(pageOf(page, size),
-                new QueryWrapper<Staff>().orderByDesc("created_at"));
+                staffFilter(keyword, status).orderByDesc("created_at"));
         Map<Long, SysUser> accounts = accountsOf(result.getRecords().stream().map(staff -> staff.userId).toList());
         List<StaffView> items = result.getRecords().stream()
                 .map(staff -> StaffView.from(staff, accounts.get(staff.userId)))
@@ -583,9 +541,16 @@ public class AdminController {
         UpdateWrapper<SysUser> accountUpdate = new UpdateWrapper<SysUser>().eq("id", account.id)
                 .set("real_name", request.realName())
                 .set("phone", request.phone());
-        // 创建账号时昵称被初始化成姓名（见 createAccount）。只有当昵称还是那个初始值、
-        // 或本来就为空时才跟着改，避免把用户自己在「个人资料」里改过的昵称覆盖掉。
-        if (account.nickname == null || account.nickname.isBlank() || account.nickname.equals(account.realName)) {
+        // 昵称跟着姓名走，只在昵称还是「账号初始化时那个值」时生效，避免把用户自己在
+        // 「个人资料」里改过的昵称覆盖掉。注意 createAccount 现在把昵称初始化成账号名
+        // （不是姓名，见那里的说明），所以这条分支只对改动前建的旧账号
+        // （nickname == realName）仍然成立。
+        // 旧账号的姓名最长可到 64 个字符，而 sys_user.nickname 只有 VARCHAR(32)：
+        // 超出列宽时不同步昵称（完整姓名始终保存在 real_name），否则一次合法的改名会撞
+        // "Data too long for column 'nickname'" 变成 500。
+        boolean nicknameKeepsInitialValue = account.nickname == null || account.nickname.isBlank()
+                || account.nickname.equals(account.realName);
+        if (nicknameKeepsInitialValue && fitsNicknameColumn(request.realName())) {
             accountUpdate.set("nickname", request.realName());
         }
         userMapper.update(null, accountUpdate);
@@ -625,7 +590,8 @@ public class AdminController {
     public ApiResponse<PageResponse<OperationLogView>> logs(
             @RequestParam(defaultValue = "1") long page,
             @RequestParam(defaultValue = "20") long size,
-            @RequestParam(required = false) String module,
+            @RequestParam(required = false)
+            @CodePointLength(max = 64, message = "module 长度不能超过 64 个字符") String module,
             @RequestParam(required = false) Long operatorId) {
         QueryWrapper<OperationLog> query = new QueryWrapper<>();
         if (module != null && !module.isBlank()) {
@@ -652,8 +618,14 @@ public class AdminController {
         SysUser user = new SysUser();
         user.username = username;
         user.passwordHash = passwordEncoder.encode(password);
+        // 昵称用账号名，不用真实姓名：sys_user.nickname 是 VARCHAR(32)，而员工姓名按契约允许
+        // 64 个字符（StaffAccountRequest.realName 上限 64，sys_user.real_name 也是 VARCHAR(64)）。
+        // 把姓名同时当昵称写进 nickname，33–64 个字符的姓名能过校验，却会在 MySQL 严格模式
+        // （默认 STRICT_TRANS_TABLES）下报 "Data too long for column 'nickname'" —— 一次合法的
+        // 员工建档变成 500。与 GuideService#create 同口径：昵称只是展示用的短名
+        // （username 的正则上限是 32 位，必然不超宽），完整姓名保存在 real_name 里。
         user.realName = realName;
-        user.nickname = realName;
+        user.nickname = username;
         user.phone = phone;
         user.status = 1;
         user.deleted = 0;
@@ -696,9 +668,75 @@ public class AdminController {
         return user == null ? null : user.username;
     }
 
-    /** 契约 AccountStatus（ACTIVE/DISABLED）→ {@code sys_user.status}（1/0）；非法值已被 DTO 约束挡在 422。 */
+    /**
+     * 契约 AccountStatus（{@code ACTIVE}/{@code DISABLED}）→ {@code sys_user.status}（1/0）。
+     *
+     * <p>枚举之外的取值必须<b>拒绝</b>，不能落进默认分支：早先写成
+     * {@code ACTIVE.equals(status) ? 1 : 0}，于是任何非 ACTIVE 的非空值（拼错的 {@code DISABLE}、
+     * 小写 {@code active}、别的枚举）都被静默当成 0 = 停用 —— 调用方以为在按状态筛选，
+     * 实际拿到的却是另一批数据。契约把这个查询参数声明为 {@code AccountStatus} 枚举，
+     * 按请求校验规则回 422，与 {@code AdminRouteService#page} 对 {@code RouteStatus} 的口径一致
+     * （{@code GET /admin/routes?status=NOT_A_STATUS} → 422 {@code VALIDATION_ERROR}）。</p>
+     *
+     * <p>请求体路径（{@code AccountStatusUpdateRequest}）已由 {@code @Pattern} 挡在 422，走不到这里；
+     * 缺省与空串由调用方判空后跳过，语义是「不过滤」。</p>
+     */
     private static int statusValue(String status) {
-        return AccountStatus.ACTIVE.equals(status) ? 1 : 0;
+        String value = status == null ? "" : status.trim();
+        if (AccountStatus.ACTIVE.equals(value)) {
+            return 1;
+        }
+        if (AccountStatus.DISABLED.equals(value)) {
+            return 0;
+        }
+        throw new BusinessException(422, "VALIDATION_ERROR", "账号状态只能是 ACTIVE 或 DISABLED");
+    }
+
+    /**
+     * 拼 {@code GET /admin/staff} 的筛选条件（契约的 {@code keyword} + {@code status}）。
+     *
+     * <p>两个参数都<b>跨表</b>：{@code status} 只在 {@code sys_user}，
+     * {@code keyword} 则同时覆盖 {@code sys_user}（username/real_name/phone）与
+     * {@code staff}（employee_no/department/position）。{@code QueryWrapper} 是单表的，
+     * 所以跨表部分交给 {@code EXISTS} 子查询在库内完成：筛选与分页仍是同一条 SQL，
+     * 不把命中的账号 id 拉回 Java 再拼 {@code IN (…)}（那会让 SQL 参数与代价随账号总数增长）。</p>
+     *
+     * <p><b>为什么 status 必须是独立的 AND 条件</b>：早先的实现先把命中的账号 id 查回 Java，
+     * 再把它与 staff 自有列的 LIKE 放进<b>同一个 OR 组</b>：
+     * {@code (employee_no LIKE ? OR department LIKE ? OR position LIKE ? OR user_id IN (?))}，
+     * 而 status 只体现在 {@code user_id IN (?)} 那一支 ⇒ 只要部门（或工号、岗位）命中关键字，
+     * 这个 OR 分支就绕过了状态：{@code status=ACTIVE&keyword=测试部} 会把<b>已停用</b>的员工也返回。
+     * 现在 status 是独立的 {@code EXISTS}（AND 挂最外层），任何关键字分支都绕不过它。</p>
+     *
+     * <p>包级可见（非 private）：供同包单测 {@code AdminStaffFilterSqlTest} 直接断言生成的 SQL 形状 ——
+     * 上面两点都是形状问题，真实请求的响应体看不出来，只有钉住 SQL 才能防止日后改回「先查 id 再 IN」。</p>
+     */
+    static QueryWrapper<Staff> staffFilter(String keyword, String status) {
+        QueryWrapper<Staff> query = new QueryWrapper<>();
+        boolean hasStatus = status != null && !status.isBlank();
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+        if (!hasStatus && !hasKeyword) {
+            return query;
+        }
+        if (hasStatus) {
+            // 硬过滤：状态压在 staff.user_id 关联的账号上，关键字条件怎么拼都绕不过它。
+            // {0} 是 MyBatis-Plus 的占位符，会绑成 JDBC 参数，不是字符串拼接。
+            query.apply("EXISTS (SELECT 1 FROM sys_user u WHERE u.id = staff.user_id"
+                    + " AND u.deleted = 0 AND u.status = {0})", statusValue(status));
+        }
+        if (hasKeyword) {
+            String kw = keyword.trim();
+            // 宽匹配：staff 自有列 OR 关联账号列，整体放进一个 and(...) 与上面的硬过滤取交集。
+            query.and(w -> w
+                    .like("employee_no", kw)
+                    .or().like("department", kw)
+                    .or().like("position", kw)
+                    .or().apply("EXISTS (SELECT 1 FROM sys_user u WHERE u.id = staff.user_id"
+                            + " AND u.deleted = 0"
+                            + " AND (u.username LIKE {0} OR u.real_name LIKE {0} OR u.phone LIKE {0}))",
+                            "%" + kw + "%"));
+        }
+        return query;
     }
 
     /** 锁行取用户：并发改状态时不拿旧快照去覆盖刚写入的结果。不存在或已软删 → 404。 */
@@ -788,6 +826,20 @@ public class AdminController {
 
     private static String displayName(SysUser user) {
         return user.nickname == null || user.nickname.isBlank() ? user.username : user.nickname;
+    }
+
+    /** {@code sys_user.nickname} 的列宽（utf8mb4 下 {@code VARCHAR(32)} 就是 32 个字符）。 */
+    private static final int NICKNAME_MAX_CODE_POINTS = 32;
+
+    /**
+     * {@code sys_user.nickname} 是 {@code VARCHAR(32)}，按 Unicode 码点计。
+     *
+     * <p>昵称只是展示用的短名，完整姓名保存在 {@code real_name}（{@code VARCHAR(64)}）：
+     * 姓名比昵称列宽时不能往 nickname 里写，否则会在 MySQL 严格模式下报
+     * "Data too long for column 'nickname'"。</p>
+     */
+    private static boolean fitsNicknameColumn(String value) {
+        return value != null && value.codePointCount(0, value.length()) <= NICKNAME_MAX_CODE_POINTS;
     }
 
     private static List<Long> distinctIds(List<Long> ids) {

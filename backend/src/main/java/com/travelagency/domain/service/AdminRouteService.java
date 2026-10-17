@@ -5,9 +5,12 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.travelagency.common.api.PageResponse;
 import com.travelagency.common.audit.OperationLogRecorder;
+import com.travelagency.common.enums.AccommodationType;
+import com.travelagency.common.enums.AccountStatus;
 import com.travelagency.common.enums.RouteStatus;
 import com.travelagency.common.exception.BusinessException;
 import com.travelagency.domain.dto.DepartureView;
+import com.travelagency.domain.dto.HotelSummaryView;
 import com.travelagency.domain.dto.ItineraryDayRequest;
 import com.travelagency.domain.dto.ItineraryDayView;
 import com.travelagency.domain.dto.ItineraryItemRequest;
@@ -61,7 +64,10 @@ import java.util.stream.Collectors;
  *   <li>没有每日行程的线路不允许上架（409），避免出现不可销售的线路；</li>
  *   <li>已上架线路的行程结构不允许增删（409），需要先下架，避免销售中的产品被改动；</li>
  *   <li>同一线路的 dayNumber、同一日行程的 sortNo 都必须唯一；</li>
- *   <li>行程引用的酒店、景点必须真实存在，避免外键约束报错或产生脏数据。</li>
+ *   <li>行程引用的酒店、景点必须真实存在，避免外键约束报错或产生脏数据；</li>
+ *   <li>停用（{@code DISABLED}）的酒店不能再被安排进新行程（422）：停用是"这家酒店不再使用"
+ *       的唯一手段 —— 被行程引用的酒店不允许删除（见 {@code HotelService#delete}），
+ *       若停用不生效，已用过的酒店就永远无法退场。</li>
  * </ol></p>
  *
  * <p>写操作同时负责记录操作日志：业务数据与 {@code operation_log} 在同一个
@@ -244,21 +250,21 @@ public class AdminRouteService {
             return List.of();
         }
         Map<Long, List<RouteItineraryItem>> itemsByDay = itemsByDay(days.stream().map(day -> day.id).toList());
-        Map<Long, String> hotelNames = hotelNameMap(days.stream().map(day -> day.hotelId).toList());
+        Map<Long, Hotel> hotels = hotelMap(days.stream().map(day -> day.hotelId).toList());
         return days.stream()
                 .map(day -> toDayView(day, itemsByDay.getOrDefault(day.id, List.of()),
-                        lookup(hotelNames, day.hotelId)))
+                        lookup(hotels, day.hotelId)))
                 .toList();
     }
 
-    /** 新增每日行程，对齐契约 POST /admin/routes/{routeId}/itinerary-days（201 + Location）。 */
     @Transactional
     public ItineraryDayView createDay(Long routeId, ItineraryDayRequest request, Long operatorId) {
+        requireConsistentAccommodation(request);
         TravelRoute route = requireRoute(routeId);
         if (RouteStatus.PUBLISHED.equals(route.status)) {
             throw new BusinessException(409, "ROUTE_STATE_CONFLICT", "线路已上架，请先下架再调整行程结构");
         }
-        Hotel hotel = requireHotel(request.hotelId());
+        Hotel hotel = requireActiveHotel(request.hotelId());
         if (dayNumberExists(routeId, request.dayNumber(), null)) {
             throw new BusinessException(409, "ROUTE_STATE_CONFLICT",
                     "第 " + request.dayNumber() + " 天行程已存在，同一线路的行程天数不能重复");
@@ -267,21 +273,19 @@ public class AdminRouteService {
         day.routeId = routeId;
         day.dayNumber = request.dayNumber();
         day.title = trimToNull(request.title());
-        day.description = trimToNull(request.description());
-        day.transportation = trimToNull(request.transportation());
-        day.meals = trimToNull(request.meals());
-        day.hotelId = request.hotelId();
+        applyDayFields(day, request);
         dayMapper.insert(day);
         operationLog.record(operatorId, "行程", "CREATE", "ITINERARY_DAY", day.id,
                 "线路 " + routeId + " 新增第 " + day.dayNumber + " 天行程");
-        return toDayView(dayMapper.selectById(day.id), List.of(), hotel == null ? null : hotel.name);
+        return toDayView(dayMapper.selectById(day.id), List.of(), hotel);
     }
 
-    /** 修改每日行程，对齐契约 PUT /admin/itinerary-days/{dayId}。 */
+    /** 保留原酒店关联时允许已停用酒店；新关联必须启用。 */
     @Transactional
     public ItineraryDayView updateDay(Long dayId, ItineraryDayRequest request, Long operatorId) {
+        requireConsistentAccommodation(request);
         RouteItineraryDay day = requireDay(dayId);
-        Hotel hotel = requireHotel(request.hotelId());
+        Hotel hotel = requireAssignableHotel(day.hotelId, request.hotelId());
         if (dayNumberExists(day.routeId, request.dayNumber(), dayId)) {
             // 契约为该端点只列出 200 / 404；同一线路内天数序号冲突属于字段语义校验失败，
             // 按 docs/API.md 第 7 节返回 422，而不是数据库唯一键报错后的 500。
@@ -294,10 +298,15 @@ public class AdminRouteService {
                 .set("description", trimToNull(request.description()))
                 .set("transportation", trimToNull(request.transportation()))
                 .set("meals", trimToNull(request.meals()))
-                .set("hotel_id", request.hotelId()));
+                .set("hotel_id", request.hotelId())
+                .set("accommodation_type", request.effectiveAccommodationType())
+                .set("accommodation_standard", trimToNull(request.accommodationStandard()))
+                .set("room_type", trimToNull(request.roomType()))
+                .set("breakfast_included", booleanValue(request.breakfastIncluded()))
+                .set("accommodation_note", trimToNull(request.accommodationNote())));
         operationLog.record(operatorId, "行程", "UPDATE", "ITINERARY_DAY", dayId,
                 "修改第 " + request.dayNumber() + " 天行程");
-        return toDayView(requireDay(dayId), itemsOf(dayId), hotel == null ? null : hotel.name);
+        return toDayView(requireDay(dayId), itemsOf(dayId), hotel);
     }
 
     /**
@@ -357,14 +366,15 @@ public class AdminRouteService {
         if (sortNoExists(item.dayId, request.sortNo(), itemId)) {
             throw new BusinessException(422, "VALIDATION_ERROR", "排序号 " + request.sortNo() + " 已存在，请调整排序");
         }
+        Coordinates coordinates = resolveCoordinates(request, attraction);
         itemMapper.update(null, new UpdateWrapper<RouteItineraryItem>().eq("id", itemId)
                 .set("sort_no", request.sortNo())
                 .set("item_type", request.itemType())
                 .set("name", trimToNull(request.name()))
                 .set("description", trimToNull(request.description()))
                 .set("attraction_id", request.attractionId())
-                .set("longitude", coordinates(request.longitude(), attraction == null ? null : attraction.longitude))
-                .set("latitude", coordinates(request.latitude(), attraction == null ? null : attraction.latitude)));
+                .set("longitude", coordinates.longitude())
+                .set("latitude", coordinates.latitude()));
         operationLog.record(operatorId, "行程", "UPDATE", "ITINERARY_ITEM", itemId,
                 "修改行程项目：" + trimToNull(request.name()));
         return ItineraryItemView.from(requireItem(itemId));
@@ -400,10 +410,43 @@ public class AdminRouteService {
                 .toList();
     }
 
-    private ItineraryDayView toDayView(RouteItineraryDay day, List<RouteItineraryItem> items, String hotelName) {
+    private ItineraryDayView toDayView(RouteItineraryDay day, List<RouteItineraryItem> items, Hotel hotel) {
         return new ItineraryDayView(day.id, day.routeId, day.dayNumber, day.title, day.description,
-                day.transportation, day.meals, day.hotelId, hotelName,
+                day.transportation, day.meals,
+                AccommodationType.of(day.accommodationType),
+                day.accommodationStandard, day.roomType, booleanValue(day.breakfastIncluded),
+                day.accommodationNote,
+                day.hotelId, hotel == null ? null : hotel.name,
+                HotelSummaryView.forItinerary(hotel),
                 items.stream().map(ItineraryItemView::from).toList());
+    }
+
+    private static void applyDayFields(RouteItineraryDay day, ItineraryDayRequest request) {
+        day.description = trimToNull(request.description());
+        day.transportation = trimToNull(request.transportation());
+        day.meals = trimToNull(request.meals());
+        day.hotelId = request.hotelId();
+        day.accommodationType = request.effectiveAccommodationType();
+        day.accommodationStandard = trimToNull(request.accommodationStandard());
+        day.roomType = trimToNull(request.roomType());
+        day.breakfastIncluded = booleanValue(request.breakfastIncluded());
+        day.accommodationNote = trimToNull(request.accommodationNote());
+    }
+
+    private static void requireConsistentAccommodation(ItineraryDayRequest request) {
+        AccommodationType.Violation violation = AccommodationType.violation(
+                request.accommodationType(), request.hotelId(), request.accommodationStandard());
+        if (violation != null) {
+            throw new BusinessException(422, "VALIDATION_ERROR", violation.message());
+        }
+    }
+
+    private static Integer booleanValue(Boolean value) {
+        return value == null ? null : (value ? 1 : 0);
+    }
+
+    private static Boolean booleanValue(Integer value) {
+        return value == null ? null : value == 1;
     }
 
     /** 可售最低价：在售（OPEN）团期成人价的最小值，与公开线路列表口径一致。 */
@@ -431,7 +474,7 @@ public class AdminRouteService {
             return Map.of();
         }
         List<Departure> departures = departureMapper.selectList(new QueryWrapper<Departure>()
-                .in("route_id", routeIds).eq("status", "OPEN").ge("start_date", LocalDate.now())
+                .in("route_id", routeIds).eq("status", "OPEN").apply("start_date >= CURRENT_DATE()")
                 .orderByAsc("start_date"));
         Map<Long, Departure> result = new LinkedHashMap<>();
         departures.forEach(departure -> result.putIfAbsent(departure.routeId, departure));
@@ -453,13 +496,13 @@ public class AdminRouteService {
                 .eq("day_id", dayId).orderByAsc("sort_no"));
     }
 
-    private Map<Long, String> hotelNameMap(Collection<Long> hotelIds) {
+    private Map<Long, Hotel> hotelMap(Collection<Long> hotelIds) {
         List<Long> ids = distinctIds(hotelIds);
         if (ids.isEmpty()) {
             return Map.of();
         }
         return hotelMapper.selectByIds(ids).stream()
-                .collect(Collectors.toMap(hotel -> hotel.id, hotel -> hotel.name, (a, b) -> a));
+                .collect(Collectors.toMap(hotel -> hotel.id, hotel -> hotel, (a, b) -> a));
     }
 
     private Map<Long, String> guideNameMap(Collection<Long> guideIds) {
@@ -475,15 +518,7 @@ public class AdminRouteService {
         return departure == null ? null : departure.startDate;
     }
 
-    /**
-     * 联查结果的安全取值。
-     *
-     * <p>不能用 {@code map.get(null)} 直接取：本类在"没有任何关联数据"时返回
-     * {@link Map#of()}，而不可变集合的 {@code get(null)} 会抛 {@link NullPointerException}
-     * （{@code HashMap.get(null)} 才返回 null）。行程未安排酒店、团期未分配导游都会走到这里，
-     * 一旦漏判就会让线路详情/行程接口 500。</p>
-     */
-    private static String lookup(Map<Long, String> values, Long key) {
+    private static <T> T lookup(Map<Long, T> values, Long key) {
         return key == null ? null : values.get(key);
     }
 
@@ -513,16 +548,38 @@ public class AdminRouteService {
         item.name = trimToNull(request.name());
         item.description = trimToNull(request.description());
         item.attractionId = request.attractionId();
-        item.longitude = coordinates(request.longitude(), attraction == null ? null : attraction.longitude);
-        item.latitude = coordinates(request.latitude(), attraction == null ? null : attraction.latitude);
+        Coordinates coordinates = resolveCoordinates(request, attraction);
+        item.longitude = coordinates.longitude();
+        item.latitude = coordinates.latitude();
+    }
+
+    /** 行程项目的经纬度对：两个字段必须同时写入或同时为空。 */
+    private record Coordinates(BigDecimal longitude, BigDecimal latitude) {
     }
 
     /**
-     * 项目经纬度：优先使用请求值；未填写时沿用所关联景点的坐标，
+     * 项目经纬度：优先使用请求值；请求未提供坐标时<b>整对</b>沿用所关联景点的坐标，
      * 保证"景点坐标"数据可以直接用于行程地图展示。
+     *
+     * <p><b>继承必须以整对为单位</b>：请求只给一个坐标的情况在进入本方法前就被
+     * {@code ItineraryItemRequest} 上的类型级约束 {@code @CoordinatePairComplete} 以 422 拒绝；
+     * 景点侧则可能因为历史数据只填了经度或只填了纬度（见迁移 009），逐字段继承会把这种
+     * "半截坐标"复制进行程项 —— 用户端地图要求两个坐标都非空才落点，复制过去的点照样
+     * 不会显示，等于把同一个问题换个表继续藏下去。此时保持为空，让运营重新成对录入。</p>
      */
-    private static BigDecimal coordinates(Double requested, BigDecimal fromAttraction) {
-        return requested == null ? fromAttraction : BigDecimal.valueOf(requested);
+    private static Coordinates resolveCoordinates(ItineraryItemRequest request, Attraction attraction) {
+        if (request.longitude() != null || request.latitude() != null) {
+            return new Coordinates(decimal(request.longitude()), decimal(request.latitude()));
+        }
+        if (attraction == null || attraction.longitude == null || attraction.latitude == null) {
+            return new Coordinates(null, null);
+        }
+        return new Coordinates(attraction.longitude, attraction.latitude);
+    }
+
+    /** 契约 Longitude / Latitude 是 JSON number，库内是 DECIMAL(10,7)。 */
+    private static BigDecimal decimal(Double value) {
+        return value == null ? null : BigDecimal.valueOf(value);
     }
 
     private TravelRoute requireRoute(Long routeId) {
@@ -549,15 +606,73 @@ public class AdminRouteService {
         return item;
     }
 
-    private Hotel requireHotel(Long hotelId) {
+    /**
+     * 按主键取酒店并加行锁；未指定（null）返回 null，指定了但不存在则 422。
+     *
+     * <p><b>必须是当前读（{@code SELECT ... FOR UPDATE}），不能用普通查询。</b>
+     * 普通查询读的是本事务的一致性快照，而这个快照在事务第一次读（例如前面的
+     * {@code requireRoute}）时就已经建立：酒店如果在"读状态"与"写行程"之间被另一位工作人员停用并提交，
+     * 快照里它仍然是 ACTIVE —— 校验通过、行程落库，而这家酒店此刻已经是停用状态，
+     * "停用后不能再被安排进新行程"的规则就被绕过了。</p>
+     *
+     * <p>加锁同时把两个动作串行化：本事务持有该酒店行的排他锁直到提交，期间的停用
+     * （{@code HotelService#update} 的 UPDATE）会等待，提交后才生效；反过来，停用先提交时
+     * 这里的当前读会读到 DISABLED 并返回 422。锁在 {@code createDay} / {@code updateDay}
+     * 的事务结束时释放（两者都是 {@code @Transactional}）。</p>
+     */
+    private Hotel lockHotel(Long hotelId) {
         if (hotelId == null) {
             return null;
         }
-        Hotel hotel = hotelMapper.selectById(hotelId);
+        Hotel hotel = hotelMapper.selectOne(new QueryWrapper<Hotel>().eq("id", hotelId).last("FOR UPDATE"));
         if (hotel == null) {
             throw new BusinessException(422, "VALIDATION_ERROR", "指定的酒店不存在");
         }
         return hotel;
+    }
+
+    /**
+     * 新增每日行程要安排的酒店：必须存在，且处于启用状态。
+     *
+     * <p>{@code DISABLED} 不能安排进新行程：停用是"这家酒店不再使用"的唯一手段
+     * （被行程引用的酒店不允许删除，见 {@code HotelService#delete}），若这里放行，
+     * 停用就退化成一个没有任何效果的标记 —— 后台写着"停止使用"，实际仍能被安排、
+     * 用户端也照旧显示。停用不删除资料，也不改动已经引用它的行程。</p>
+     *
+     * <p>状态判定与行程写入之间不允许被别人插进一次停用：判定的读走 {@link #lockHotel} 的当前读，
+     * 见那里的说明。</p>
+     */
+    private Hotel requireActiveHotel(Long hotelId) {
+        Hotel hotel = lockHotel(hotelId);
+        if (hotel != null && !isActive(hotel)) {
+            throw disabledHotel(hotel);
+        }
+        return hotel;
+    }
+
+    /**
+     * 修改每日行程后要落库的酒店：只有"换成另一家酒店"才要求目标酒店启用。
+     *
+     * <p>把已停用酒店<b>原样留在原地</b>不算重新安排：某天的酒店被停用之后，工作人员仍要能
+     * 修改这一天的标题、餐食说明等其它字段；若这里一律拒绝，这条行程就卡死了 ——
+     * 必须先把酒店换掉才能改文案。因此只有新指向一家停用酒店（含从"不指定"改成停用酒店）时才拦。</p>
+     */
+    private Hotel requireAssignableHotel(Long currentHotelId, Long nextHotelId) {
+        Hotel hotel = lockHotel(nextHotelId);
+        if (hotel != null && !isActive(hotel) && !Objects.equals(hotel.id, currentHotelId)) {
+            throw disabledHotel(hotel);
+        }
+        return hotel;
+    }
+
+    /** 库内 status 是 TINYINT NOT NULL（1 启用 / 0 停用），口径与契约 AccountStatus 一致。 */
+    private static boolean isActive(Hotel hotel) {
+        return AccountStatus.ACTIVE.equals(AccountStatus.of(hotel.status));
+    }
+
+    private static BusinessException disabledHotel(Hotel hotel) {
+        return new BusinessException(422, "VALIDATION_ERROR",
+                "酒店「" + hotel.name + "」已停用，不能安排进行程；请先启用该酒店，或改选其它酒店");
     }
 
     private Attraction requireAttraction(Long attractionId) {

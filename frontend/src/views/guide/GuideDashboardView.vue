@@ -30,7 +30,7 @@ onMounted(async () => {
       <div class="stat-card">
         <span class="label">即将出发班期</span>
         <div class="value">{{ data.upcoming.length }}</div>
-        <span class="hint">未来 7 天内出团</span>
+        <span class="hint">尚未出发的团期</span>
       </div>
 
       <div class="stat-card">

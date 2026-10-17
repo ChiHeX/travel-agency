@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { orderApi } from '@/api/modules'
+import CancelOrderButton from '@/components/CancelOrderButton.vue'
+import RouteItinerary from '@/components/RouteItinerary.vue'
 import {
   createIdempotencyKey,
   genderLabels,
@@ -11,6 +13,7 @@ import {
   paymentStatusLabels,
   refundStatusLabels
 } from '@/utils/order'
+import { codePointLength } from '@/utils/text'
 
 const currentRoute = useRoute()
 const router = useRouter()
@@ -23,11 +26,33 @@ const refundSubmitting = ref(false)
 const reviewSubmitting = ref(false)
 const cancelling = ref(false)
 const actionError = ref('')
+const itinerary = ref([])
+const itineraryOpen = ref(false)
+const itineraryLoading = ref(false)
+const itineraryError = ref('')
 const refund = reactive({ reason: '' })
 const review = reactive({ rating: 5, content: '' })
 let refundKey = createIdempotencyKey()
 
 const labels = orderStatusLabels
+const displayOrderStatus = computed(() => detail.value?.order?.status === 'REFUND_APPLYING' &&
+  detail.value?.refunds?.some(item => item.status === 'PROCESSING')
+  ? refundStatusLabels.PROCESSING : labels[detail.value?.order?.status] || detail.value?.order?.status)
+const canViewItinerary = computed(() => ['CONFIRMED', 'TRAVELLING', 'COMPLETED'].includes(detail.value?.order?.status))
+
+async function viewItinerary() {
+  if (itineraryLoading.value) return
+  itineraryOpen.value = true
+  itineraryLoading.value = true
+  itineraryError.value = ''
+  try {
+    itinerary.value = await orderApi.itinerary(currentRoute.params.orderNo)
+  } catch (error) {
+    itineraryError.value = error.message || '每日行程加载失败，请重试'
+  } finally {
+    itineraryLoading.value = false
+  }
+}
 
 const statusTags = {
   WAIT_PAY: 'warning',
@@ -59,7 +84,9 @@ async function submitRefund() {
   if (refundSubmitting.value) return
   actionError.value = ''
   const reason = refund.reason.trim()
-  if (reason.length < 2 || reason.length > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
+  // 契约 RefundCreateRequest.reason 是 minLength 2 / maxLength 500，数的是字符（码点）；
+  // 用 String#length 会把 emoji 记成 2 个，把契约允许的原因判成超长。
+  if (codePointLength(reason) < 2 || codePointLength(reason) > 500) return ElMessage.warning('退款原因需填写 2–500 个字符')
   refundSubmitting.value = true
   try {
     await orderApi.refund(currentRoute.params.orderNo, { reason }, refundKey)
@@ -80,7 +107,8 @@ async function submitReview() {
   actionError.value = ''
   const content = review.content.trim()
   if (!Number.isInteger(review.rating) || review.rating < 1 || review.rating > 5) return ElMessage.warning('请选择 1–5 星评分')
-  if (!content || content.length > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
+  // 契约 ReviewCreateRequest.content 是 minLength 1 / maxLength 1000，同样按字符（码点）计
+  if (!content || codePointLength(content) > 1000) return ElMessage.warning('请填写 1–1000 个字符的评价内容')
   reviewSubmitting.value = true
   try {
     const saved = await orderApi.review(currentRoute.params.orderNo, { rating: review.rating, content })
@@ -97,23 +125,19 @@ async function submitReview() {
 
 async function cancelOrder() {
   try {
-    await ElMessageBox.confirm('取消后将释放本次占用的团期名额，是否继续？', '取消待支付订单', {
-      type: 'warning',
-      confirmButtonText: '确认取消',
-      cancelButtonText: '保留订单'
-    })
     cancelling.value = true
     await orderApi.cancel(currentRoute.params.orderNo)
     ElMessage.success('订单已取消')
     await load()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') actionError.value = error.message || '取消失败，请重试'
+    actionError.value = error.message || '取消失败，请重试'
   } finally {
     cancelling.value = false
   }
 }
 
 const canRefund = computed(() =>
+  detail.value?.payment?.channel !== 'LOCAL_SIMULATION' &&
   ['PAID_WAIT_CONFIRM', 'CONFIRMED'].includes(detail.value?.order?.status) &&
   !(detail.value?.refunds || []).some((item) => ['APPLYING', 'PROCESSING'].includes(item.status))
 )
@@ -125,23 +149,19 @@ onMounted(load)
 
 <template>
   <div class="order-detail-page">
-    <div class="container narrow-container page-section">
+    <div class="order-content">
       <div v-if="loading" class="admin-panel">
         <el-skeleton :rows="9" animated />
       </div>
 
       <template v-else-if="detail">
-        <!-- Back Navigation -->
-        <RouterLink to="/account/orders" class="back-orders-btn">
-          ← 返回订单列表
-        </RouterLink>
 
         <!-- Order Hero Card -->
         <div class="order-hero-card">
           <div class="order-hero-top">
             <div>
-              <span class="eyebrow">ORDER DETAILS</span>
-              <h1>{{ detail.route?.name || `跟团线路 #${detail.order.routeId}` }}</h1>
+              <p class="order-caption">订单详情</p>
+              <h1>{{ detail.order.routeName || detail.route?.name || `跟团线路 #${detail.order.routeId}` }}</h1>
               <div class="order-id-meta">
                 <span>订单号：{{ detail.order.orderNo }}</span>
                 <span>·</span>
@@ -150,7 +170,7 @@ onMounted(load)
             </div>
 
             <span class="tag status-pill-lg" :class="statusTags[detail.order.status]">
-              {{ labels[detail.order.status] || detail.order.status }}
+              {{ displayOrderStatus }}
             </span>
           </div>
 
@@ -176,10 +196,21 @@ onMounted(load)
           </div>
         </div>
 
-        <!-- Progress Timeline Card -->
-        <div class="detail-card">
+        <div v-if="canViewItinerary" class="detail-card">
           <div class="card-head">
-            <h3>履约时间线</h3>
+            <h3>每日行程</h3>
+            <button type="button" class="secondary-button" :disabled="itineraryLoading" @click="viewItinerary">{{ itineraryLoading ? '加载中…' : itineraryOpen ? '刷新行程' : '查看行程' }}</button>
+          </div>
+          <p class="sub-label">查看当前每日游览、餐食、交通与住宿安排，线路下架后仍可查看。安排以旅行社最新确认为准，此处不是下单时快照。</p>
+          <el-skeleton v-if="itineraryLoading" :rows="4" animated />
+          <p v-else-if="itineraryError" class="form-error" role="alert">{{ itineraryError }}</p>
+          <RouteItinerary v-else-if="itineraryOpen" :days="itinerary" />
+        </div>
+
+        <!-- Progress Timeline Card -->
+        <div class="detail-card progress-card">
+          <div class="card-head">
+            <h3>行程进度</h3>
             <span class="sub-label">支付状态：{{ paymentStatusLabels[detail.order.paymentStatus] || detail.order.paymentStatus }}</span>
           </div>
 
@@ -215,10 +246,10 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="detail-card">
+        <div class="detail-card payment-card">
           <div class="card-head">
             <h3>价格与支付记录</h3>
-            <span class="sub-label">下单价格快照</span>
+            <span class="sub-label">下单时价格</span>
           </div>
           <div class="payment-grid">
             <div><span>成人单价</span><strong>¥{{ detail.order.adultUnitPrice }}</strong></div>
@@ -227,7 +258,7 @@ onMounted(load)
             <div><span>支付时间</span><strong>{{ detail.order.paidAt || '—' }}</strong></div>
             <template v-if="detail.payment">
               <div><span>支付单号</span><strong>{{ detail.payment.paymentNo }}</strong></div>
-              <div><span>支付渠道</span><strong>{{ detail.payment.channel === 'ALIPAY_SANDBOX' ? '支付宝沙箱' : detail.payment.channel }}</strong></div>
+              <div><span>支付渠道</span><strong>{{ detail.payment.channel === 'LOCAL_SIMULATION' ? '本地模拟支付（测试）' : detail.payment.channel === 'ALIPAY_SANDBOX' ? '支付宝沙箱' : detail.payment.channel }}</strong></div>
               <div><span>支付金额</span><strong>¥{{ detail.payment.amount }}</strong></div>
               <div><span>第三方交易号</span><strong>{{ detail.payment.thirdPartyTradeNo || '—' }}</strong></div>
             </template>
@@ -236,10 +267,10 @@ onMounted(load)
         </div>
 
         <!-- Traveler Snapshot Card -->
-        <div class="detail-card">
+        <div class="detail-card travelers-card">
           <div class="card-head">
-            <h3>出行人实名资料（快照保存）</h3>
-            <span class="sub-label">历史订单不受后续修改影响 · 证件号已脱敏保护</span>
+            <h3>出行人信息</h3>
+            <span class="sub-label">证件号码已隐藏部分内容</span>
           </div>
 
           <table class="data-table responsive-cards">
@@ -297,15 +328,12 @@ onMounted(load)
         </div>
         <div class="bottom-actions-row">
           <p v-if="actionError && !reviewOpen && !refundOpen" class="form-error" role="alert">{{ actionError }}</p>
-          <button
+          <CancelOrderButton
             v-if="detail.order.status === 'WAIT_PAY'"
-            type="button"
-            class="secondary-button danger-button"
-            :disabled="cancelling"
-            @click="cancelOrder"
-          >
-            {{ cancelling ? '取消中...' : '取消订单' }}
-          </button>
+            size="large"
+            :pending="cancelling"
+            @confirm="cancelOrder"
+          />
           <button
             v-if="canRefund"
             type="button"
@@ -364,7 +392,8 @@ onMounted(load)
       </div>
       <div class="form-field">
         <label>行程体验与导游服务评价</label>
-        <textarea v-model="review.content" rows="4" maxlength="1000" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
+        <!-- 去掉 maxlength：它按 UTF-16 码元截断，会把 1000 个 emoji 的合法评价静默砍半；改为提交时按码点校验 -->
+        <textarea v-model="review.content" rows="4" placeholder="分享本次线路体验、酒店餐饮及导游讲解..."></textarea>
       </div>
       <template #footer>
         <button class="secondary-button" @click="reviewOpen = false">取消</button>
@@ -375,256 +404,44 @@ onMounted(load)
 </template>
 
 <style scoped>
-.order-detail-page {
-  background: var(--bg-canvas);
-  min-height: calc(100vh - 64px);
-}
-
-.back-orders-btn {
-  display: inline-block;
-  color: var(--brand-blue);
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 16px;
-}
-
-.order-hero-card {
-  background: white;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-xl);
-  padding: 28px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 24px;
-}
-
-.order-hero-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.order-hero-top h1 {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--text-primary);
-  margin: 4px 0 6px;
-}
-
-.order-id-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-tertiary);
-}
-
-.status-pill-lg {
-  padding: 6px 14px;
-  font-size: 13px;
-}
-
-.summary-tiles-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
-
-.tile {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-md);
-  padding: 14px;
-}
-
-.tile-label {
-  display: block;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-}
-
-.tile strong {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.tile small {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.tile.highlight .price-val {
-  color: var(--price-orange);
-  font-size: 18px;
-  font-weight: 800;
-}
-
-.detail-card {
-  background: white;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 24px;
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.card-head h3 {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.sub-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.payment-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.payment-grid > div {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  border: 1px solid var(--border-line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-}
-
-.payment-grid span,
-.order-remark span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.payment-grid strong {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-}
-
-.order-remark {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0 0;
-  padding: 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.refund-list { display: grid; gap: 10px; }
-.refund-item { padding: 14px; border: 1px solid var(--border-line); border-radius: var(--radius-md); background: var(--bg-subtle); }
-.refund-head { display: flex; align-items: center; justify-content: space-between; }
-.refund-head > strong { color: var(--price-orange); font-size: 18px; }
-.refund-item dl { display: grid; gap: 7px; margin: 12px 0 0; }
-.refund-item dl div { display: grid; grid-template-columns: 80px 1fr; gap: 10px; }
-.refund-item dt { color: var(--text-tertiary); font-size: 11px; }
-.refund-item dd { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
-.detail-error { display: grid; justify-items: center; gap: 9px; }
-.detail-error span { color: var(--text-secondary); font-size: 12px; }
-
-/* Timeline Stepper */
-.timeline-stepper {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 10px;
-}
-
-.step {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  z-index: 2;
-}
-
-.step-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--bg-subtle);
-  border: 2px solid var(--border-line);
-  color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-}
-
-.step.completed .step-icon {
-  background: var(--brand-blue);
-  border-color: var(--brand-blue);
-  color: white;
-  box-shadow: 0 0 0 3px var(--brand-blue-tint);
-}
-
-.step-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-}
-
-.step.completed .step-text {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.step-line {
-  flex: 1;
-  height: 2px;
-  background: var(--border-line);
-  margin: 0 10px 24px;
-}
-
-.step-line.active {
-  background: var(--brand-blue);
-}
-
-.bottom-actions-row {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-@media (max-width: 768px) {
-  .summary-tiles-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .payment-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .timeline-stepper {
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-  .step-line {
-    display: none;
-  }
-}
-
-@media (max-width: 520px) {
-  .summary-tiles-grid,
-  .payment-grid { grid-template-columns: 1fr; }
-  .data-table { min-width: 0; }
+.order-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.order-hero-card, .progress-card, .payment-card, .travelers-card, .bottom-actions-row, .detail-error, .admin-panel { grid-column: 1 / -1; }
+.order-hero-card { padding: 0 0 12px; }
+.order-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
+.order-caption { margin-bottom: 12px; color: var(--text-secondary); font-size: 14px; }
+.order-hero-top h1 { font-size: 30px; font-weight: 650; line-height: 1.4; letter-spacing: -.03em; }
+.order-id-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.status-pill-lg { flex-shrink: 0; margin-top: 6px; padding: 8px 16px; font-size: 13px; }
+.summary-tiles-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; padding: 28px; background: var(--bg-secondary); border-radius: 20px; }
+.tile { min-width: 0; }.tile-label { display: block; margin-bottom: 10px; color: var(--text-secondary); font-size: 13px; }
+.tile strong { font-size: 15px; font-weight: 550; overflow-wrap: anywhere; }.tile small { display: block; margin-top: 6px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.tile.highlight .price-val { font-size: 24px; font-weight: 600; }
+.detail-card { min-width: 0; padding: 28px; border: 1px solid var(--border-divider); border-radius: 20px; background: var(--app-bg); }
+.card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 24px; }
+.detail-card h3 { font-size: 18px; font-weight: 600; }.sub-label { color: var(--text-secondary); font-size: 12px; }
+.payment-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+.payment-grid > div { display: grid; align-content: start; gap: 8px; }.payment-grid span, .order-remark span { color: var(--text-secondary); font-size: 13px; }
+.payment-grid strong { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.order-remark { display: grid; gap: 8px; margin-top: 24px; padding: 16px; border-radius: 12px; background: var(--bg-secondary); line-height: 1.6; overflow-wrap: anywhere; }
+.timeline-stepper { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
+.step { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.step-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--bg-secondary); color: var(--text-secondary); font-size: 13px; }
+.step.completed .step-icon { background: var(--theme-blue); color: white; }.step-text { color: var(--text-secondary); font-size: 13px; }.step.completed .step-text { color: var(--text-primary); }
+.step-line { flex: 1; height: 2px; background: var(--border-divider); margin: 0 12px 28px; }.step-line.active { background: var(--theme-blue); }
+.data-table { width: 100%; }.data-table th { background: var(--bg-secondary); font-weight: 500; }.data-table td { overflow-wrap: anywhere; }
+.refund-list { display: grid; gap: 20px; }.refund-item + .refund-item { padding-top: 20px; border-top: 1px solid var(--border-divider); }
+.refund-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.refund-head > strong { font-size: 20px; font-weight: 550; }
+.refund-item dl { display: grid; gap: 12px; margin-top: 18px; }.refund-item dl div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 16px; font-size: 13px; }.refund-item dt { color: var(--text-secondary); }.refund-item dd { margin: 0; overflow-wrap: anywhere; line-height: 1.6; }
+.review-copy { margin: 16px 0; line-height: 1.7; overflow-wrap: anywhere; }.text-button { display: block; margin-top: 18px; color: var(--text-link); }
+.bottom-actions-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px 0; }.bottom-actions-row .form-error { flex-basis: 100%; }
+.bottom-actions-row button { min-height: 44px; padding: 0 24px; }.danger-button { color: var(--status-red); }
+.detail-error { display: grid; justify-items: center; gap: 16px; padding: 48px 20px; }.detail-error span { color: var(--text-secondary); }
+@media (max-width: 900px) { .payment-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .order-content { grid-template-columns: 1fr; }.summary-tiles-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.order-hero-top h1 { font-size: 26px; } }
+@media (max-width: 600px) {
+  .order-hero-top { flex-direction: column; gap: 16px; }.summary-tiles-grid { padding: 20px; gap: 24px 16px; }.detail-card { padding: 20px; }.order-hero-top h1 { font-size: 24px; }
+  .timeline-stepper { gap: 12px; flex-wrap: wrap; justify-content: flex-start; }.step { min-width: 76px; }.step-line { display: none; }
+  .responsive-cards, .responsive-cards tbody { display: block; width: 100%; }.responsive-cards thead { display: none; }.responsive-cards tr { display: block; padding: 12px 0; }.responsive-cards tr + tr { border-top: 1px solid var(--border-divider); }
+  .responsive-cards td { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border: 0; text-align: right; }.responsive-cards td::before { content: attr(data-label); flex: 0 0 76px; text-align: left; color: var(--text-secondary); }
+  .bottom-actions-row button { flex: 1; }
 }
 </style>

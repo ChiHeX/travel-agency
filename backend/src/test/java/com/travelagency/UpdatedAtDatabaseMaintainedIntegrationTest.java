@@ -1,12 +1,14 @@
 package com.travelagency;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.travelagency.common.enums.PaymentStatus;
 import com.travelagency.domain.dto.CreateOrderRequest;
 import com.travelagency.domain.dto.OrderView;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.Message;
 import com.travelagency.domain.entity.OrderTraveler;
+import com.travelagency.domain.entity.OperationLog;
 import com.travelagency.domain.entity.Payment;
 import com.travelagency.domain.entity.Refund;
 import com.travelagency.domain.entity.Review;
@@ -17,6 +19,7 @@ import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
 import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.OrderTravelerMapper;
+import com.travelagency.domain.mapper.OperationLogMapper;
 import com.travelagency.domain.mapper.PaymentMapper;
 import com.travelagency.domain.mapper.RefundMapper;
 import com.travelagency.domain.mapper.ReviewMapper;
@@ -55,7 +58,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>最坏的一条路径是支付回调：{@code markPaid} 先用条件 UPDATE 原子地把支付单推进到 PAID
  * （这一步 {@code ON UPDATE} 生效、时间戳前进），紧接着又 {@code updateById} 把实体里的旧值写回去，
- * 等于<b>前进之后又倒退</b>。第二个用例专门盯这条路径。
+ * 等于<b>前进之后又倒退</b>。第三个用例专门盯这条路径，而且断言的是<b>支付单自己</b>那一列 ——
+ * 只看订单时间戳看不到这一幕。
+ *
+ * <p><b>两个层面都要断言</b>：{@code FieldStrategy.NEVER} 只解决"库不被旧值压掉"，它管不到
+ * "写操作的响应里装的是什么"。更新之后内存实体仍持有旧时间戳，若把它直接交给
+ * {@code OrderView.from(...)}，<b>库是对的、响应是旧的</b>。所以取消与确认两个用例除了查库，
+ * 还要断言接口返回值里的 {@code updatedAt} 与库一致 —— 这正是只查库会漏掉的那一半。
  *
  * <p><b>为什么要 sleep</b>：{@code DATETIME} 没有小数位，插入与更新若落在同一秒，即使
  * {@code updated_at} 从未前进，两次读到的值也相等 —— 不断言出问题就成了假绿。所以两次读之间
@@ -80,6 +89,7 @@ class UpdatedAtDatabaseMaintainedIntegrationTest {
     @Autowired PaymentMapper payments;
     @Autowired RefundMapper refunds;
     @Autowired OrderTravelerMapper orderTravelers;
+    @Autowired OperationLogMapper operationLogs;
     @Autowired MessageMapper messages;
     @Autowired ReviewMapper reviews;
     @Autowired TravelRouteMapper routes;
@@ -174,6 +184,19 @@ class UpdatedAtDatabaseMaintainedIntegrationTest {
         if (guideId != null) {
             guides.deleteById(guideId);
         }
+        // 确认报名会以 userId 作为操作人写一条 operation_log，而 fk_operation_log_operator
+        // 指向 sys_user：不清掉它，下面删测试用户就会撞外键、把本类拖红。
+        // 清理必须排在 sys_user 之前，口径与 OrderAuditRollbackIntegrationTest 一致。
+        if (userId != null || guideUserId != null) {
+            List<Long> operatorIds = new ArrayList<>();
+            if (userId != null) {
+                operatorIds.add(userId);
+            }
+            if (guideUserId != null) {
+                operatorIds.add(guideUserId);
+            }
+            operationLogs.delete(new QueryWrapper<OperationLog>().in("operator_id", operatorIds));
+        }
         if (userId != null) {
             users.deleteById(userId);
         }
@@ -194,11 +217,35 @@ class UpdatedAtDatabaseMaintainedIntegrationTest {
         assertEquals(createdAt, before, "刚插入时两列同源，应相等");
 
         Thread.sleep(CROSS_SECOND_MILLIS);
-        orderService.cancel(order.orderNo(), userId);
+        OrderView cancelled = orderService.cancel(order.orderNo(), userId);
 
         LocalDateTime after = readUpdatedAt(orderId);
         assertTrue(after.isAfter(before),
                 "取消是一次业务更新，updated_at 必须前进：before=" + before + " after=" + after);
+        // 光看库不够：FieldStrategy.NEVER 只保证「库不被旧值压掉」，管不到「响应里装的是什么」。
+        // 取消接口直接返回 OrderView，若把更新前读到的实体原样交给 OrderView.from(...)，
+        // 库是对的、响应却是旧 updatedAt —— 前端得再查一次才看到新值。
+        assertEquals(after, cancelled.updatedAt(),
+                "取消接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值");
+    }
+
+    @Test
+    @DisplayName("后台确认报名后 updated_at 前进，且确认接口的响应带回最新值")
+    void confirmAdvancesUpdatedAt() throws InterruptedException {
+        OrderView order = orderService.create(userId, request());
+        Long orderId = order.id();
+        orderService.markPaid(order.orderNo(), "ALI-CONFIRM-UPDATED-AT-TEST", order.totalAmount());
+
+        LocalDateTime before = readUpdatedAt(orderId);
+
+        Thread.sleep(CROSS_SECOND_MILLIS);
+        OrderView confirmed = orderService.confirm(order.orderNo(), userId);
+
+        LocalDateTime after = readUpdatedAt(orderId);
+        assertTrue(after.isAfter(before),
+                "确认报名是一次业务更新，updated_at 必须前进：before=" + before + " after=" + after);
+        assertEquals(after, confirmed.updatedAt(),
+                "确认接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值");
     }
 
     @Test
@@ -207,19 +254,38 @@ class UpdatedAtDatabaseMaintainedIntegrationTest {
         OrderView order = orderService.create(userId, request());
         Long orderId = order.id();
 
-        LocalDateTime before = readUpdatedAt(orderId);
+        LocalDateTime orderBefore = readUpdatedAt(orderId);
+        LocalDateTime paymentBefore = readPayment(orderId).updatedAt;
+        assertNotNull(paymentBefore, "插入后支付单 updated_at 也必须由 DEFAULT CURRENT_TIMESTAMP 填上");
 
         Thread.sleep(CROSS_SECOND_MILLIS);
         orderService.markPaid(order.orderNo(), "ALI-UPDATED-AT-TEST", order.totalAmount());
 
-        LocalDateTime after = readUpdatedAt(orderId);
-        assertTrue(after.isAfter(before),
-                "回调入账是一次业务更新，updated_at 必须前进：before=" + before + " after=" + after);
+        LocalDateTime orderAfter = readUpdatedAt(orderId);
+        assertTrue(orderAfter.isAfter(orderBefore),
+                "回调入账是一次业务更新，订单 updated_at 必须前进：before=" + orderBefore
+                        + " after=" + orderAfter);
+
+        // 支付单才是这条链路的「最坏路径」现场：markPaid 先用条件 UPDATE 把支付单推进到 PAID
+        // （此刻 ON UPDATE 生效、时间戳前进），紧接着的 updateById 在修复前会把实体里的旧值写回去，
+        // 等于前进后又倒退。只断言订单时间戳看不到这一幕，必须单独盯支付单自己那一列。
+        Payment paymentAfter = readPayment(orderId);
+        assertEquals(PaymentStatus.PAID, paymentAfter.status, "回调后支付单必须落 PAID");
+        assertTrue(paymentAfter.updatedAt.isAfter(paymentBefore),
+                "回调入账后支付单 updated_at 必须前进，不能被 updateById 写回旧值：before="
+                        + paymentBefore + " after=" + paymentAfter.updatedAt);
     }
 
     /** 每次调用都是一次新的查询，拿到的才是库里的当前值。 */
     private LocalDateTime readUpdatedAt(Long orderId) {
         return orders.selectById(orderId).updatedAt;
+    }
+
+    /** 支付单同理：读库而不是复用内存对象，否则断言就变成"自己跟自己比"。 */
+    private Payment readPayment(Long orderId) {
+        Payment payment = payments.selectOne(new QueryWrapper<Payment>().eq("order_id", orderId));
+        assertNotNull(payment, "订单创建时必须同时生成支付单");
+        return payment;
     }
 
     private LocalDateTime readCreatedAt(Long orderId) {

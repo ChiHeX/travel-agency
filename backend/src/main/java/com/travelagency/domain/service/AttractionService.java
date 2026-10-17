@@ -28,7 +28,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -118,7 +117,7 @@ public class AttractionService {
                 .collect(Collectors.toMap(route -> route.id, Function.identity()));
         List<AttractionDetailView.Trip> trips = departures.selectList(new QueryWrapper<Departure>()
                         .in("route_id", routeIds).eq("status", "OPEN")
-                        .ge("start_date", LocalDate.now()).orderByAsc("start_date", "id"))
+                        .apply("start_date >= CURRENT_DATE()").orderByAsc("start_date", "id"))
                 .stream().filter(departure -> routeById.containsKey(departure.routeId))
                 .map(departure -> {
                     TravelRoute route = routeById.get(departure.routeId);

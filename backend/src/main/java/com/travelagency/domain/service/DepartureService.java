@@ -18,6 +18,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.springframework.stereotype.Service;
@@ -39,6 +40,7 @@ public class DepartureService {
     private final TravelOrderMapper orderMapper;
     private final TravelRouteMapper routeMapper;
     private final GuideMapper guideMapper;
+    private final MessageMapper messageMapper;
     private final OperationLogRecorder operationLog;
 
     /** 契约 DepartureStatus 的全部取值，供后台直接改状态与列表筛选时校验。 */
@@ -68,17 +70,49 @@ public class DepartureService {
      * 故 DRAFT 团期必然零订单——允许它"出发"只会掩盖后台漏上架，因此返回 409
      * 要求先把团期上架。同时也排除 TRAVELLING（已在行程中，重复出发）、
      * FINISHED 与 CANCELLED（终态）。</p>
+     *
+     * <p>公开为常量是为了让"导游能做什么"只有一处定义：前端带团详情页按同一集合决定是否显示
+     * 「开始行程」按钮，{@link #UPCOMING_EXCLUDED_STATUSES} 也刻意与之取到同一个集合，
+     * 这样"即将出发"列表里不会出现点进去必然 409 的团期。</p>
      */
-    private static final List<String> STARTABLE_STATUSES = List.of(
+    public static final List<String> STARTABLE_STATUSES = List.of(
             DepartureStatus.OPEN, DepartureStatus.FULL, DepartureStatus.CLOSED);
+
+    /**
+     * 导游"即将出发"的排除状态：草稿、行程中、已完成、已取消。
+     *
+     * <p>工作台概览与列表 {@code scope=UPCOMING} 共用这一份定义（配合 {@code start_date >= 当天}），
+     * 避免两端各写一套筛选条件后逐渐跑偏 —— 此前工作台只排除状态却没有日期限制，
+     * 而列表只限制日期却不排除状态，一边混入过期团期、一边混入已取消/已完成/行程中的团期。</p>
+     *
+     * <p>排除 {@link DepartureStatus#DRAFT} 是为了让筛选结果与导游真正能做的事一致：
+     * {@link #STARTABLE_STATUSES} 不含草稿（草稿团期还没上架、必然零订单），
+     * 若"即将出发"里列出草稿，导游点进去只会拿到 409。排除之后
+     * 「即将出发」的取值恰好等于「可以开始行程」的取值集合。</p>
+     */
+    public static final List<String> UPCOMING_EXCLUDED_STATUSES = List.of(
+            DepartureStatus.DRAFT, DepartureStatus.TRAVELLING,
+            DepartureStatus.FINISHED, DepartureStatus.CANCELLED);
+
+    /**
+     * "即将出发"的统一判定：已上架（非草稿）、未取消/未完成/未在途，且出发日期不早于给定"今天"。
+     *
+     * <p>传入的 {@code today} 必须是库内日期（{@link #databaseToday()}），
+     * 否则 JVM 与数据库时区不一致时会与列表查询的 {@code CURRENT_DATE()} 口径错开一天。</p>
+     */
+    public static boolean isUpcoming(String status, LocalDate startDate, LocalDate today) {
+        return status != null && !UPCOMING_EXCLUDED_STATUSES.contains(status)
+                && startDate != null && !startDate.isBefore(today);
+    }
 
     public DepartureService(DepartureMapper departureMapper, TravelOrderMapper orderMapper,
                             TravelRouteMapper routeMapper, GuideMapper guideMapper,
-                            OperationLogRecorder operationLog) {
+                            MessageMapper messageMapper, OperationLogRecorder operationLog) {
         this.departureMapper = departureMapper;
         this.orderMapper = orderMapper;
         this.routeMapper = routeMapper;
         this.guideMapper = guideMapper;
+        this.messageMapper = messageMapper;
         this.operationLog = operationLog;
     }
 
@@ -189,6 +223,32 @@ public class DepartureService {
         return departures.stream()
                 .map(d -> DepartureView.from(d, routeNames.get(d.routeId), guideNames.get(d.guideId)))
                 .toList();
+    }
+
+    /**
+     * 导游"即将出发"团期分页查询，对齐契约 {@code GET /guide/departures?scope=UPCOMING}。
+     *
+     * <p>定义与工作台概览中的 {@code upcoming} 完全一致（见 {@link #UPCOMING_EXCLUDED_STATUSES} 与
+     * {@link #isUpcoming}）：排除草稿、行程中、已完成、已取消，且出发日期不早于当天。
+     * 日期条件用库内 {@code CURRENT_DATE()} 判定，与其它"可报名 / 未来团期"查询保持同一时区口径。</p>
+     *
+     * <p>与 {@link #page} 不同，这里的状态条件是"排除若干状态"而不是"等于某个状态"，因此单独组装
+     * 一个分页查询，再复用 {@link #toViewPage} 的视图映射，保证 routeName / guideName 口径一致。</p>
+     */
+    public PageResponse<DepartureView> pageUpcoming(Long routeId, Long guideId, int page, int size) {
+        QueryWrapper<Departure> query = new QueryWrapper<>();
+        if (routeId != null) {
+            query.eq("route_id", routeId);
+        }
+        if (guideId != null) {
+            query.eq("guide_id", guideId);
+        }
+        query.notIn("status", UPCOMING_EXCLUDED_STATUSES)
+                .apply("start_date >= CURRENT_DATE()")
+                .orderByAsc("start_date");
+        Page<Departure> result = departureMapper.selectPage(
+                new Page<>(Math.max(page, 1), Math.min(Math.max(size, 1), 100)), query);
+        return toViewPage(result);
     }
 
     // ------------------------------------------------------------------
@@ -461,10 +521,12 @@ public class DepartureService {
         requireStatusTransitionAllowed(departure, status);
         writeStatus(departureId, status, null);
         cascadeOrderStatus(departureId, status);
-        // 状态没变就不写日志：重复点"关闭报名"不该在操作日志里刷出一串无意义记录。
+        // 状态没变就不写日志、也不发通知：重复点"关闭报名"不该在操作日志里刷出一串无意义记录，
+        // 更不该给游客重复推送同一条"团期状态变化"消息。
         if (!Objects.equals(departure.status, status)) {
             operationLog.record(operatorId, "团期", "STATUS", "DEPARTURE", departureId,
                     "团期状态由 " + departure.status + " 变更为 " + status);
+            notifyDepartureStatusChange(departure, status);
         }
         return detail(departureId);
     }
@@ -531,7 +593,7 @@ public class DepartureService {
 
     /** 以库内日期为准：JVM 与库会话时区不一致时（CI 常见 UTC），用 LocalDate.now() 会错开一天。 */
     private LocalDate databaseToday() {
-        return orderMapper.databaseToday();
+        return departureMapper.databaseToday();
     }
 
     /**
@@ -605,6 +667,9 @@ public class DepartureService {
             throw new BusinessException(409, "DEPARTURE_STATE_CONFLICT", conflictMessage + current);
         }
         cascadeOrderStatus(departureId, toStatus);
+        // 只有把状态真正改走的那一次迁移才会走到这里（其余请求影响 0 行、已在上面抛 409），
+        // 因此"同一变更"最多通知一次。
+        notifyDepartureStatusChange(departure, toStatus);
         return toView(departureMapper.selectById(departureId));
     }
 
@@ -646,6 +711,39 @@ public class DepartureService {
                     .in("status", OrderStatus.CONFIRMED, OrderStatus.TRAVELLING)
                     .set("status", OrderStatus.COMPLETED).set("completed_at", LocalDateTime.now()));
         }
+    }
+
+    /**
+     * 团期状态变化向受影响用户发送站内消息（PRD §29「团期状态变化」）。
+     *
+     * <p>覆盖后台 {@link #changeStatus} 与导游 {@link #start} / {@link #complete} 两条触发路径：
+     * 两者都在真正改走状态之后调用本方法。受影响用户 = 该团期下有效订单的持有人
+     * （排除未支付 / 已取消 / 已退款，见 {@link MessageMapper#insertForDepartureParticipants}），
+     * 同一用户在该团期有多张订单时只收到一条。</p>
+     *
+     * <p>消息写入与状态写入处于同一事务：状态变更回滚时消息一并回滚，不会留下"状态没变、消息却发了"
+     * 的错误消息；只有状态确实发生变化的那一次调用才会执行（同一变更不重复通知）。</p>
+     */
+    private void notifyDepartureStatusChange(Departure departure, String toStatus) {
+        String routeName = routeName(departure.routeId);
+        String title = "团期状态更新";
+        String content = "您报名的「" + (routeName == null ? "线路" : routeName) + "」团期（"
+                + departure.startDate + " 出发）状态已变更为：" + statusLabel(toStatus) + "。";
+        messageMapper.insertForDepartureParticipants(departure.id, "DEPARTURE_STATUS", title, content);
+    }
+
+    /** 团期状态的中文说明，供站内消息展示；未知值原样返回，避免吞掉契约新增状态。 */
+    private static String statusLabel(String status) {
+        return switch (status) {
+            case DepartureStatus.DRAFT -> "草稿";
+            case DepartureStatus.OPEN -> "可报名";
+            case DepartureStatus.FULL -> "名额已满";
+            case DepartureStatus.CLOSED -> "已截止报名";
+            case DepartureStatus.TRAVELLING -> "行程中";
+            case DepartureStatus.FINISHED -> "已完成";
+            case DepartureStatus.CANCELLED -> "已取消";
+            default -> status == null ? "" : status;
+        };
     }
 
     private String routeName(Long routeId) {

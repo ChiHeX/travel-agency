@@ -30,9 +30,8 @@ const showAdvancedFilters = ref(false)
 const appliedSearchKey = ref('')
 let latestRequest = 0
 
-const hasEndpoints = computed(() => Boolean(form.departureCity.trim() && form.destination.trim()))
 const showResults = computed(() =>
-  hasEndpoints.value && appliedSearchKey.value === JSON.stringify(buildParams())
+  appliedSearchKey.value === JSON.stringify(buildParams())
 )
 
 function buildParams() {
@@ -79,13 +78,6 @@ async function load(options = {}) {
   const params = buildParams()
   errorMessage.value = ''
   syncQuery()
-  if (!hasEndpoints.value) {
-    routes.value = []
-    total.value = 0
-    appliedSearchKey.value = ''
-    loading.value = false
-    return
-  }
   appliedSearchKey.value = JSON.stringify(params)
   loading.value = true
   try {
@@ -164,7 +156,7 @@ onMounted(load)
     </div>
 
     <div class="drawer-scroll-body">
-      <p class="route-intro">选择出发地与目的地，查看可报名的跟团游。</p>
+      <p class="route-intro">浏览全部线路，也可按目的地、价格或出游时间独立筛选。</p>
       <div class="waypoints-card-box">
         <div class="waypoint-row">
           <span class="waypoint-bullet blue">
@@ -227,7 +219,7 @@ onMounted(load)
 
       <div v-if="!showResults" class="route-search-hint">
         <AppIcon name="pin" size="18" color="#8e8e93" />
-        <p>{{ hasEndpoints ? '确认地点或应用筛选后，显示更新的跟团游方案。' : '填写出发城市和目的地后，显示匹配的跟团游方案。' }}</p>
+        <p>确认地点或应用筛选后，显示更新的跟团游方案。</p>
       </div>
 
       <div v-else class="route-plans-section">

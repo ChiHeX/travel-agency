@@ -36,3 +36,7 @@ AGENTS.md
 *.tmp
 *.temp
 *.cache
+
+# 部署证书与 ACME 挑战目录（HTTPS 部署用，绝不提交）
+deploy/certs/
+deploy/certbot-webroot/

@@ -15,6 +15,7 @@ import com.travelagency.domain.entity.Guide;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.MessageMapper;
 import com.travelagency.domain.mapper.TravelOrderMapper;
 import com.travelagency.domain.mapper.TravelRouteMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,7 +54,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 成员 C 团期管理模块：{@link DepartureService#create} / {@link DepartureService#update} /
+ * 团期管理模块：{@link DepartureService#create} / {@link DepartureService#update} /
  * {@link DepartureService#changeStatus} / {@link DepartureService#page} 业务规则单元测试。
  *
  * <p>不启动 Spring、不连接数据库，全部依赖用 Mockito 替身，因此随普通 {@code mvn test} 执行。
@@ -86,13 +87,15 @@ class DepartureAdminServiceTest {
     @Mock private TravelOrderMapper orderMapper;
     @Mock private TravelRouteMapper routeMapper;
     @Mock private GuideMapper guideMapper;
+    @Mock private MessageMapper messageMapper;
     @Mock private OperationLogRecorder operationLog;
 
     private DepartureService service;
 
     @BeforeEach
     void setUp() {
-        service = new DepartureService(departureMapper, orderMapper, routeMapper, guideMapper, operationLog);
+        service = new DepartureService(
+                departureMapper, orderMapper, routeMapper, guideMapper, messageMapper, operationLog);
     }
 
     // ------------------------------------------------------------------
@@ -814,7 +817,7 @@ class DepartureAdminServiceTest {
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
         // 开放报名的守卫会与库内日期比较，这里把库内日期固定为今天，避免依赖运行时的真实日期。
-        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
+        when(departureMapper.databaseToday()).thenReturn(LocalDate.now());
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 
@@ -856,6 +859,38 @@ class DepartureAdminServiceTest {
         service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR);
 
         verify(operationLog, never()).record(any(), anyString(), anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    @DisplayName("状态：状态发生变化时向该团期受影响用户投递站内消息")
+    void changeStatusNotifiesAffectedUsers() {
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 3, 0, null));
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "CANCELLED", 30, 3, 0, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.changeStatus(DEPARTURE_ID, "CANCELLED", ACTOR);
+
+        verify(messageMapper).insertForDepartureParticipants(
+                eq(DEPARTURE_ID), eq("DEPARTURE_STATUS"), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("状态：状态未变化时不投递站内消息（同一变更不重复通知）")
+    void changeStatusSameValueDoesNotNotify() {
+        when(departureMapper.selectByIdForUpdate(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        when(departureMapper.selectById(DEPARTURE_ID))
+                .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
+        stubRoute(ROUTE_ID);
+        when(departureMapper.update(isNull(), any())).thenReturn(1);
+
+        service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR);
+
+        verify(messageMapper, never())
+                .insertForDepartureParticipants(any(), anyString(), anyString(), anyString());
     }
 
     /**
@@ -908,7 +943,7 @@ class DepartureAdminServiceTest {
         departed.startDate = LocalDate.now().minusDays(3);
         departed.endDate = LocalDate.now().plusDays(2);
         when(departureMapper.selectByIdForUpdate(DEPARTURE_ID)).thenReturn(departed);
-        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
+        when(departureMapper.databaseToday()).thenReturn(LocalDate.now());
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> service.changeStatus(DEPARTURE_ID, "OPEN", ACTOR));
@@ -926,7 +961,7 @@ class DepartureAdminServiceTest {
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "DRAFT", 30, 0, 0, null));
         when(departureMapper.selectById(DEPARTURE_ID))
                 .thenReturn(departure(DEPARTURE_ID, ROUTE_ID, "OPEN", 30, 0, 0, null));
-        when(orderMapper.databaseToday()).thenReturn(LocalDate.now());
+        when(departureMapper.databaseToday()).thenReturn(LocalDate.now());
         stubRoute(ROUTE_ID);
         when(departureMapper.update(isNull(), any())).thenReturn(1);
 

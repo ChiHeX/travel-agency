@@ -38,6 +38,7 @@ export const orderApi = {
   simulatePayment: (orderNo) => request.post(`/payments/local/${encodeURIComponent(orderNo)}`),
   list: (params) => request.get('/orders', { params }),
   detail: (orderNo) => request.get(`/orders/${orderNo}`),
+  itinerary: (orderNo) => request.get(`/orders/${encodeURIComponent(orderNo)}/itinerary`),
   create: (payload, idempotencyKey) => request.post('/orders', payload, idempotentConfig(idempotencyKey)),
   pay: (orderNo, idempotencyKey) => request.post(`/orders/${orderNo}/pay`, null, idempotentConfig(idempotencyKey)),
   cancel: (orderNo) => request.post(`/orders/${orderNo}/cancel`),

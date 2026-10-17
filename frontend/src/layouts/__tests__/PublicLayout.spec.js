@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import PublicLayout from '../PublicLayout.vue'
 
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isLoggedIn: false, hasRole: () => false }) }))
-vi.mock('@/api/modules', () => ({ accountApi: {} }))
+const { auth, api } = vi.hoisted(() => ({ auth: { isLoggedIn: false, hasRole: () => false, user: {} }, api: { unreadCount: vi.fn() } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
+vi.mock('@/api/modules', () => ({ accountApi: api }))
 let height, resize, wrapper
 beforeEach(() => {
+  auth.isLoggedIn = false
+  api.unreadCount.mockReset().mockResolvedValue({ count: 0 })
   height = 800
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => height)
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ height: 52 })
@@ -49,6 +52,19 @@ it('removes mobile brand and preset height actions', async () => {
   await open()
   expect(wrapper.get('.mobile-navigation').text()).not.toContain('行迹')
   expect(wrapper.find('.sheet-size-actions').exists()).toBe(false)
+})
+
+it('ignores an older unread count after a newer refresh', async () => {
+  let resolve
+  auth.isLoggedIn = true
+  api.unreadCount.mockReturnValueOnce(new Promise(r => { resolve = r }))
+  await open()
+  api.unreadCount.mockResolvedValueOnce({ count: 2 })
+  await wrapper.vm.refreshUnread()
+  await flushPromises()
+  resolve({ count: 9 })
+  await flushPromises()
+  expect(wrapper.vm.unreadCount).toBe(2)
 })
 
 it('resizes continuously during dragging and retains the released height without snapping', async () => {

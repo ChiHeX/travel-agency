@@ -16,7 +16,7 @@ travel-agency/
 ├─ frontend/                Vue 3 用户端 + 管理后台 SPA
 ├─ sql/                     schema.sql / test-data.sql
 ├─ deploy/                  Docker Compose、容器配置
-└─ docs/                    PRD、架构、API 规范和 OpenAPI 契约
+└─ docs/                    核心规范及按设计、测试、手册、附录分类的文档
 ```
 
 ## 本地启动
@@ -126,6 +126,7 @@ ALIPAY_SANDBOX / ALIPAY_ENABLED / ALIPAY_GATEWAY_URL
 ALIPAY_APP_ID / ALIPAY_APP_PRIVATE_KEY / ALIPAY_PUBLIC_KEY
 ALIPAY_NOTIFY_URL / ALIPAY_SELLER_ID
 ALIPAY_CALLBACK_SECRET
+DEPARTURE_REMINDER_ENABLED / DEPARTURE_REMINDER_DAYS / DEPARTURE_REMINDER_CRON
 ```
 
 JWT 签名密钥是后端启动必填项，本地可放在上述 Git 忽略的配置文件中，部署环境应通过 `JWT_SECRET` 注入。密钥必须至少有 32 个 UTF-8 字节；缺失或过短时应用会在启动阶段失败（fail-fast），不会退回到源码中的占位密钥。
@@ -200,3 +201,29 @@ npm run build
 ```
 
 项目范围见 [docs/PRD.md](docs/PRD.md)，架构和状态机见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，API 全局规范与具体接口分别见 [docs/API.md](docs/API.md) 和 [docs/openapi.yaml](docs/openapi.yaml)。
+
+### 项目文档导航
+
+`docs` 根目录保留 API、架构、开发规范、PRD 和 OpenAPI 五份核心文件，其余文档按用途分类：
+
+| 分类 | 文档 |
+|---|---|
+| 需求与核心规范 | [产品需求](docs/PRD.md)、[总体架构](docs/ARCHITECTURE.md)、[开发规范](docs/DEVELOPMENT_GUIDE.md)、[API 规范](docs/API.md)、[OpenAPI](docs/openapi.yaml) |
+| 设计 `design/` | [数据库设计](docs/design/DATABASE_DESIGN.md)、[交易模块详细设计](docs/design/TRADE_MODULE.md) |
+| 测试 `testing/` | [项目测试报告](docs/testing/TEST_REPORT.md)（历史回归证据、验证范围及待验收项） |
+| 手册 `manuals/` | [用户操作手册](docs/manuals/USER_MANUAL.md)、[后台操作手册](docs/manuals/ADMIN_MANUAL.md)、[部署手册](docs/manuals/DEPLOYMENT.md) |
+| 附录 `appendices/` | [数据来源与许可](docs/appendices/DATA_SOURCES.md) |
+
+## 站内消息与提醒
+
+PRD §29 的站内消息覆盖：支付成功、报名确认、订单审核异常、退款审核结果、**即将出发提醒**、**团期状态变化**。
+
+- 订单审核异常在后台确认报名时由业务复核触发（`POST /admin/orders/{orderNo}/confirm` 复核不通过）：
+  只向用户发通知、**不改订单状态**，订单仍停在待确认、名额保持预留，用户补齐资料后可重新确认。
+  去重、脱敏与审计口径见 [交易模块说明](docs/design/TRADE_MODULE.md) §4 / §5。
+
+- 即将出发提醒由定时任务 `DepartureReminderService` 发送：默认提前 `DEPARTURE_REMINDER_DAYS=3` 天，
+  每天 `DEPARTURE_REMINDER_CRON`（默认 `0 0 9 * * *`）执行；只提醒符合出行条件的订单（已确认报名、团期未取消未完成），
+  通过 `departure_reminder` 唯一键保证重复执行不重复发送。可用 `DEPARTURE_REMINDER_ENABLED=false` 关闭。
+- 团期状态变化（后台改状态、导游开始/结束行程）会向该团期下有效订单的用户投递站内消息，与状态写入同一事务。
+- 存量库升级前请先执行 `sql/migrations/011-add-departure-reminder.sql`（详见 [迁移说明](sql/migrations/README.md)）。

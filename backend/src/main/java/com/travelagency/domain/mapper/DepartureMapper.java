@@ -14,6 +14,16 @@ import java.util.List;
 public interface DepartureMapper extends BaseMapper<Departure> {
 
     /**
+     * 取数据库当前日期，作为"今天"的唯一定义来源。
+     *
+     * <p>与 {@code TravelOrderMapper#databaseToday()} 同源（都是 {@code CURDATE()}），
+     * 供团期相关的"可报名 / 即将出发"判断使用：JVM 与库会话时区不一致时（CI/容器常见 UTC），
+     * {@code LocalDate.now()} 会与库内日期错开一天，导致同一天内"可报名团期"与"即将出发"判断不一致。</p>
+     */
+    @Select("SELECT CURDATE()")
+    LocalDate databaseToday();
+
+    /**
      * 未来尚未出发、仍在销售中的团期的报名情况，供后台工作台的 {@code departureEnrollment} 使用。
      *
      * <p>取 {@code OPEN}（可报名）与 {@code FULL}（名额已满）两种状态：{@code DRAFT} 尚未发布、

@@ -149,7 +149,10 @@ paths:
           schema: { type: boolean }
         - name: sort
           in: query
-          description: 允许 minAdultPrice、validBookingCount、ratingAvg
+          description: >-
+            允许 minAdultPrice、validBookingCount、ratingAvg。validBookingCount,desc 就是 PRD §15.4 的
+            「报名人数」排序，其来源按 PRD §27 是「系统有效订单」：线路的 validBookingCount 是
+            **有效报名订单条数**（不是游客人数）。
           schema:
             type: string
             enum: ['minAdultPrice,asc', 'minAdultPrice,desc', 'validBookingCount,desc', 'ratingAvg,desc']
@@ -573,6 +576,28 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/OrderDetailEnvelope' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /orders/{orderNo}/itinerary:
+    parameters:
+      - { $ref: '#/components/parameters/OrderNo' }
+    get:
+      tags: [Orders]
+      operationId: getMyOrderItinerary
+      summary: 查看本人已报名订单的每日行程
+      description: |
+        仅订单所有者可访问，订单必须为 CONFIRMED、TRAVELLING 或 COMPLETED。
+        返回该订单关联线路的当前每日行程（不是下单时快照）；线路下架不影响访问。
+        不提供酒店公开详情的额外权限，不返回酒店内部联系方式。
+      responses:
+        '200':
+          description: 按天排序的当前行程，没有安排时返回空数组
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItineraryDayListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /orders/{orderNo}/pay:
     parameters:
@@ -2169,6 +2194,10 @@ paths:
         - { $ref: '#/components/parameters/Size' }
         - name: scope
           in: query
+          description: >-
+            筛选本人在各阶段的团期。UPCOMING=尚未出发（排除草稿、行程中、已完成、已取消，
+            且出发日期不早于当天，与工作台 upcoming 一致；其结果恰好等于可以「开始行程」的团期）；
+            CURRENT=行程中；HISTORY=已完成。
           schema: { type: string, enum: [UPCOMING, CURRENT, HISTORY] }
       responses:
         '200':
@@ -2714,7 +2743,15 @@ components:
         availableSeats: { type: [integer, 'null'], minimum: 0, example: 18 }
         ratingAvg: { type: string, pattern: '^[0-5]\.[0-9]{2}$', example: '4.80' }
         ratingCount: { type: integer, minimum: 0, example: 26 }
-        validBookingCount: { type: integer, minimum: 0, example: 132 }
+        validBookingCount:
+          type: integer
+          minimum: 0
+          description: >-
+            该线路「有效报名」的**订单条数**：已确认（含出行中 / 已完成），或退款申请中但由已确认发起的
+            订单（退款完成才回退）。热门线路（GET /home、GET /admin/dashboard 的 popularRoutes）即按此
+            值实时聚合 travel_order 排行。注意与 DestinationStatistic.validBookingCount（**游客人数**）
+            同名不同度量，展示时单位应为「单」而不是「人」。
+          example: 132
         status: { $ref: '#/components/schemas/RouteStatus' }
         favorite: { type: boolean, example: false }
     Route:

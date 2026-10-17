@@ -2,6 +2,7 @@ package com.travelagency.domain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.travelagency.domain.dto.HomeView;
+import com.travelagency.domain.dto.RouteBookingCount;
 import com.travelagency.domain.entity.TravelRoute;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -47,6 +48,35 @@ public interface TravelRouteMapper extends BaseMapper<TravelRoute> {
             LIMIT 8
             """)
     List<HomeView.Destination> popularDestinations();
+
+    /**
+     * 热门线路：按<b>有效报名订单条数</b>排行，取前 {@code limit} 条线路（PRD §27「热门线路按有效报名订单
+     * 统计」）。供 {@code GET /home} 与后台工作台共用。
+     *
+     * <p><b>为什么不读 {@code travel_route.valid_booking_count}：</b>那一列是反范式的物化计数，
+     * 依赖「确认报名 +1 / 退款完成 -1」逐单维护。演示数据可能预置过虚高基数，或存在绕过业务链路的写入
+     * （直接改库、导入脚本），一旦如此，用它排行就会与真实订单不符，且不会自动收敛回真实值。
+     * 这里改为直接聚合 {@code travel_order}，以订单为唯一事实来源。</p>
+     *
+     * <p>「有效报名」集合与 {@link #popularDestinations()} 完全一致（已确认、含出行中/已完成；
+     * 退款申请中但由已确认发起的仍计入），只是度量从「游客人数」换成「订单条数」。</p>
+     */
+    @Select("""
+            SELECT r.id AS routeId,
+                   CAST(COUNT(*) AS SIGNED) AS bookingCount
+            FROM travel_route r
+            JOIN travel_order o ON o.route_id = r.id
+            WHERE r.status = 'PUBLISHED' AND r.deleted = 0
+              AND (o.status IN ('CONFIRMED', 'TRAVELLING', 'COMPLETED')
+                   OR EXISTS (SELECT 1 FROM refund f
+                              WHERE f.order_id = o.id
+                                AND f.status IN ('APPLYING', 'PROCESSING')
+                                AND f.original_order_status IN ('CONFIRMED', 'TRAVELLING')))
+            GROUP BY r.id
+            ORDER BY bookingCount DESC, r.id ASC
+            LIMIT #{limit}
+            """)
+    List<RouteBookingCount> popularRouteCounts(@Param("limit") int limit);
 
     @Select("""
             SELECT r.*

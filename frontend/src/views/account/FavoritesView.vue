@@ -13,19 +13,24 @@ const total = ref(0)
 const errorMessage = ref('')
 const removing = ref(false)
 
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   errorMessage.value = ''
   try {
     const data = await accountApi.favorites({ page: page.value, size: pageSize })
+    if (requestId !== latestRequest) return
     routes.value = data?.items || []
     total.value = data?.total || 0
   } catch (error) {
+    if (requestId !== latestRequest) return
     routes.value = []
     total.value = 0
     errorMessage.value = error.message || '收藏列表加载失败'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 
@@ -39,8 +44,8 @@ async function remove(id) {
   ElMessage.success('已从心愿收藏中移除')
   if (!routes.value.length && page.value > 1) {
     page.value -= 1
-    load()
   }
+  await load()
   } catch (cause) { errorMessage.value = cause.message || '取消收藏失败' }
   finally { removing.value = false }
 }
@@ -87,7 +92,7 @@ onMounted(load)
         暂无收藏路线，在线路详情页点击收藏按钮即可添加至此。
       </div>
 
-      <div v-if="!loading && !errorMessage && total > pageSize" class="pagination-wrap">
+      <div v-if="!errorMessage && total > pageSize" class="pagination-wrap">
         <el-pagination background layout="prev, pager, next" :current-page="page" :page-size="pageSize" :total="total" @current-change="changePage" />
       </div>
     </main>

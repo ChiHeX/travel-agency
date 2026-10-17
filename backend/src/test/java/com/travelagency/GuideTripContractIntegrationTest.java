@@ -3,6 +3,7 @@ package com.travelagency;
 import com.travelagency.common.security.JwtTokenProvider;
 import com.travelagency.domain.entity.Departure;
 import com.travelagency.domain.entity.Guide;
+import com.travelagency.domain.entity.OrderTraveler;
 import com.travelagency.domain.entity.RouteItineraryDay;
 import com.travelagency.domain.entity.RouteItineraryItem;
 import com.travelagency.domain.entity.SysUser;
@@ -10,6 +11,7 @@ import com.travelagency.domain.entity.TravelOrder;
 import com.travelagency.domain.entity.TravelRoute;
 import com.travelagency.domain.mapper.DepartureMapper;
 import com.travelagency.domain.mapper.GuideMapper;
+import com.travelagency.domain.mapper.OrderTravelerMapper;
 import com.travelagency.domain.mapper.RouteItineraryDayMapper;
 import com.travelagency.domain.mapper.RouteItineraryItemMapper;
 import com.travelagency.domain.mapper.SysUserMapper;
@@ -66,6 +68,7 @@ class GuideTripContractIntegrationTest {
     @Autowired GuideMapper guides;
     @Autowired SysUserMapper users;
     @Autowired TravelOrderMapper orders;
+    @Autowired OrderTravelerMapper orderTravelers;
     @Autowired JwtTokenProvider tokens;
     @Autowired JsonMapper json;
 
@@ -120,6 +123,31 @@ class GuideTripContractIntegrationTest {
         mvc.perform(get("/api/guide/departures/" + ownDepartureId + "/passengers").header("Authorization", guideToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").isArray());
+    }
+
+    /**
+     * 游客名单改为批量查询出行人后，返回内容与脱敏规则必须保持不变：
+     * 仅限本人团期的有效订单（排除待支付 / 已取消 / 已退款），证件号仍脱敏。
+     */
+    @Test
+    void passengersCoverOnlyValidOrdersWithMaskedIdNumbers() throws Exception {
+        TravelOrder valid = order("CONFIRMED");
+        insertTraveler(valid.id, "张三", "310101199001011234");
+        insertTraveler(valid.id, "李四", "310101201501015678");
+        TravelOrder waitPay = order("WAIT_PAY");
+        insertTraveler(waitPay.id, "王五", "310101199001019999");
+
+        var response = mvc.perform(get("/api/guide/departures/" + ownDepartureId + "/passengers")
+                        .header("Authorization", guideToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").isArray())
+                .andReturn().getResponse();
+
+        JsonNode data = json.readTree(response.getContentAsString()).get("data");
+        assertEquals(2, data.size(), "只应返回有效订单的出行人");
+        assertTrue(data.get(0).get("idNo").asText().contains("***"), "证件号必须脱敏");
+        assertFalse(data.get(0).get("idNo").asText().contains("19900101"), "不得返回完整证件号");
+        assertFalse(data.toString().contains("王五"), "待支付订单的出行人不应出现在名单里");
     }
 
     @Test
@@ -320,5 +348,20 @@ class GuideTripContractIntegrationTest {
         order.paymentStatus = "PAID";
         orders.insert(order);
         return order;
+    }
+
+    /** 给订单挂一位出行人快照，用于验证游客名单的批量查询与脱敏。 */
+    private void insertTraveler(Long orderId, String name, String idNo) {
+        OrderTraveler traveler = new OrderTraveler();
+        traveler.orderId = orderId;
+        traveler.travelerType = "ADULT";
+        traveler.name = name;
+        traveler.gender = "MALE";
+        traveler.idType = "ID_CARD";
+        traveler.idNo = idNo;
+        traveler.phone = "13800000002";
+        traveler.emergencyName = "紧急联系人";
+        traveler.emergencyPhone = "13800000003";
+        orderTravelers.insert(traveler);
     }
 }

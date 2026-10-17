@@ -31,7 +31,10 @@ const statusTags = {
   REFUND_REJECTED: 'danger'
 }
 
+let latestRequest = 0
+
 async function load() {
+  const requestId = ++latestRequest
   loading.value = true
   errorMessage.value = ''
   try {
@@ -40,14 +43,16 @@ async function load() {
       page: page.value,
       size: pageSize
     })
+    if (requestId !== latestRequest) return
     orders.value = data?.items || []
     total.value = data?.total || 0
   } catch (error) {
+    if (requestId !== latestRequest) return
     orders.value = []
     total.value = 0
     errorMessage.value = error.message || '订单列表加载失败'
   } finally {
-    loading.value = false
+    if (requestId === latestRequest) loading.value = false
   }
 }
 
@@ -103,7 +108,7 @@ onMounted(load)
           全部订单
         </button>
         <button
-          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_REJECTED', 'CANCELLED']"
+          v-for="status in ['WAIT_PAY', 'PAID_WAIT_CONFIRM', 'CONFIRMED', 'TRAVELLING', 'COMPLETED', 'REFUND_APPLYING', 'REFUNDED', 'CANCELLED']"
           :key="status"
           type="button"
           class="status-tab-btn"

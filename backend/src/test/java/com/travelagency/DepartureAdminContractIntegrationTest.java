@@ -589,7 +589,9 @@ class DepartureAdminContractIntegrationTest {
     @Test
     @DisplayName("状态：已经出发的团期不能开放报名")
     void pastDatedDepartureCannotBeOpened() throws Exception {
-        LocalDate start = LocalDate.now().minusDays(3);
+        // "已经出发"由服务层用库内日期（databaseToday）判定，夹具必须同源，
+        // 否则 JVM 与库会话时区不一致时这条断言会错开一天。
+        LocalDate start = databaseToday().minusDays(3);
         String body = "{\"routeId\":\"" + routeId + "\",\"startDate\":\"" + start + "\",\"endDate\":\""
                 + start.plusDays(2) + "\",\"adultPrice\":\"2999.00\",\"childPrice\":\"1999.00\","
                 + "\"maxPeople\":30}";
@@ -807,9 +809,14 @@ class DepartureAdminContractIntegrationTest {
                 .set("reserved_people", reserved).set("confirmed_people", confirmed));
     }
 
+    /** 库内当天：与生产判断（{@code CURRENT_DATE()} / {@code databaseToday()}）同源，避免跨时区错开一天。 */
+    private LocalDate databaseToday() {
+        return departures.databaseToday();
+    }
+
     /** 修改请求（契约 DepartureUpdateRequest：比创建多一个必填 version）。 */
     private DepartureUpdateRequest updateRequest(Long routeId, int maxPeople, int version) {
-        LocalDate start = LocalDate.now().plusDays(20);
+        LocalDate start = databaseToday().plusDays(20);
         return new DepartureUpdateRequest(routeId, start, start.plusDays(5),
                 new BigDecimal("2999.00"), new BigDecimal("1999.00"), maxPeople, null, version);
     }

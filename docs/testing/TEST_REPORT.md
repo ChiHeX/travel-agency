@@ -94,10 +94,13 @@
 ## 5. 交易测试证据与待验收事项
 
 以下保留原交易模块报告的历史数据（记录于成员 B 的交易交付阶段，未提供精确构建 SHA），不代表本次整理重新验证。环境问题与未完成项也是该轮记录，需在后续联合验收时逐项复核。
+其中「时间戳由数据库维护」一节来自 `updated_at` 的修复：最新 `dev` 合入该修复分支之后重新跑过，
+这一节的数字与反向对照属于该轮新建的证据，其余小节仍按历史记录阅读。
 
 ### 测试用例
 
-交易模块共 **13 个测试类 / 142 条用例**，全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
+交易模块共 **13 个测试类 / 142 条用例**（历史统计口径），全部通过（`TRAVEL_MYSQL_TEST=true`，真实 MySQL）。
+表中最后两行由 `updated_at` 的修复新增。
 
 | 测试类 | 覆盖 |
 |---|---|
@@ -113,6 +116,8 @@
 | `LocalPaymentIntegrationTest` / `LocalPaymentServiceTest` | 本地模拟支付的注册条件、幂等、与支付宝路径互斥 |
 | `OrderStatusReservedValuesTest` | 状态枚举保留值不被写入 |
 | `AlipayGatewayClientTest` | 验签、`app_id`/`seller_id` 核对、出款结果三态分类 |
+| `UpdatedAtDatabaseMaintainedIntegrationTest` | **`updated_at` 必须由数据库维护**：取消订单、后台确认、支付回调三条路径都要真的推进该列（跨秒边界断言，避免"同一秒假绿"）；支付回调额外断言**支付单自己**那一列；取消与确认还断言**响应里的 `updatedAt` 与库一致**（只查库会漏掉"库对了、响应是旧的"） |
+| `ConsultationUpdatedAtContractIntegrationTest` | **关闭咨询的响应必须带回库里的最新 `updatedAt`**：同一类错值（库已前进、响应仍是旧值）在 `ConsultationView` 上的回归，走 MockMvc 比对"响应 vs 库" |
 
 #### 并发实测数据（真实 MySQL，8 线程）
 
@@ -150,13 +155,73 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 ```
 
 同一变异下全量 **571 条中只红这一条**（`succeeded=570 failed=1`），说明断言精准指向这条性质，
-不是大面积误伤。还原后全量恢复 **571/571**。
+不是大面积误伤。还原后全量恢复 **571/571**。（该次实验在 #55 分支上进行，当时全量 571 条；
+本分支同步最新 `dev` 后的全量条数见下。）
+
+#### 时间戳由数据库维护（真实 MySQL）
+
+`updated_at` 被 `updateById` 写回旧值这件事，只有**跨过秒边界再看一眼**才暴露得出来：
+`DATETIME` 没有小数位，插入与更新若落在同一秒，即使该列从未前进，两次读到的值也相等 ——
+不跨秒的断言会假绿。用例因此在两次读之间等待 1.1 秒。
+
+**A. 写入侧：`FieldStrategy.NEVER` 是否真的把写入权交回数据库**
+
+```text
+修复前（同一库、同一路径）
+  cancel   : before=2026-10-07T18:02:12  after=2026-10-07T18:02:12   ← 冻结
+  markPaid : before=2026-10-07T18:02:13  after=2026-10-07T18:02:13   ← 冻结
+
+修复后
+  cancel   : before=2026-10-07T18:02:41  after=2026-10-07T18:02:42   ← 前进 1 秒
+  markPaid : before=2026-10-07T18:02:42  after=2026-10-07T18:02:43   ← 前进 1 秒
+```
+
+反向对照（只摘掉 `updatedAt` 上的注解、其余不动，同一套用例立刻转红）：
+
+```text
+取消是一次业务更新，updated_at 必须前进：before=2026-10-17T13:22:54 after=2026-10-17T13:22:54
+回调入账是一次业务更新，订单 updated_at 必须前进：before=2026-10-17T13:22:56 after=2026-10-17T13:22:56
+```
+
+**B. 返回侧：写操作的响应是否带回新值**
+
+写库对了不等于响应对了。`cancel` / `confirm` 直接返回 `OrderView`，
+`ConsultationController.close` 直接返回 `ConsultationView` —— 如果把更新前读到的实体原样交给
+`XxxView.from(...)`，库是新的、响应还是旧的。反向对照（只把响应处的回查去掉）：
+
+```text
+取消接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:21:59> but was: <2026-10-17T13:21:58>
+确认接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:22>   but was: <2026-10-17T13:21:59>
+关闭咨询接口的响应必须带回库里的最新 updatedAt，不能是更新前的旧值
+  ==> expected: <2026-10-17T13:30:01> but was: <2026-10-17T13:29:59>
+```
+
+三处都只有一个断言的差距、都恰好差若干秒：**这不是"差不多对"，是明确的错值**。
+
+这三条路径都做过分层核对，顺序是「先确认断言会红，再确认修复后转绿」——
+否则很容易写出永远为真的断言（比如拿内存对象自己跟自己比）。
+
+库里留下的那几行订单本身就是证据：修复前跑出来的行 `updated_at == created_at`，
+修复后跑出来的行 `updated_at = created_at + 1s`，同库同表并列可见。
 
 ### 回归结果与前置条件
 
-**该轮全量回归**：后端 **571 条用例，571 通过、0 失败、0 跳过**
-（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7）。该轮改动新增 10 条用例（`561 → 571`；
-末一条 `OrderAuditRollbackIntegrationTest` 是应评审意见补的"审计写失败 ⇒ 业务回滚"数据库测试）。
+**本分支（已合入最新 `dev`）全量回归**：后端 **603 条用例，603 通过、0 失败、0 错误、0 跳过**
+（`TRAVEL_MYSQL_TEST=true`，本机 MySQL 9.7，`mvn clean verify`，打包产物生成）。
+本修复自身新增 4 条用例：取消订单、后台确认、支付回调三条时间戳路径，
+以及关闭咨询的响应回查（`ConsultationUpdatedAtContractIntegrationTest`）；其余增量来自最新 `dev`
+合入的其它模块。合并 `dev` 之前这套修复曾在 575 条全量上验证过一次，那一轮不能替代同步后的验证，
+因此以本次 603 条的结果为准。
+
+前端本轮未改代码：契约校验、**330 条前端测试**与生产构建均通过（保留既有大分包警告）。
+
+> 环境注意：本机 Maven 默认由 Mockito 自附加 inline mock-maker，在没有权限派出 agent 的
+> 受限环境里会让 269 条单测统一报
+> `Could not initialize plugin: interface org.mockito.plugins.MockMaker`。
+> 那不是代码问题，用 Mockito 官方推荐的做法把 jar 直接当 agent 传入即可：
+> `mvn test -DargLine="-javaagent:$HOME/.m2/repository/org/mockito/mockito-core/5.20.0/mockito-core-5.20.0.jar"`。
 
 > ⚠️ **跑测试前必须先执行迁移 `010-add-hotel-accommodation.sql`。**
 > 本机库未执行 010 时，`hotel.city` / `route_itinerary_day.accommodation_type` 会报
@@ -164,9 +229,13 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
 > 看起来像大面积回归。这是环境问题而不是代码问题 —— 本次实测确认过这一点
 > （补 010 之后同一套代码从 39 红变为 0 红）。`012` 只影响判重查询效率，不执行也能通过。
 >
-> 原报告记录测试结束后核对表行数基线，确认零漂移（`travel_order 34 / payment 34 / refund 8 /
-> departure 20 / guide 3 / sys_user 15 / sys_user_role 15 / travel_route 10 / favorite 3 /
-> staff 1 / operation_log 27`）。
+> 测试结束后核对 12 张表的行数基线，确认零漂移。本次复核所用库的跑前 / 跑后完全一致
+> （`travel_order 6 / payment 6 / refund 1 / departure 40 / guide 2 / sys_user 8 /
+> sys_user_role 6 / travel_route 10 / favorite 3 / staff 1 / operation_log 1 / sys_message 3`）。
+> 这组数字与历史记录里的库不同（历史为 `travel_order 34 / payment 34 / refund 8 / …`）——
+> 本地库的数据量本来就不一样，需要核对的是**跑前跑后没有变化**，不是具体数量。
+> 时间戳用例的 `tearDown` 还要显式清掉自己写入的 `operation_log`（`confirm` 会以测试用户为操作人
+> 留痕，而 `fk_operation_log_operator` 指向 `sys_user`，不清就会在删用户时撞外键）。
 
 ### 未完成项与风险
 
@@ -177,6 +246,12 @@ Expected org.springframework.dao.DataIntegrityViolationException to be thrown, b
   不能宣称支付链路已完成验收。** 需要的输入与方案见下。
 - ⬜ **退款对账的定时收敛未做**：`PROCESSING`（待确认）目前依赖人工筛出后用同一请求号重试，
   没有定时任务自动向支付宝查询收敛。金额不大时够用，但缺少兜底。
+- ⬜ **回调金额不符被拒时没有留痕**：`409 PAYMENT_AMOUNT_MISMATCH` 是一个"外部事件被拒绝"却查不到的缺口。
+  补它要先定两件事：操作人取值（回调没有对应的 `sys_user`，可能要新增一个系统账号，而不是给现有账号
+  硬编一个操作人），以及**留痕怎么活过回滚** —— 独立事务、独立事件日志、收窄 `noRollbackFor` 三条路
+  都可行，取舍见[交易模块设计](../design/TRADE_MODULE.md)的 §6.1。这条路径**业务本来就该整体回滚**
+  （金额不符的订单不该被推进），所以倾向用前两者：不宜为了留一条日志就取消整个业务事务的回滚。
+  回调异常日志也不必强行塞进后台操作日志（它是后台员工视角的视图）。
 - ⬜ **前端联调未回执**：订单详情、退款审核、评价管理三个页面尚未由前端反馈联调结果；
   契约字段与 `openapi.yaml` 一致，但页面行为未验收。
 - ⬜ **共享 dev 库的 `005` 索引仍未生效**（`travel_order` 缺 `idx_order_created_at`），

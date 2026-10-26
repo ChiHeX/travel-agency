@@ -117,7 +117,9 @@ public class ConsultationController {
             consultation.status = "CLOSED";
             consultationMapper.updateById(consultation);
         }
-        return ApiResponse.ok(toView(consultation));
+        // 回查以带回数据库维护的 updated_at：上面只改了内存里的 status，
+        // 而 updatedAt 是契约 Consultation 的必返字段，直接回旧实体等于返回更新前的时间。
+        return ApiResponse.ok(toView(consultationMapper.selectById(consultationId)));
     }
 
     /** 单个咨询转契约视图（含内嵌 replies + 用户昵称）。 */

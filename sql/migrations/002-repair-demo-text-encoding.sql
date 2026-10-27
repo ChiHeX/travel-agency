@@ -1,7 +1,9 @@
 -- Repair only exact, known demo strings imported as latin1 instead of UTF-8.
 -- Back up the affected content tables before applying. No IDs or order snapshots change.
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE travel_agency;
+-- Clean up a temporary table left by an interrupted run in the same session.
+DROP TEMPORARY TABLE IF EXISTS demo_text_encoding_fix;
 CREATE TEMPORARY TABLE demo_text_encoding_fix (
     correct_text VARCHAR(1000) CHARACTER SET utf8mb4 NOT NULL,
     broken_text VARBINARY(4000) NOT NULL

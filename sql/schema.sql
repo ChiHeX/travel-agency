@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- travel-agency database schema
 -- All records inserted by test-data.sql are software test/demo data only.
 CREATE DATABASE IF NOT EXISTS travel_agency CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -17,7 +19,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_sys_user_username (username)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS sys_role (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -27,7 +29,7 @@ CREATE TABLE IF NOT EXISTS sys_role (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_sys_role_code (code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS sys_user_role (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -39,7 +41,7 @@ CREATE TABLE IF NOT EXISTS sys_user_role (
     KEY idx_sys_user_role_user (user_id),
     CONSTRAINT fk_sys_user_role_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_sys_user_role_role FOREIGN KEY (role_id) REFERENCES sys_role(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS staff (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -52,7 +54,7 @@ CREATE TABLE IF NOT EXISTS staff (
     UNIQUE KEY uk_staff_user (user_id),
     UNIQUE KEY uk_staff_employee_no (employee_no),
     CONSTRAINT fk_staff_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS guide (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS guide (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_guide_user (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS travel_route (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -87,7 +89,7 @@ CREATE TABLE IF NOT EXISTS travel_route (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_route_status (status),
     KEY idx_route_destination (destination)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS attraction (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -102,7 +104,7 @@ CREATE TABLE IF NOT EXISTS attraction (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_attraction_city (city)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS hotel (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -128,7 +130,7 @@ CREATE TABLE IF NOT EXISTS hotel (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     -- 后台酒店列表按城市精确筛选（与 attraction.city 同口径）
     KEY idx_hotel_city (city)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- 酒店详情图片：一张酒店多条，按 sort_order 升序展示（同序时按 id，即提交顺序）。
 -- 只登记外部图片 URL（第一版不提供图片上传服务）；删除记录不会删除图片文件本身。
@@ -142,7 +144,7 @@ CREATE TABLE IF NOT EXISTS hotel_image (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_hotel_image_hotel (hotel_id, sort_order, id),
     CONSTRAINT fk_hotel_image_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS route_itinerary_day (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -172,16 +174,17 @@ CREATE TABLE IF NOT EXISTS route_itinerary_day (
     -- 服务层已经拦下不一致的请求，这里再加一道是为了挡住绕过服务层的写入（导入脚本、手工 SQL）：
     -- accommodation_type 有默认值 PENDING，只写 hotel_id 而不写类型会静默产出一行
     -- "关联了酒店、类型却是待确认"的自相矛盾数据，接口层再也看不出它是错的。
-    CONSTRAINT ck_day_accommodation CHECK (
+    -- CHECK 从 MySQL 8.0.16 起才执行；5.7 跳过此定义，由服务层保证住宿规则。
+    /*!80016 CONSTRAINT ck_day_accommodation CHECK (
            (accommodation_type = 'HOTEL'    AND hotel_id IS NOT NULL)
         OR (accommodation_type = 'STANDARD' AND hotel_id IS NULL
             AND accommodation_standard IS NOT NULL AND TRIM(accommodation_standard) <> '')
         OR (accommodation_type = 'NONE'     AND hotel_id IS NULL)
         OR (accommodation_type = 'PENDING'  AND hotel_id IS NULL)
-    ),
+    ), */
     CONSTRAINT fk_day_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_day_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS route_itinerary_item (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -198,7 +201,7 @@ CREATE TABLE IF NOT EXISTS route_itinerary_item (
     KEY idx_item_day (day_id),
     CONSTRAINT fk_item_day FOREIGN KEY (day_id) REFERENCES route_itinerary_day(id),
     CONSTRAINT fk_item_attraction FOREIGN KEY (attraction_id) REFERENCES attraction(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS departure (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -219,7 +222,7 @@ CREATE TABLE IF NOT EXISTS departure (
     KEY idx_departure_status (status),
     CONSTRAINT fk_departure_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_departure_guide FOREIGN KEY (guide_id) REFERENCES guide(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS user_traveler (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -236,7 +239,7 @@ CREATE TABLE IF NOT EXISTS user_traveler (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_traveler_user (user_id),
     CONSTRAINT fk_traveler_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS travel_order (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -269,7 +272,7 @@ CREATE TABLE IF NOT EXISTS travel_order (
     CONSTRAINT fk_order_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_order_route FOREIGN KEY (route_id) REFERENCES travel_route(id),
     CONSTRAINT fk_order_departure FOREIGN KEY (departure_id) REFERENCES departure(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS order_traveler (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -288,7 +291,7 @@ CREATE TABLE IF NOT EXISTS order_traveler (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_order_traveler_order (order_id),
     CONSTRAINT fk_order_traveler_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS payment (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -305,7 +308,7 @@ CREATE TABLE IF NOT EXISTS payment (
     UNIQUE KEY uk_payment_order (order_id),
     UNIQUE KEY uk_payment_no (payment_no),
     CONSTRAINT fk_payment_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS refund (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -323,7 +326,7 @@ CREATE TABLE IF NOT EXISTS refund (
     KEY idx_refund_status (status),
     CONSTRAINT fk_refund_order FOREIGN KEY (order_id) REFERENCES travel_order(id),
     CONSTRAINT fk_refund_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS favorite (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -334,7 +337,7 @@ CREATE TABLE IF NOT EXISTS favorite (
     UNIQUE KEY uk_favorite_user_route (user_id, route_id),
     CONSTRAINT fk_favorite_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_favorite_route FOREIGN KEY (route_id) REFERENCES travel_route(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS review (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -351,7 +354,7 @@ CREATE TABLE IF NOT EXISTS review (
     CONSTRAINT fk_review_order FOREIGN KEY (order_id) REFERENCES travel_order(id),
     CONSTRAINT fk_review_user FOREIGN KEY (user_id) REFERENCES sys_user(id),
     CONSTRAINT fk_review_route FOREIGN KEY (route_id) REFERENCES travel_route(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS sys_message (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -366,7 +369,7 @@ CREATE TABLE IF NOT EXISTS sys_message (
     KEY idx_message_user_read (user_id, read_flag),
     KEY idx_message_user_type_title (user_id, type, title),
     CONSTRAINT fk_message_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS consultation (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -378,7 +381,7 @@ CREATE TABLE IF NOT EXISTS consultation (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_consultation_user (user_id),
     CONSTRAINT fk_consultation_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS consultation_reply (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -390,7 +393,7 @@ CREATE TABLE IF NOT EXISTS consultation_reply (
     KEY idx_reply_consultation (consultation_id),
     CONSTRAINT fk_reply_consultation FOREIGN KEY (consultation_id) REFERENCES consultation(id),
     CONSTRAINT fk_reply_staff FOREIGN KEY (staff_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS travel_guide_article (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -409,7 +412,7 @@ CREATE TABLE IF NOT EXISTS travel_guide_article (
     KEY idx_article_status (status),
     CONSTRAINT fk_article_attraction FOREIGN KEY (attraction_id) REFERENCES attraction(id),
     CONSTRAINT fk_article_author FOREIGN KEY (author_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS place_guide (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -427,7 +430,7 @@ CREATE TABLE IF NOT EXISTS place_guide (
     KEY idx_place_guide_city (city),
     KEY idx_place_guide_author (author_id),
     CONSTRAINT fk_place_guide_author FOREIGN KEY (author_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS place_guide_item (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -439,7 +442,7 @@ CREATE TABLE IF NOT EXISTS place_guide_item (
     UNIQUE KEY uq_place_guide_order (guide_id, sort_order),
     CONSTRAINT fk_place_guide_item_guide FOREIGN KEY (guide_id) REFERENCES place_guide(id) ON DELETE CASCADE,
     CONSTRAINT fk_place_guide_item_attraction FOREIGN KEY (attraction_id) REFERENCES attraction(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS operation_log (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -455,7 +458,7 @@ CREATE TABLE IF NOT EXISTS operation_log (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_operation_log_created (created_at),
     CONSTRAINT fk_operation_log_operator FOREIGN KEY (operator_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS data_source (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -467,7 +470,7 @@ CREATE TABLE IF NOT EXISTS data_source (
     remark VARCHAR(1000),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- 幂等记录：承载契约要求的 Idempotency-Key 请求头（POST /orders、POST /orders/{orderNo}/refunds）。
 -- 唯一键 (user_id, scope, idem_key) 是并发下的原子闸门：同一用户在同一业务动作下携带同一幂等键时，
@@ -485,7 +488,7 @@ CREATE TABLE IF NOT EXISTS idempotency_record (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_idempotency_user_scope_key (user_id, scope, idem_key),
     CONSTRAINT fk_idempotency_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- 出发提醒发送记录：承载"即将出发提醒"（PRD §29）等按订单只发一次的站内消息。
 -- 唯一键 (order_id, remind_type) 是幂等闸门：定时任务重复执行、或多实例并发触发时，
@@ -501,4 +504,4 @@ CREATE TABLE IF NOT EXISTS departure_reminder (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_departure_reminder_order_type (order_id, remind_type),
     CONSTRAINT fk_departure_reminder_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;

@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- Existing databases created before hotel.version was added to schema.sql would
 -- silently keep the old structure: HotelService#update now writes `version = version + 1`
 -- (optimistic lock) and would fail with "Unknown column 'version' in 'field list'".

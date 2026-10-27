@@ -15,7 +15,7 @@
 -- 引用的那家酒店。
 --
 -- 幂等：每条语句只匹配"半截"的行，执行后这些行两列都为空、不再匹配，第二次执行不修改任何行。
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE travel_agency;
 
 -- 1) 景点

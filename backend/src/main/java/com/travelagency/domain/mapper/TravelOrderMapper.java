@@ -98,8 +98,9 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
      * <p>因此本查询不返回布尔值，而是把 {@code order_no} / {@code user_id} / 出发日期 / 线路名
      * 一并按<b>当前读</b>取回，调用方直接用它的值拼消息正文。</p>
      *
-     * <p>{@code FOR UPDATE OF o, d} 是**当前读 + 排他锁**，且只锁本语句真正做判定的两张表。
-     * 刻意不加锁 {@code travel_route}：线路改名只影响文案措辞、不影响判定，没必要扩大锁面。</p>
+     * <p>使用 MySQL 5.7 与新版 MySQL 均支持的 {@code FOR UPDATE} 做当前读并加排他锁。
+     * 除订单和团期外，也会锁住关联的线路行，保证消息中的线路名来自本次当前读；
+     * 代价是同一线路的修改可能等待提醒事务结束。不能直接移除锁，否则会重新引入快照竞态。</p>
      *
      * <p>返回 {@code null} 表示复核不通过（订单或团期已不符合出行条件），调用方直接跳过，
      * 且不会留下任何"已发送"标记 —— 该订单若之后仍符合条件，下一个调度周期还能正常提醒。</p>
@@ -121,7 +122,7 @@ public interface TravelOrderMapper extends BaseMapper<TravelOrder> {
               AND d.status NOT IN ('CANCELLED', 'FINISHED')
               AND d.start_date BETWEEN CURRENT_DATE()
                                    AND DATE_ADD(CURRENT_DATE(), INTERVAL #{futureDays} DAY)
-            FOR UPDATE OF o, d
+            FOR UPDATE
             """)
     UpcomingReminderTarget lockEligibleReminderOrder(@Param("orderId") Long orderId,
                                                      @Param("futureDays") int futureDays);

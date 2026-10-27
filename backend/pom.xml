@@ -79,6 +79,16 @@
         </dependency>
     </dependencies>
 
+    <profiles>
+        <!-- Opt in when deploying to an existing MySQL 5.7 instance. -->
+        <profile>
+            <id>mysql57</id>
+            <properties>
+                <mysql.version>8.0.33</mysql.version>
+            </properties>
+        </profile>
+    </profiles>
+
     <build>
         <plugins>
             <plugin>

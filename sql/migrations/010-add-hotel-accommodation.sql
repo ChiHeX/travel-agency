@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 010 酒店展示资料 + 每日行程的住宿安排
 --
 -- 背景：用户端线路详情的每日行程此前只能显示一句「住宿：酒店名称」。本次补齐两件事：
@@ -115,7 +117,7 @@ CREATE TABLE IF NOT EXISTS hotel_image (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_hotel_image_hotel (hotel_id, sort_order, id),
     CONSTRAINT fk_hotel_image_hotel FOREIGN KEY (hotel_id) REFERENCES hotel(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 -- 3. route_itinerary_day 新增住宿安排列
 SET @ddl := (
@@ -211,20 +213,30 @@ WHERE hotel_id IS NOT NULL
 --    必须放在回填之后：回填前"有酒店但类型是默认 PENDING"的行还没被纠正，直接加约束会失败。
 --    服务层已经拦下不一致的请求，这一道挡的是绕过服务层的写入（导入脚本、手工 SQL）——
 --    accommodation_type 有默认值，只写 hotel_id 而不写类型会静默产出自相矛盾的一行。
---    注意：MySQL 8.0.16 之前只解析 CHECK 而不执行，此时退化回"服务层保证"。
+--    MySQL 8.0.16 之前不执行 CHECK，显式跳过，避免误以为数据库已保护此规则。
+--    5.7 的 TABLE_CONSTRAINTS 不保存 CHECK；不做版本判断会在每次重跑时重复 ALTER。
+--    VERSION() 的补丁版本可能带 -log 等后缀，转换为整数只保留开头的版本数字。
+SET @mysql_version_number :=
+      CAST(SUBSTRING_INDEX(VERSION(), '.', 1) AS UNSIGNED) * 10000
+    + CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(VERSION(), '.', 2), '.', -1) AS UNSIGNED) * 100
+    + CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(VERSION(), '.', 3), '.', -1) AS UNSIGNED);
 SET @ddl := (
     SELECT IF(
-        EXISTS(SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
-               WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'route_itinerary_day'
-                 AND CONSTRAINT_NAME = 'ck_day_accommodation'),
-        'SELECT ''constraint already exists'' AS skipped',
-        'ALTER TABLE route_itinerary_day ADD CONSTRAINT ck_day_accommodation CHECK (
-             (accommodation_type = ''HOTEL''    AND hotel_id IS NOT NULL)
-          OR (accommodation_type = ''STANDARD'' AND hotel_id IS NULL
-              AND accommodation_standard IS NOT NULL AND TRIM(accommodation_standard) <> '''')
-          OR (accommodation_type = ''NONE''     AND hotel_id IS NULL)
-          OR (accommodation_type = ''PENDING''  AND hotel_id IS NULL)
-        )'
+        @mysql_version_number < 80016,
+        'SELECT ''CHECK is not enforced before MySQL 8.0.16; validated by application'' AS skipped',
+        IF(
+            EXISTS(SELECT 1 FROM information_schema.TABLE_CONSTRAINTS
+                   WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'route_itinerary_day'
+                     AND CONSTRAINT_NAME = 'ck_day_accommodation'),
+            'SELECT ''constraint already exists'' AS skipped',
+            'ALTER TABLE route_itinerary_day ADD CONSTRAINT ck_day_accommodation CHECK (
+                 (accommodation_type = ''HOTEL''    AND hotel_id IS NOT NULL)
+              OR (accommodation_type = ''STANDARD'' AND hotel_id IS NULL
+                  AND accommodation_standard IS NOT NULL AND TRIM(accommodation_standard) <> '''')
+              OR (accommodation_type = ''NONE''     AND hotel_id IS NULL)
+              OR (accommodation_type = ''PENDING''  AND hotel_id IS NULL)
+            )'
+        )
     )
 );
 PREPARE stmt FROM @ddl;

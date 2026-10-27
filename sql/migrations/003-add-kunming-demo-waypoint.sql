@@ -1,6 +1,6 @@
 -- Add the missing Kunming arrival waypoint to the existing demo route.
 -- The coordinate is an approximate city-center marker, not a meeting address.
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE travel_agency;
 
 INSERT INTO route_itinerary_item (day_id, sort_no, item_type, name, description, longitude, latitude)

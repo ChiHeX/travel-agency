@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 005 为 travel_order.created_at 补索引
 --
 -- 背景：后台工作台 GET /admin/dashboard 的 todayOrderCount 与 orderTrend 都按 created_at

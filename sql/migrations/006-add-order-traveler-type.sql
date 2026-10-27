@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- Existing databases created before order_traveler.traveler_type was added to schema.sql
 -- fail when creating an order because OrderService now inserts this snapshot field.
 SET @ddl := (
@@ -18,16 +20,26 @@ DEALLOCATE PREPARE stmt;
 
 -- Earlier order creation inserted adults before children. Restore that type for
 -- existing complete snapshots; rerunning the migration leaves the result intact.
+-- Count preceding IDs instead of using ROW_NUMBER(), which MySQL 5.7 lacks.
+-- Materialize separately so the UPDATE does not read its own target table
+-- through a mergeable derived table (MySQL error 1093).
+DROP TEMPORARY TABLE IF EXISTS migration_006_traveler_position;
+CREATE TEMPORARY TABLE migration_006_traveler_position (
+    id BIGINT PRIMARY KEY,
+    position BIGINT NOT NULL
+);
+INSERT INTO migration_006_traveler_position (id, position)
+SELECT traveler.id, COUNT(preceding.id)
+FROM order_traveler AS traveler
+JOIN order_traveler AS preceding
+  ON preceding.order_id = traveler.order_id AND preceding.id <= traveler.id
+GROUP BY traveler.id;
+
 UPDATE order_traveler AS traveler
-JOIN (
-    SELECT ranked.id, ranked.position, orders.adult_count
-    FROM (
-        SELECT id, order_id,
-               ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY id) AS position
-        FROM order_traveler
-    ) AS ranked
-    JOIN travel_order AS orders ON orders.id = ranked.order_id
-) AS snapshot ON snapshot.id = traveler.id
+JOIN migration_006_traveler_position AS snapshot ON snapshot.id = traveler.id
+JOIN travel_order AS orders ON orders.id = traveler.order_id
 SET traveler.traveler_type = 'CHILD'
-WHERE snapshot.position > snapshot.adult_count
+WHERE snapshot.position > orders.adult_count
   AND traveler.traveler_type = 'ADULT';
+
+DROP TEMPORARY TABLE migration_006_traveler_position;

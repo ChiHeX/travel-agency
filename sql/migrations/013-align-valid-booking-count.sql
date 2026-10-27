@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 013-align-valid-booking-count.sql
 -- 对齐存量库的 travel_route.valid_booking_count，使其等于真实「有效报名」订单条数。
 --

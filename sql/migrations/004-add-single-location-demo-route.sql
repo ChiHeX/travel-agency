@@ -1,5 +1,5 @@
 -- Add one published demo tour with exactly one geocoded itinerary location.
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE travel_agency;
 
 SET @single_attraction_id = (SELECT id FROM attraction WHERE name = '大理古城' AND city = '大理' ORDER BY id LIMIT 1);

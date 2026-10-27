@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS place_guide (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     title VARCHAR(200) NOT NULL,
@@ -14,7 +16,7 @@ CREATE TABLE IF NOT EXISTS place_guide (
     KEY idx_place_guide_city (city),
     KEY idx_place_guide_author (author_id),
     CONSTRAINT fk_place_guide_author FOREIGN KEY (author_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
 CREATE TABLE IF NOT EXISTS place_guide_item (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -26,4 +28,4 @@ CREATE TABLE IF NOT EXISTS place_guide_item (
     UNIQUE KEY uq_place_guide_order (guide_id, sort_order),
     CONSTRAINT fk_place_guide_item_guide FOREIGN KEY (guide_id) REFERENCES place_guide(id) ON DELETE CASCADE,
     CONSTRAINT fk_place_guide_item_attraction FOREIGN KEY (attraction_id) REFERENCES attraction(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;

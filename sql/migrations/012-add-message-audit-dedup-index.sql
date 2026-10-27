@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 012 为 sys_message 补「审核异常通知去重」索引
 --
 -- 背景：PRD §29 要求报名审核异常要有站内通知，而「同一订单 + 同一异常原因只通知一次」的判据是

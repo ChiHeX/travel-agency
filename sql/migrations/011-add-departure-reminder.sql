@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 011 新增 departure_reminder 表
 --
 -- 背景：PRD §29 要求实现"即将出发"站内消息提醒。提醒由定时任务按订单发送，
@@ -18,4 +20,4 @@ CREATE TABLE IF NOT EXISTS departure_reminder (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_departure_reminder_order_type (order_id, remind_type),
     CONSTRAINT fk_departure_reminder_order FOREIGN KEY (order_id) REFERENCES travel_order(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;

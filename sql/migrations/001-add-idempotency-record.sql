@@ -1,3 +1,5 @@
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 001 新增 idempotency_record 表
 --
 -- 背景：契约把 Idempotency-Key 定为 POST /orders 与 POST /orders/{orderNo}/refunds 的必填请求头，
@@ -18,4 +20,4 @@ CREATE TABLE IF NOT EXISTS idempotency_record (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_idempotency_user_scope_key (user_id, scope, idem_key),
     CONSTRAINT fk_idempotency_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;

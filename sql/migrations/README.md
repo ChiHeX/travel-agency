@@ -9,6 +9,12 @@
 
 ## 执行方式
 
+脚本兼容 MySQL 5.7。`006` 使用临时表和同订单内的 ID 次序恢复出行人类型，不依赖窗口函数；
+执行账号需要当前库的 `CREATE TEMPORARY TABLES` 权限。临时表仅存在于当前连接。
+MySQL 5.7 不执行 `CHECK` 约束，住宿一致性继续由应用服务层验证；直接写库需自行遵守规则。
+`010` 显式跳过旧版本的 CHECK DDL，MySQL 8.0.16 及以上才创建数据库约束。
+全部文件的编码、行格式要求及自动验证命令见 [SQL 使用说明](../README.md)。
+
 ```bash
 mysql -h localhost -u travel -p travel_agency < sql/migrations/001-add-idempotency-record.sql
 ```

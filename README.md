@@ -117,6 +117,13 @@ npm run dev:mock
 
 ## 重要配置
 
+已有 MySQL 5.7 的小内存宝塔服务器可以使用兼容构建，无需再安装数据库：
+在 `backend` 目录执行 `mvn -ntp -Pmysql57 clean package`，将 JDBC 驱动切换为兼容
+MySQL 5.7 的 Connector/J 8.0.33；这是 **Maven 打包选项**，不是 Spring 运行 profile。
+默认构建及 Docker 编排继续使用新版数据库配置。运行 SQL 与迁移脚本兼容 MySQL 5.7；
+5.7 不执行 `CHECK` 约束，住宿数据规则由应用服务层保证。
+部署步骤与限制见 [MySQL 5.7 宝塔部署](deploy/baota-mysql57.md)。
+
 后端敏感配置通过环境变量覆盖，禁止将真实密钥提交到仓库：
 
 ```text

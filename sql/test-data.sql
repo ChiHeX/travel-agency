@@ -1,4 +1,4 @@
-SET NAMES utf8mb4;
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE travel_agency;
 
 -- The following rows are test/demo data only, not real travel agency operating data.
